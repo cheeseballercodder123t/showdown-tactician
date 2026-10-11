@@ -107,7 +107,7 @@ tests/hardening_audit.js   the bug-hunt regression suite: 10 defects reproduced 
 tests/upgrades_check.js    the mixed-strategy solver against matrices with an analytic equilibrium,
                            the newer vetoes, the deliberation clock and the reverse damage rule (118 checks)
 tests/chaos_sync_check.js  the monthly chaos-sync tool + the usage overlay it writes (70 checks)
-tests/weights_check.js     the corpus downloader + the extractor + the IRLS fitter, against a planted model (102 checks)
+tests/weights_check.js     the corpus downloader + the extractor + the IRLS fitter, against a planted model (189 checks)
 tests/discrete_check.js    the 16 discrete damage rolls, the exact KO count, EV pinning and the
                            residual-order Speed evidence (110 checks)
 tests/scout_check.js       the replay-scouting tool + the overlay it writes + the pruner's use of it (78 checks)
@@ -120,9 +120,15 @@ tools/gen_aliases.js       regenerates lib/species-aliases.js (needs the vendore
 tools/pokedex.json         Showdown's dex snapshot the two generators read
 tools/sync_chaos_sets.js   a Smogon chaos dump -> src/sets_usage.js (the monthly cron runs this)
 tools/scout_replays.js     an opponent's recent replays -> src/scout_prior.js (what their own games reveal)
-tools/fetch_replays.js    a ladder search -> the replay corpus (the only step of the weight pipeline that downloads)
+tools/fetch_replays.js    a ladder search -> the replay corpus (the only step of the weight pipeline that
+                          downloads): `--sort rating` asks the endpoint for the best battles it has,
+                          `--require-move` / `--exclude-move` keep or drop battles that clicked a move,
+                          `--harvest` follows the players who use it, `--max-rating` draws a band
+                          rather than only a floor, and `--input a.json,b.json` merges corpora into
+                          one file, best-rated first
 tools/extract_training_data.js  a replay corpus -> 128D rows labelled by the eventual winner
-tools/fit_weights.js       IRLS logistic regression over those rows -> weights + train/test AUC
+tools/fit_weights.js       IRLS logistic regression over those rows -> weights + a hold-out AUC
+                           taken over whole battles, not over turns of one battle
 .github/workflows/chaos-sync.yml  monthly cron: download the dump, resync the overlay, commit it
 ARCHITECTURE.md            frozen interface contract every module binds to
 ```
@@ -141,7 +147,7 @@ node tests/parser_fuzz.js     #  44 checks: RULE 3 — the real log, all its pre
 node tests/hardening_audit.js #  48 checks: the bug-hunt regressions + a 40-battle invariant fuzz
 node tests/upgrades_check.js  # 118 checks: the mixed-strategy solve, the vetoes, the clock, damage evidence
 node tests/chaos_sync_check.js # 70 checks: the chaos sync + the usage overlay (fixtures only, no network)
-node tests/weights_check.js   # 102 checks: the downloader + the extractor + the fitter, against a planted model
+node tests/weights_check.js   # 189 checks: the downloader + the extractor + the fitter, against a planted model
 node tests/hud_check.js       # 175 checks: the seven HUD extras (stub DOM), the bench-tap sandbox end to end + their engine data
 node tests/discrete_check.js  # 110 checks: the 16 discrete rolls, the exact KO count, EV pinning, residual order
 node tests/scout_check.js     #  78 checks: the scouting tool, the overlay, the pruner's re-weighting
@@ -390,22 +396,106 @@ that only one of them touches the network: `tools/fetch_replays.js` searches a l
 the replays and writes the corpus (labelling each one from the log's own `|win|` line, through
 the side table the log declares, and skipping rather than guessing when it cannot resolve one);
 `tools/extract_training_data.js` turns that corpus into 128D rows labelled by the eventual
-winner; and `tools/fit_weights.js` fits them by IRLS with an L2 ridge, reports train/test AUC-ROC
-and prints a ready `evaluator.weights` snippet.
+winner; and `tools/fit_weights.js` fits them by IRLS with an L2 ridge, reports a train AUC-ROC and
+a hold-out AUC-ROC taken over whole battles, and prints a ready `evaluator.weights` snippet.
 
-The training has been run once, so the pipeline is known to work end to end rather than only in
-fixtures: a search of `[Gen 9] National Dex` at rating >= 1300 yielded **128 replays**, which the
-extractor turned into **2,823 labelled turn rows** (1,434 wins / 1,389 losses), and the fitter
-(λ = 0.5, 25 IRLS iterations — it hits the iteration cap rather than converging, so raising
-`--max-iter` is the first thing to try) scored **AUC 0.9369 train / 0.9360 hold-out** on 2,258
-training and 565 test rows. That number is the honest ceiling of this feature set, not a promise:
-the rows are one format's ladder games and the labels are eventual winners.
+One property of the replay search is worth knowing before pointing the fetcher at it: the rating
+sort on the replay browser is a **server-side** query, not a re-sort of what came back.
+`search.json?format=gen9nationaldex&sort=rating` asks the endpoint for the best battles it has
+ever recorded for that format — 51 to a page, and the window ends at page 100 — whereas the
+default walk only ever sees the recent window. `--sort rating` now sends that sort upstream, which
+is what made a high-rated corpus possible at all; before it existed the corpus was simply whatever
+was recent, which is why the first one was 128 battles at rating >= 1300.
 
-What was produced is committed as `lib/trained-weights.json` — the reviewed artifact — and
-neither it nor the fitter rewrites `src/config.js` on its own: the live `evaluator.weights` are
-still the handcrafted defaults, and adopting the fitted vector is a separate, verified step. The
-replay corpus itself is not in the repo (it is 128 third-party logs, and the artifact records the
-search that produced it), so a regenerate means re-running the three commands above.
+The training has been re-run in two passes since. The first built a balanced corpus on the best
+battles the ladder has: the **5,001 highest-rated `[Gen 9] National Dex` battles the endpoint
+holds** (ratings 1778-1992) were downloaded — a log has to be read to know whether a battle clicked
+a move, because the endpoint cannot search by move — and **303 of them used Trick Room**. The 98
+players who clicked it were then followed with `?user=`, which added 1,677 further candidates (a
+followed player's discovery pass is not re-downloaded: `download()` re-uses the logs it already
+holds), and the 300 best-rated Trick Room battles were kept. A second pass over the same window with
+`--exclude-move trickroom` kept the battles with no Trick Room at all — 300 and 307 of them, the
+607-battle corpus the paragraphs below call the small one.
+
+The second pass went after volume, because volume is what moved the number. **2,606 further elite
+battles** came from the same rating-sorted window (roughly 1,800 of it is still undownloaded), and
+two lower bands were drawn from the newest-first window — the only one that reaches below the sorted
+window's floor: **299 battles at 1600-1749** and **507 at 1300-1599**, drawn with `--min-rating`
+plus `--max-rating` — the ceiling is what makes a band rather than only a floor selectable at all.
+The bands are not contiguous and one of them is empty: the corpus's own histogram is 507 battles at
+1300-1599, 299 at 1600-1749, **none** at 1750-1777 and 2,906 at 1778+. That gap is real and stated
+rather than smoothed over — a deliberate 1700-1777 fetch found 28 battles, only three of them above
+1750, which is why nothing lands in that band. Merged through `--input`, the corpus is
+**3,712 battles, ratings 1300-1992, mean 1760**, and it replaces — and deletes — the old
+128-replay, 1300-rated corpus.
+
+The extractor turns those battles into **111,820 labelled turn rows** (61,711 positive, about 30
+rows a battle) over the same 128 dimensions, and the fitter **converges**, in 35 IRLS iterations at
+λ = 0.5 with `--max-iter 200`, instead of dying at the old 25-iteration cap. λ is flat here — 0.1,
+0.5, 2 and 5 all land within 0.0001 of each other — so 0.5 is kept as the default rather than
+chosen. The artifact is written to `lib/trained-weights.json` and reports **AUC 0.7513 train /
+0.7011 hold-out** over **89,982 train / 21,838 test rows**, the hold-out now taken over whole
+battles rather than over turns: `holdoutBattles` is **3,703** because nine of the 3,712 battles
+contributed no rows at all and a battle with no rows no longer consumes a hold-out slot.
+
+Getting that hold-out honest was the first fix, and the caveat matters more than the digits.
+`splitIndices` used to hold out every k-th **row**, and rows are consecutive turns of one battle, so
+every held-out row's neighbours sat in the training set — within-battle leakage. It now accepts the
+per-battle row counts the extractor writes, holds out every k-th **battle**, and reports
+`holdoutBattles` / `groupedHoldout` next to the AUC; the old row-level split still runs when no
+provenance is present (or when a provenance map does not add up — then `provenanceIgnored` says so),
+because the tests pin that path. The row-level figure on this pipeline was 0.7975, the battle-level
+figure for the shipped artifact is **0.7011**, and the first corpus's 0.9360 was measured the same
+leaked way — none of the three are comparable to each other.
+
+What actually improved the model was elite **volume**; the diversity bands were nearly a rounding
+error at this size. With the battle-level hold-out: the 607-battle elite-only corpus scored
+**0.6472**; growing that same elite band to **2,906 battles scored 0.6979**; adding the mid and low
+bands on top gives **0.7011** in the shipped artifact. In that same comparison run the banded fit
+scored 0.7002 on held-out elite battles against 0.7063 on held-out mid/low ones (that run printed
+0.7018 overall before the zero-row fix described above moved the shipped figure to 0.7011). So
++0.050 came from elite data and **+0.002** from the bands. A 10% hold-out (every 10th battle)
+reports 0.7244, which puts split variance at roughly ±0.02 — the band effect is inside that, so it
+is reported as small rather than as established.
+
+The first version of this section claimed the opposite, and that claim was measured on the small
+corpus, so both results stand and both are kept. With only 607 elite battles, an equal-row-count
+experiment favoured diversity: 14,336 elite rows scored 0.6472 while 14,072 rows in which every
+third elite battle was replaced by low-rated ones scored **0.6670**, and a control trained on the
+low band alone (230 battles, 1300-1709) scored 0.6210 on elite battles against the elite model's
+0.6472. Diversity beats size when the elite sample is small; at 2,906 elite battles, volume beats
+diversity. The bands are still in the shipped corpus because +0.002 costs nothing.
+
+Diagnostics on the shipped fit, over held-out rows: Trick Room battles score **0.7185** against
+**0.7005** for battles without it, and inside the elite band 0.6873 against 0.7014, so Trick Room
+lines are ranked at least as well as the rest. The probabilities are a ranking aid rather than
+odds: Brier **0.2178**, where a constant 0.5 would score 0.25.
+
+The audit that produced these numbers also found five defects in this pipeline, and each is fixed
+and pinned. A followed player's battles are matched to the window's format through the **replay id's
+own prefix** (`gen9nationaldex-…`), never as a substring of the human label: the label test admitted
+`[Gen 9] National Dex UU`, `… AG` and `… Doubles` into a National Dex corpus, and the id is the only
+exact format test the endpoint offers. A hit carrying no rating is treated as 0, so it can no longer
+enter a rated corpus through the harvest or the merge when the window path rejected it. `--harvest`'s
+discovery pass now obeys `--max-downloads` and the rating ceiling (it used to overrun both), and
+`attempted` in the corpus file counts the run's requests across both passes instead of only the
+last one. A page that comes back as a non-array — an error page rather than an exhausted window — is
+an error instead of being read as "no more battles", and a page that merely contributed no candidate
+no longer ends the walk: that single rule is why the 1600-1749 band reported 20 replays before the
+fix and 299 after it, and the 1300-1599 band 307 before and 507 after. In the fitter, a provenance
+map whose row counts do not add up to the rows being fitted is refused rather than absorbed — the
+split falls back to rows and reports `provenanceIgnored` — and a battle that contributed no rows no
+longer consumes a hold-out slot.
+
+Neither the artifact nor the fitter rewrites `src/config.js` on its own: the live
+`evaluator.weights` are still the handcrafted defaults, and adopting the fitted vector is a
+separate, verified step. The artifact stores the **fit**, not the search behind it: `lambda`,
+`samples`, the split, `aucTrain`/`aucTest`, `weights128`/`weightsFull` and the `spec` are what it
+records. The corpus itself is not in the repo — it is 3,712 third-party logs — so the format, sort,
+rating floor and band a corpus was drawn from live in the corpus payload (which is not shipped),
+never in the artifact. Regenerating therefore means re-running the pipeline: fetch the elite window,
+fetch the two lower bands, merge the corpora through `--input a.json,b.json`, extract, then fit. The
+exact invocations are the examples in the header comment of `tools/fetch_replays.js`.
 
 ## The two dex gaps the generated files fix
 
@@ -532,8 +622,21 @@ the current turn, so it says which line to click now, not how the stall resolves
   was. Chrome ≥ 121 ignores `background.scripts` (it uses the service worker); Chrome < 121 refuses
   to load an MV3 manifest that has it. A separate Firefox-only manifest would keep the old Chrome
   floor, at the cost of two manifests to maintain.
+* The empirical-weight numbers are not reproducible from a checkout: the corpus is 3,712
+  third-party logs that are not shipped, and the pipeline's own network step is what produced it.
+  The artifact records only the fit — the format, rating band and search that produced the corpus
+  are re-created by the fetcher's documented flags, not stored in the file.
+* The artifact's test AUC (0.7011) is a battle-level hold-out, which is the honest number and a
+  modest one: it ranks the eventual winner correctly in roughly 70 of 100 held-out pairs of battle
+  states, and its probabilities are not calibrated odds (Brier 0.2178). Treat the vector as a
+  ranking aid for comparing candidate lines, not as a win-probability model.
+* The old 128-replay, 1300-rated corpus was deleted, so the 0.9360 figure cannot be recomputed;
+  like the 0.7975 that briefly replaced it, it came from the row-level split and is not comparable
+  to the battle-level 0.7011 the artifact now reports. The rating-diversity bands are in the
+  shipped corpus, but at this size they are worth about +0.002, so they are a cheap hedge rather
+  than a measured necessity.
 * Nothing here has been verified in a real browser. The parser, state manager, engines and HUD
-  are covered by the sixteen Node suites and stub DOMs; no suite can prove how Showdown's live
+  are covered by the fifteen Node suites and stub DOMs; no suite can prove how Showdown's live
   control bar renders or how the extension behaves on an actual Android device.
 * `tests/hardening_audit.js` is the bug-hunt regression suite: ten defects found by the audit
   (symptoms, root causes, fixes and the verification evidence are in `BUGS_AUDIT_REPORT.md`),

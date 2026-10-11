@@ -282,15 +282,38 @@ function auc(scores, labels) {
 }
 
 /**
- * Deterministic hold-out: every `k`-th row is held out. Disjoint and complete by construction.
- * k < 2 is clamped to 2 (k = 1 would hold out every row and leave nothing to train on).
+ * Deterministic hold-out. Disjoint and complete by construction; k < 2 is clamped to 2 (k = 1 would
+ * hold out everything and leave nothing to train on).
+ *
+ * `groups` is optional and is the honest mode. Rows are consecutive turns of ONE battle and
+ * neighbouring turns carry nearly the same state and the same label, so holding out every k-th ROW
+ * leaves each held-out row's neighbours in the training set and reports an AUC no battle could ever
+ * see (measured on the shipped corpus: 0.7975 that way, 0.6472 when whole battles are held out).
+ * Pass the per-battle row counts and every k-th BATTLE is held out instead, which is the number
+ * worth quoting. Without `groups` the row-level split still runs, because it is what the tests pin.
  */
-function splitIndices(n, k) {
+function splitIndices(n, k, groups) {
   let holdout = (typeof k === 'number' && isFinite(k) && k > 0) ? Math.floor(k) : 5;
   if (holdout < 2) holdout = 2;
   const train = [], test = [];
+  if (Array.isArray(groups) && groups.length) {
+    let battle = 0, cursor = 0;
+    for (let b = 0; b < groups.length; b++) {
+      const size = Math.max(0, Math.floor(groups[b]) || 0);
+      // A battle that contributed no rows takes no hold-out slot either: counting it would push the
+      // held-out share below 1/k (the extractor does emit a zero-row entry for a battle whose every
+      // turn was skipped) and would report battles that hold no data.
+      if (!size) continue;
+      const isTest = battle % holdout === 0;
+      battle++;
+      for (let j = 0; j < size && cursor < n; j++) (isTest ? test : train).push(cursor++);
+    }
+    // rows a short `groups` did not account for go to training, so the split stays complete
+    while (cursor < n) train.push(cursor++);
+    return { train: train, test: test, holdout: holdout, battles: battle, grouped: true };
+  }
   for (let i = 0; i < n; i++) (i % holdout === 0 ? test : train).push(i);
-  return { train: train, test: test, holdout: holdout };
+  return { train: train, test: test, holdout: holdout, battles: 0, grouped: false };
 }
 
 /**
@@ -386,7 +409,20 @@ function run(payload, options) {
   const dim = opts.dim || DIM;
   const lambda = typeof opts.lambda === 'number' && opts.lambda >= 0 ? opts.lambda : 0.5;
   const data = matrixOf(payload, dim);
-  const split = splitIndices(data.X.length, opts.holdout);
+  // The payload's provenance carries one entry per battle with its row count, in row order, so the
+  // hold-out can be taken over whole battles rather than over turns of the same battle.
+  const groups = Array.isArray(payload && payload.replays)
+    ? payload.replays.map(function (p) { return (p && p.rows) || 0; })
+    : null;
+  // The map is only usable when the counts add up to the rows being fitted. A hand-built dataset, an
+  // older file, or rows spliced in without their provenance would otherwise group one battle's turns
+  // under another battle's index, or leave the hold-out empty and throw. A mismatch falls back to
+  // the row-level split and says so in the report, rather than being silently absorbed.
+  const groupRows = groups
+    ? groups.reduce(function (s, v) { return s + (typeof v === 'number' && isFinite(v) && v > 0 ? Math.floor(v) : 0); }, 0)
+    : 0;
+  const usableGroups = (groupRows > 0 && groupRows === data.X.length) ? groups : null;
+  const split = splitIndices(data.X.length, opts.holdout, usableGroups);
 
   const trainX = split.train.map(function (i) { return data.X[i]; });
   const trainY = split.train.map(function (i) { return data.y[i]; });
@@ -416,6 +452,9 @@ function run(payload, options) {
     trainSamples: trainX.length,
     testSamples: testX.length,
     holdout: split.holdout,
+    holdoutBattles: split.grouped ? split.battles : 0,
+    groupedHoldout: split.grouped,
+    provenanceIgnored: !!groups && !usableGroups,
     positives: data.y.reduce(function (s, v) { return s + v; }, 0),
     features: dim,
     aucTrain: aucTrain,
