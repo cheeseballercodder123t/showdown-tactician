@@ -17,6 +17,8 @@
   const MAX_TEAM = cfg('sampler.maxTeam', 6);
   const MAX_RESAMPLE = cfg('sampler.maxResample', 24);
   const MIN_SET_WEIGHT = cfg('sampler.minSetWeight', 0.01);
+  // Odd 32-bit stride (golden ratio) so K consecutive world seeds can never collide.
+  const SEED_STRIDE = 0x9E3779B9;
 
   /** mulberry32 — small, fast, fully deterministic. */
   function mulberry32(seed) {
@@ -73,8 +75,24 @@
       return sets[sets.length - 1];
     }
 
+    /**
+     * The species a candidate set actually puts on the field. A Mega set is stored under the
+     * BASE species with the stone in `item` (see sets_db.js), so its field forme has to come
+     * from the stone: without this a world sampled for a revealed Mega stood a base-forme body
+     * (and every set then reported a 'species mismatch', halving the world's weight).
+     */
+    _setSpecies(set) {
+      if (!set) return '';
+      let species = set.species || '';
+      if (set.isMega || U.isMegaStone(set.item)) {
+        const info = U.megaSpeciesFromStone(set.item);
+        if (info && info.mega) species = info.mega;
+      }
+      return species;
+    }
+
     _monFromSet(base, set, index) {
-      const species = set.species || base.species || base.id;
+      const species = this._setSpecies(set) || base.species || base.id;
       return {
         id: U.toID(species),
         species: species,
@@ -157,12 +175,57 @@
       return Math.random();
     }
 
-    /** sampleWorld(state, db) -> World */
-    sampleWorld(state, db) {
+    /**
+     * Deterministic 32-bit signature of everything the position has revealed. Two calls on the
+     * same state MUST produce the same worlds — that is what "determinized" means — so the
+     * seeds are derived from this signature instead of Math.random().
+     */
+    _observationSignature(state) {
+      const st = state || {};
+      const f = st.field || {};
+      const parts = ['t' + (st.turn || 0),
+        'w' + (f.weather || '') + '|' + (f.terrain || '') + '|' + (f.trickRoom ? 1 : 0)];
+      const team = this._oppTeam(state);
+      for (let i = 0; i < team.length; i++) {
+        const m = team[i];
+        if (!m) { parts.push('-'); continue; }
+        parts.push([
+          m.id || U.toID(m.species), m.species, m.hpPercent, m.status || '', m.fainted ? 'f' : '',
+          m.speedFloor | 0, m.speedCeiling === undefined ? '' : m.speedCeiling,
+          m.confirmedItem || '', m.revealedAbility || '',
+          m.cannotBeChoice ? 'c' : '', m.itemless ? 'i' : '',
+          (m.revealedMoves || []).join('+'),
+          (m.candidateSets || []).map(function (s) { return (s && (s.id || s.item)) || ''; }).join('+')
+        ].join('~'));
+      }
+      return parts.join(';');
+    }
+
+    /** FNV-1a over the observation signature — stable, fast, never Math.random. */
+    _seedFromState(state) {
+      const text = this._observationSignature(state);
+      let h = 0x811c9dc5;
+      for (let i = 0; i < text.length; i++) {
+        h ^= text.charCodeAt(i);
+        h = Math.imul(h, 0x01000193);
+      }
+      return (h >>> 0) || 1;
+    }
+
+    /** sampleWorld(state, db[, seed]) -> World */
+    sampleWorld(state, db, seedOverride) {
       const previousDb = this.database;
       if (db) this.database = db;
-      const rand = this._rand();
-      const seed = Math.floor(rand * 0xffffffff) || 1;
+      // An explicit seed wins, then an injected rng, then the state itself. Nothing falls back
+      // to Math.random(), so the same position always samples the same K worlds.
+      let seed;
+      if (typeof seedOverride === 'number' && seedOverride) {
+        seed = (seedOverride >>> 0) || 1;
+      } else if (typeof this.rng === 'function') {
+        seed = (Math.floor(this._rand() * 0xffffffff) >>> 0) || 1;
+      } else {
+        seed = this._seedFromState(state);
+      }
       const random = mulberry32(seed);
       const oppTeam = this._oppTeam(state);
       const sets = [];
@@ -233,8 +296,18 @@
     sampleWorlds(oppState, candidateSetDatabase, K) {
       const count = Math.max(1, K || this.K || 6);
       const state = oppState && oppState.oppTeam ? oppState : { oppTeam: oppState || [] };
+      // Determinism (see _seedFromState): the K worlds come from the position, or from an
+      // explicitly injected rng — never from Math.random(). An injected rng is still honoured
+      // (one draw per world) so a caller can stream a seeded sequence, but two calls on the
+      // same state never disagree.
+      const seeded = typeof this.rng === 'function';
+      const base = seeded ? ((Math.floor(this._rand() * 0xffffffff) >>> 0) || 1) : this._seedFromState(state);
       const worlds = [];
-      for (let i = 0; i < count; i++) worlds.push(this.sampleWorld(state, candidateSetDatabase));
+      for (let i = 0; i < count; i++) {
+        const seed = seeded ? ((Math.floor(this._rand() * 0xffffffff) >>> 0) || 1)
+          : (((base + Math.imul(i, SEED_STRIDE)) >>> 0) || 1);
+        worlds.push(this.sampleWorld(state, candidateSetDatabase, seed));
+      }
       // Normalise weights so the engine can pool votes without rescaling.
       let total = 0;
       for (let i = 0; i < worlds.length; i++) total += worlds[i].weight;
@@ -256,8 +329,11 @@
       if (!mon || !set) return ['missing data'];
       const setMoves = set.moves || [];
 
-      if (set.species && mon.species && U.toID(set.species) !== U.toID(mon.species)) {
-        // Forme mismatch is only fatal when the observed forme is already a Mega/Z forme.
+      // Compare the forme the SET would put on the field (a Mega set resolves to its Mega
+      // forme, see _setSpecies) with the forme the log observed. A mismatch is only fatal when
+      // the observed forme is already a Mega/Z forme.
+      const setSpecies = this._setSpecies(set) || (mon && mon.species) || '';
+      if (setSpecies && mon.species && U.toID(setSpecies) !== U.toID(mon.species)) {
         if (/(-Mega|-Primal|-Z$)/.test(mon.species)) problems.push('species mismatch');
       }
 

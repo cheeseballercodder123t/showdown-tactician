@@ -186,7 +186,8 @@
     pruner: {
       maxReasons: 24,                 // human-readable deduction trail kept per mon
       maxEvidence: 12,
-      speedMaxCeiling: 1012           // Regieleki @ Choice Scarf, L100, +Spe, 252 EV
+      speedMaxCeiling: 1012,          // Regieleki @ Choice Scarf, L100, +Spe, 252 EV
+      speedFloorFallbackKeep: 4       // fastest candidates kept when NO set can reach the floor
     },
 
     /* ------------------------------------------------------------------- state */

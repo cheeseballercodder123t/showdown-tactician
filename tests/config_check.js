@@ -146,6 +146,7 @@ const INVENTORY = [
   'llm.openrouterEndpoint', 'llm.maxPromptWords', 'llm.maxReasonWords', 'llm.systemPrompt',
   // pruner
   'pruner.maxReasons', 'pruner.maxEvidence', 'pruner.speedMaxCeiling',
+  'pruner.speedFloorFallbackKeep',
   // state
   'state.maxActiveStints', 'state.maxLog'
 ];

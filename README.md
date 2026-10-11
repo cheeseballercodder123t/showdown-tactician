@@ -75,6 +75,8 @@ tests/injected_bridge.js   the MAIN-world WebSocket bridge against a fake WebSoc
 tests/config_check.js      RULE 4: the config inventory, the frozen 128D layout, live mutation (63 checks)
 tests/blackbox_guard.js    RULE 1: 50,616 stat values diffed against @smogon/calc + a scan for handwritten math (28 checks)
 tests/parser_fuzz.js       RULE 3: the real 30-turn log replayed, every prefix, and junk lines (44 checks)
+tests/hardening_audit.js   the bug-hunt regression suite: 10 defects reproduced first, then fixed,
+                           plus a 40-battle seeded invariant fuzz (46 checks)
 test_engine.js             RULE 2: five canonical ground-truth damage scenarios (57 checks)
 test_log.txt               the 30-turn ExtramePatriot vs LUIZ_LFN battle as a raw protocol stream
 tools/gen_abilities.js     regenerates lib/species-abilities.js from tools/pokedex.json
@@ -94,6 +96,7 @@ node tests/injected_bridge.js #  12 checks: the MAIN-world WebSocket bridge (fak
 node tests/config_check.js    #  63 checks: RULE 4 — the config is the only home for a heuristic
 node tests/blackbox_guard.js  #  28 checks: RULE 1 — no handwritten math, 50,616 stats diffed
 node tests/parser_fuzz.js     #  44 checks: RULE 3 — the real log, all its prefixes, junk lines
+node tests/hardening_audit.js #  46 checks: the bug-hunt regressions + a 40-battle invariant fuzz
 ```
 
 The first suite loads every script in manifest order inside a DOM-less sandbox (so a load-order
@@ -116,7 +119,7 @@ bare `calc.calculate()` call. `tests/parser_fuzz.js` replays `test_log.txt` — 
 NatDex OU battle, raw protocol — through `ProtocolParser` + `BattleStateManager`, then replays
 every prefix of it and ~40 malformed lines, and asserts the state neither throws nor desyncs.
 `tests/config_check.js` and `tests/blackbox_guard.js` are the guards that keep Rules 4 and 1
-from eroding: the first holds a 103-path inventory of every value the modules read and the
+from eroding: the first holds a 104-path inventory of every value the modules read and the
 frozen 128D weight layout, the second diffs tens of thousands of stats against the library and
 statically refuses to let a handwritten formula back into `src/`.
 
@@ -144,7 +147,7 @@ statically refuses to let a handwritten formula back into `src/`.
 4. **One config file.** Every heuristic — weights, thresholds, probabilities, the LLM model ids
    and prompt, the HUD badge cutoffs, the pruner caps, the sampler's K — lives in
    `src/config.js` and is read through `ST.configGet(path, fallback)`. `tests/config_check.js`
-   holds a 103-path inventory so no module can silently fall back to a literal, and proves a
+   holds a 104-path inventory so no module can silently fall back to a literal, and proves a
    runtime `ST.configMerge()` reaches newly constructed engines. Game rules with a single
    correct value (Trick Room lasts 5 turns, Choice Scarf is ×1.5, the type chart, base stats)
    deliberately do **not** live there.
@@ -209,5 +212,9 @@ https://play.pokemonshowdown.com/data/pokedex.json` before regenerating.
   is false and stat lookups return 0 rather than a fabricated number — the engine reports
   nothing instead of guessing.
 * Nothing here has been verified in a real browser. The parser, state manager, engines and HUD
-  are covered by the eight Node suites and stub DOMs; no suite can prove how Showdown's live
+  are covered by the nine Node suites and stub DOMs; no suite can prove how Showdown's live
   control bar renders or how the extension behaves on an actual Android device.
+* `tests/hardening_audit.js` is the bug-hunt regression suite: ten defects found by the audit
+  (symptoms, root causes, fixes and the verification evidence are in `BUGS_AUDIT_REPORT.md`),
+  each pinned by an assertion that fails on the code as it was, plus a 40-battle seeded fuzz
+  that asserts the solver's invariants over random-but-legal protocol streams.

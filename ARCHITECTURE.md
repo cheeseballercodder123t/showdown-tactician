@@ -572,4 +572,8 @@ document.dispatchEvent(new CustomEvent('ShowdownTactician_ProtocolEvent', {
    a real 30-turn battle as a raw protocol stream). `tests/blackbox_guard.js` (RULE 1) and
    `tests/config_check.js` (RULE 4) are the two suites that exist purely to stop the rules
    above from eroding, and `tests/parser_fuzz.js` replays the log plus every prefix of it and
-   a battery of malformed lines. Nothing here is verified in a real browser.
+   a battery of malformed lines. `tests/hardening_audit.js` is the bug-hunt regression suite:
+   ten defects (see `BUGS_AUDIT_REPORT.md`) each pinned by an assertion that fails on the code
+   as it was, plus a seeded 40-battle fuzz over the real pipeline asserting the solver's
+   invariants (finite scores, confidences summing to 100, determinism, legal actions).
+   Nothing here is verified in a real browser.

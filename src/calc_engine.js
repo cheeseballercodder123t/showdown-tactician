@@ -404,14 +404,18 @@
         return [d.species, d.item, d.ability, d.nature, d.level, d.status, d.hpPercent,
           d.alliesFainted, d.paradoxBoosted ? 1 : 0,
           d.evs.hp, d.evs.atk, d.evs.def, d.evs.spa, d.evs.spd, d.evs.spe,
-          d.ivs.hp, d.ivs.spe,
+          d.ivs.hp, d.ivs.atk, d.ivs.def, d.ivs.spa, d.ivs.spd, d.ivs.spe,
           d.boosts.atk, d.boosts.def, d.boosts.spa, d.boosts.spd, d.boosts.spe].join(',');
       };
+      // opts.ability / opts.item are part of the key because they switch a Max Move's typing
+      // and its ability/item interactions (see _buildMove); with them missing a cached roll
+      // was reused across two different assumptions.
       const extra = [opts.isCrit ? 1 : 0, opts.hits || 0, opts.timesUsed || 0,
         opts.useZ ? 1 : 0, opts.useMax ? 1 : 0,
         opts.attackerHP === undefined ? '' : opts.attackerHP,
         opts.defenderHP === undefined ? '' : opts.defenderHP,
-        opts.weather || '', opts.terrain || ''].join(',');
+        opts.weather || '', opts.terrain || '',
+        opts.ability || '', opts.item || ''].join(',');
       return (this.turnKey === null ? '' : this.turnKey + '#') +
         monSig(A) + '>' + monSig(D) + '>' + moveName + '>' + fieldSig + '>' + extra;
     }

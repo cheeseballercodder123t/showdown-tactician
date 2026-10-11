@@ -230,20 +230,64 @@
         '% KO from ' + (best.move || 'their attack') + ' before you act.');
     }
 
+    /**
+     * The item a body is really holding right now: an observation first, then the set
+     * hypothesis, and null once the log has taken the item away. Returning `undefined` is not
+     * a neutral default — U.computeSpeed treats a *defined* option as authoritative — so the
+     * old `item: mon.currentBattleItem || mon.confirmedItem` silently erased our own Choice
+     * Scarf: neither field is ever set on a paste-registered mon, which carries `mon.item`.
+     */
+    _itemOf(mon) {
+      if (!mon) return null;
+      if (mon.currentBattleItem) return mon.currentBattleItem;
+      if (mon.confirmedItem) return mon.confirmedItem;
+      if (mon.itemRemoved || mon.itemless || mon.itemConsumed) return null;
+      if (mon.item) return mon.item;
+      if (mon.liveSet && mon.liveSet.item) return mon.liveSet.item;
+      return null;
+    }
+
+    _abilityOf(mon) {
+      if (!mon) return '';
+      if (mon.revealedAbility) return mon.revealedAbility;
+      if (mon.ability) return mon.ability;
+      if (mon.liveSet && mon.liveSet.ability) return mon.liveSet.ability;
+      if (mon.possibleAbilities && mon.possibleAbilities.length) return mon.possibleAbilities[0];
+      return '';
+    }
+
+    /**
+     * Absolute Speed of both bodies INCLUDING the field context. The comparison used to see
+     * neither our item/ability (see _itemOf) nor the weather/terrain/Tailwind that the state
+     * carries, so Swift Swim / Chlorophyll / Sand Rush / Slush Rush / Surge Surfer and
+     * Tailwind were invisible to VETO4.
+     */
     _opponentMovesFirst(state, my, opp) {
-      const tr = !!(state.field && state.field.trickRoom);
-      const moveId = U.toID(null);
+      const field = (state && state.field) || {};
+      const tr = !!field.trickRoom;
+      const side = (state && state.mySide) || 'p1';
+      const oppSide = side === 'p1' ? 'p2' : 'p1';
       const mySpeed = U.computeSpeed(my, {
-        item: my.currentBattleItem || my.confirmedItem,
-        ability: my.revealedAbility,
+        item: this._itemOf(my),
+        ability: this._abilityOf(my),
         boosts: my.boosts,
-        paradoxSpeedBoost: !!my.boosterActive
+        boostStage: (my.boosts && my.boosts.spe) || 0,
+        weather: field.weather || '',
+        terrain: field.terrain || '',
+        tailwind: !!(field.tailwind && field.tailwind[side]),
+        paradoxSpeedBoost: !!my.boosterActive,
+        unburden: !!my.unburden
       }).effective;
       const oppSpeed = U.computeSpeed(opp, {
-        item: opp.currentBattleItem || opp.confirmedItem || (opp.liveSet && opp.liveSet.item),
-        ability: opp.revealedAbility || (opp.liveSet && opp.liveSet.ability),
+        item: this._itemOf(opp),
+        ability: this._abilityOf(opp),
         boosts: opp.boosts,
-        paradoxSpeedBoost: !!opp.boosterActive
+        boostStage: (opp.boosts && opp.boosts.spe) || 0,
+        weather: field.weather || '',
+        terrain: field.terrain || '',
+        tailwind: !!(field.tailwind && field.tailwind[oppSide]),
+        paradoxSpeedBoost: !!opp.boosterActive,
+        unburden: !!opp.unburden
       }).effective;
       if (tr) return oppSpeed < mySpeed;      // slower acts first
       return oppSpeed > mySpeed;

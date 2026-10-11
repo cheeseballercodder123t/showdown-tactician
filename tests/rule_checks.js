@@ -165,9 +165,18 @@ const FEED = function (b, lines) { b.parser.feedAll(lines.join('\n')); };
   ok('speed: pool published and every survivor can reach the floor',
     res.pruned === true && lando.candidateSets.length > 0 && lando.candidateSets.every(function (s) { return U.maxSpeedForSet(s) >= 300; }),
     JSON.stringify(lando.candidateSets.map(function (s) { return [s.id, U.maxSpeedForSet(s)]; })));
-  ok('speed: no Choice Scarf can survive a 700 floor for Landorus', (function () {
+  // UPDATED by the bug-hunting sweep (see BUGS_AUDIT_REPORT.md, B9). The old form asserted
+  // `candidateSets.every(s => maxSpeedForSet(s) >= 700)`, which is VACUOUSLY TRUE on an EMPTY
+  // pool — so it passed exactly while the unsatisfiable floor was wiping the pool out (liveSet
+  // null, sampler falling back to the raw database). No Landorus set can reach 700, so the
+  // contract is now: the pool stays non-empty and holds the CLOSEST candidates, all below the
+  // floor, bounded by the documented fallback size.
+  ok('speed: an impossible 700 floor keeps the closest sets instead of emptying the pool', (function () {
     const res2 = b.pruner.handleSpeedFloorEvent({ side: 'p2', species: 'Landorus-Therian', value: 700, reason: 'test' }, b.st);
-    return lando.speedFloor === 700 && lando.candidateSets.every(function (s) { return U.maxSpeedForSet(s) >= 700; });
+    return lando.speedFloor === 700 && lando.candidateSets.length > 0 &&
+      lando.candidateSets.length <= 4 &&
+      lando.candidateSets.every(function (s) { return U.maxSpeedForSet(s) < 700; }) &&
+      !!lando.liveSet;
   })());
 }
 

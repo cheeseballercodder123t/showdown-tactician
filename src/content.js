@@ -215,11 +215,20 @@
       if (this.parser && typeof this.state.isOpponentSpeedAtLeast === 'function') {
         const my = state.active && state.active.my;
         if (my && this.parser) {
+          const myField = state.field || {};
           this.parser.speedHint = {
+            // Same resolution order the veto layer uses for the same reason: an item or
+            // ability we actually hold must not vanish just because the *observed* fields
+            // (currentBattleItem / confirmedItem / revealedAbility) were never populated —
+            // a paste-registered mon only carries `mon.item` / `mon.ability`.
             mySpeed: U.computeSpeed(my, {
-              item: my.currentBattleItem || my.confirmedItem || (my.liveSet && my.liveSet.item),
-              ability: my.revealedAbility || (my.liveSet && my.liveSet.ability),
-              boosts: my.boosts
+              item: my.currentBattleItem || my.confirmedItem || my.item || (my.liveSet && my.liveSet.item),
+              ability: my.revealedAbility || my.ability || (my.liveSet && my.liveSet.ability),
+              boosts: my.boosts,
+              boostStage: (my.boosts && my.boosts.spe) || 0,
+              weather: myField.weather || '',
+              terrain: myField.terrain || '',
+              tailwind: !!(myField.tailwind && myField.tailwind[state.mySide || 'p1'])
             }).effective,
             mySpecies: my.species
           };

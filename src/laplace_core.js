@@ -430,10 +430,21 @@
       }, this);
 
       const live = ranked.filter(function (r) { return !r.isVetoed; });
-      const T = typeof opts.temperature === 'number' ? opts.temperature : this.temperature;
+      let T = typeof opts.temperature === 'number' ? opts.temperature : this.temperature;
+      if (!(T > 0)) T = this.temperature > 0 ? this.temperature : 1;
+      // Numerically stable softmax: shift every live score by the best one before the
+      // exponential. Scores legitimately reach ~1400 (lethal bonus 260 + the evaluator's
+      // +-1000 bound), so exp(score / T) overflows to Infinity for any T below ~1.7 and the
+      // ratio Infinity / Infinity came out as NaN for every line (and NaN in the sort
+      // comparator). The shift cannot change the relative weights,
+      // exp((s - max) / T) / sum == exp(s / T) / sum, it only keeps the numerator in range.
+      let maxScore = -Infinity;
+      for (let i = 0; i < live.length; i++) {
+        if (live[i].score > maxScore) maxScore = live[i].score;
+      }
       let denom = 0;
       for (let i = 0; i < live.length; i++) {
-        live[i]._exp = Math.exp(live[i].score / T);
+        live[i]._exp = Math.exp((live[i].score - maxScore) / T);
         denom += live[i]._exp;
       }
       for (let i = 0; i < ranked.length; i++) {

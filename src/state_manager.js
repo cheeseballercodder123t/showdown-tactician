@@ -21,6 +21,13 @@
   // fallback used when config.js was not loaded.
   const cfg = ST.configGet || function (path, fallback) { return fallback; };
   const MAX_ACTIVE_STINTS = cfg('state.maxActiveStints', 8);
+  // Multi-forme names a base-species lookup is allowed to resolve to (`Abomasnow` ->
+  // `Abomasnow-Mega`). Everything else must match exactly: `Ursaluna` must never resolve to
+  // `Ursaluna-Bloodmoon` just because one name is a prefix of the other.
+  const FORME_SUFFIX_RE = /(mega[xy]?|primal)$/;
+  // Forced pseudo-moves: no PP, no item, never on a set. They must not count as "a second
+  // distinct move in this stint" for the Choice-lock deduction.
+  const FORCED_MOVE_IDS = new Set(['struggle']);
 
   const VOLATILE_KEYS = [
     ['Substitute', 'substitute'],
@@ -381,15 +388,28 @@
       return stale;
     }
 
+    /**
+     * Resolve a species name to a team member. A base name may legitimately find its own Mega
+     * forme (`Abomasnow` for `Abomasnow-Mega`), so the forme suffix is stripped from BOTH
+     * sides before comparing. An unrelated forme must NOT match: `Ursaluna` used to prefix-
+     * match `Ursaluna-Bloodmoon` (and `Zapdos` -> `Zapdos-Galar`, `Porygon` -> `Porygon2`,
+     * `Raichu` -> `Raichu-Alola`, `Kyurem` -> `Kyurem-Black`), landing protocol events on the
+     * wrong MonState and even making _onSwitch skip creating the real mon.
+     */
     _findBySpecies(side, species) {
       const team = this._teamFor(side);
       const id = toID(species);
+      if (!id) return null;
+      const base = id.replace(FORME_SUFFIX_RE, '');
       let best = null;
       for (let i = 0; i < team.length; i++) {
         const m = team[i];
         if (!m) continue;
         if (m.id === id) return m;
-        if (!best && toID(m.species).indexOf(id.replace(/mega[xy]?$/, '')) === 0 && id) best = m;
+        if (best) continue;
+        const mid = toID(m.species) || m.id;
+        if (mid === id) { best = m; continue; }
+        if (base && mid.replace(FORME_SUFFIX_RE, '') === base) best = m;
       }
       return best;
     }
@@ -809,6 +829,12 @@
         mon.fainted = true;
         mon.hp = 0;
         mon.hpPercent = 0;
+      } else if (parsed.hp !== null && parsed.hp > 0 && mon.fainted) {
+        // A heal that lands on a fainted body is a Revival Blessing (legal in this format):
+        // HP came back, so the faint latch has to clear. Without this the mon stayed
+        // `fainted` at 52% HP — an illegal state that poisons the alive counts, the bench and
+        // every _stampFallen bound.
+        mon.fainted = false;
       }
       if (mon.status === 'tox') mon.toxicCounter = Math.max(1, mon.statusTurns + 1);
     }
@@ -828,8 +854,10 @@
       // new active mon we have never seen (e.g. missed switch line)
       if (!mon.isActive) { mon.isActive = true; this._setActive(side, mon); }
 
-      // stint tracking (rule 3)
-      if (mon.activeStintMoves.indexOf(moveName) === -1 && moveName) {
+      // stint tracking (rule 3). Struggle is a forced pseudo-move, so it must not enter the
+      // stint: otherwise one real move plus Struggle reads as "2 distinct moves" and the
+      // pruner permanently blacklists every Choice item for that mon.
+      if (moveName && !FORCED_MOVE_IDS.has(moveId) && mon.activeStintMoves.indexOf(moveName) === -1) {
         mon.activeStintMoves.push(moveName);
         if (mon.activeStintMoves.length > MAX_ACTIVE_STINTS) mon.activeStintMoves.shift();
       }

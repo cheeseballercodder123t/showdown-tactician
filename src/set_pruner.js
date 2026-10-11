@@ -21,6 +21,7 @@
   const MAX_REASONS = cfg('pruner.maxReasons', 24);
   const MAX_EVIDENCE = cfg('pruner.maxEvidence', 12);
   const SPEED_MAX_CEILING = cfg('pruner.speedMaxCeiling', 1012); // Regieleki @ Choice Scarf, L100, +Spe, 252 EV
+  const FLOOR_KEEP = cfg('pruner.speedFloorFallbackKeep', 4);    // kept when no set reaches the floor
 
   const CHOICE_REASON = 'Choice lock: 2+ distinct moves in one stint => no Choice item';
   const MEGA_LOCK_REASON = 'Format lock: opponent already Mega Evolved => no Mega Stone';
@@ -39,6 +40,25 @@
     }
 
     /* ------------------------------------------------------------ internals */
+
+    /**
+     * Candidate pools are keyed per Pokémon INSTANCE, not per species. Our Kingambit and the
+     * opponent's are two different monsters: a deduction proven about theirs (or a Speed floor)
+     * must never rewrite our candidate space, and vice versa. The key uses the team side plus
+     * the mon's own index (or its slot when it has no index), and falls back to the plain
+     * species id for the bare fixture objects the unit tests build, where a species is only
+     * ever seen once.
+     */
+    _poolKey(mon) {
+      if (!mon) return '';
+      const base = mon.id || U.toID(mon.species);
+      if (!base) return '';
+      const side = mon.side || '';
+      const slot = (typeof mon.index === 'number') ? mon.index
+        : (mon.slot === undefined || mon.slot === null ? '' : mon.slot);
+      if (!side && slot === '') return base;
+      return side + '|' + slot + '|' + base;
+    }
 
     _reasons(mon) {
       if (!Array.isArray(mon.prunedReasons)) mon.prunedReasons = [];
@@ -104,8 +124,9 @@
     /** The pool we filter from: caller-seeded sets win, otherwise the shared database. */
     _seedPool(mon) {
       if (!mon) return [];
-      const id = mon.id || U.toID(mon.species);
-      if (this._pristine[id] && this._pristine[id].length) return this._pristine[id];
+      const key = this._poolKey(mon);
+      if (!key) return [];
+      if (this._pristine[key] && this._pristine[key].length) return this._pristine[key];
       let source = null;
       if (Array.isArray(mon.candidateSets) && mon.candidateSets.length) {
         source = mon.candidateSets;
@@ -127,7 +148,7 @@
         if (copy && copy.species && !copy.id) copy.id = U.toID(copy.species) + '-' + i;
         pool.push(copy);
       }
-      this._pristine[id] = pool;
+      this._pristine[key] = pool;
       return pool;
     }
 
@@ -346,10 +367,10 @@
     }
 
     _poolFor(mon) {
-      const id = mon && (mon.id || U.toID(mon.species));
-      if (!id) return [];
-      if (!this._pristine[id] || !this._pristine[id].length) this._seedPool(mon);
-      return this._pristine[id] || [];
+      const key = this._poolKey(mon);
+      if (!key) return [];
+      if (!this._pristine[key] || !this._pristine[key].length) this._seedPool(mon);
+      return this._pristine[key] || [];
     }
 
     /**
@@ -374,15 +395,29 @@
         }
       }
       if (dropped) {
-        const id = mon.id || U.toID(mon.species);
-        this._pristine[id] = survivors;
+        // An unsatisfiable floor (a mis-parsed observation, our own Tailwind / Scarf maths) must
+        // never publish an EMPTY pool: liveSet would become null and _poolFor would hand the
+        // sampler the unfiltered database, silently undoing every deduction. Keep the sets that
+        // come closest to the floor instead - a bounded, documented fallback.
+        let published = survivors;
+        if (!published.length) {
+          published = pool.slice().sort(function (a, b) {
+            return (b.maxSpeed || 0) - (a.maxSpeed || 0);
+          }).slice(0, Math.min(FLOOR_KEEP, pool.length));
+          this._addReason(mon, 'Speed floor ' + floor + ': no candidate can reach it; keeping the ' +
+            published.length + ' fastest candidate' + (published.length === 1 ? '' : 's'));
+        }
+        const key = this._poolKey(mon);
+        if (key) this._pristine[key] = published;
         // Publish: the live pool must only keep sets that can actually reach the floor,
         // otherwise the sampler keeps drawing speeds the battle log already disproved.
-        mon.candidateSets = survivors.slice();
+        mon.candidateSets = published.slice();
         const best = this.bestSet(mon);
         if (best) mon.liveSet = best;
-        this._addReason(mon, 'Speed floor ' + floor + ': eliminated ' + dropped +
-          ' set' + (dropped === 1 ? '' : 's') + ' that cannot outspeed (max Speed < ' + floor + ')');
+        if (survivors.length) {
+          this._addReason(mon, 'Speed floor ' + floor + ': eliminated ' + dropped +
+            ' set' + (dropped === 1 ? '' : 's') + ' that cannot outspeed (max Speed < ' + floor + ')');
+        }
       }
       // If exactly one set survives, the true Speed is known precisely.
       if (survivors.length === 1) {
