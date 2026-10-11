@@ -5,7 +5,7 @@
  *
  * Run me with:
  *   node tools/fit_weights.js --input training_data.json [--lambda 0.5] [--holdout 5] \
- *        [--max-iter 25] [--out lib/trained-weights.json]
+ *        [--max-iter 25] [--crosses cross-candidates.json] [--out lib/trained-weights.json]
  *
  * WHY NOT JUST TRUST THE HAND-TUNED WEIGHTS
  *   src/config.js's evaluator.weights were picked by hand. They are not wrong, but nobody can
@@ -25,6 +25,19 @@
  *     rows can pin a coefficient of any size — so an adoption has to decide what to do with
  *     these dims by name instead of inheriting them silently.
  *   It refuses a single-class dataset or a ragged/mismatched matrix instead of returning NaN.
+ *
+ * CROSS FEATURES (--crosses)
+ *   `--crosses` appends interaction terms to every row: for each [a,b] pair, x[a] * x[b], stored
+ *   f32-rounded the way a Float32Array store rounds (see appendCrosses) — the convention any
+ *   future engine cross block would have to use, since a fit and the engine must agree bit for
+ *   bit. Nothing in the engine builds one today; the study below is why. The pairs file is
+ *   usually the report tools/select_cross_features.js writes, which this flag reads directly;
+ *   the fit then has `features = 128 + pairs.length`, the extra coefficients land in
+ *   `weightsCross`, `crossPairs` and `spec.cross` (copied verbatim — config.js has no folding for
+ *   them). Measured on the first cross run (2026-10-11, the 3,712-battle corpus): the selected 16
+ *   did NOT transfer — 0.7005 projected on the battle-level hold-out against the adopted vector's
+ *   0.7049 — so none was adopted. The flag stays so the next corpus can be tested without new
+ *   code; never adopt a cross set on the training-half gain alone, refit and compare the hold-out.
  *
  * THE MAPPING (the part that silently reshapes the evaluator if it is wrong)
  *   evaluated score = sum over the 128 dims of (vector[i] * weight[i]), where the weights are
@@ -331,11 +344,16 @@ function splitIndices(n, k, groups) {
 /**
  * The four group substitution described in the file header. Direct slices are copies; the four
  * asymmetric groups (hp, fainted, threat, threatActive) are the means/differences that the sign
- * folding in DenseStateEvaluator.defaultWeights() implies. Do not "simplify" this.
+ * folding in DenseStateEvaluator.defaultWeights() implies. When crosses were fitted, the base
+ * mapping above is unchanged and the extra coefficients become `spec.cross` verbatim. Do not
+ * "simplify" this.
  */
-function mapToSpec(coef) {
-  if (!coef || coef.length !== DIM) {
-    throw new Error('mapToSpec expects ' + DIM + ' coefficients, got ' + (coef ? coef.length : 'none'));
+function mapToSpec(coef, pairs) {
+  const crossCount = Array.isArray(pairs) ? pairs.length : 0;
+  if (!coef || coef.length !== DIM + crossCount) {
+    throw new Error('mapToSpec expects ' + (DIM + crossCount) + ' coefficients' +
+      (crossCount ? ' (128 + ' + crossCount + ' crosses)' : '') + ', got ' +
+      (coef ? coef.length : 'none'));
   }
   const slice = function (lo, hi) { return coef.slice(lo, hi); };
   let threatSum = 0, threatN = 0, diagSum = 0;
@@ -345,7 +363,7 @@ function mapToSpec(coef) {
       if (i === j) diagSum += v; else { threatSum += v; threatN++; }
     }
   }
-  return {
+  const spec = {
     hp: meanOf(slice(0, 6)) - meanOf(slice(6, 12)),
     fainted: meanOf(slice(18, 24)) - meanOf(slice(12, 18)),
     status: slice(24, 36),
@@ -357,6 +375,10 @@ function mapToSpec(coef) {
     threatActive: diagSum / 6,
     macro: slice(112, 128)
   };
+  // A cross coefficient cannot be folded into any config group: it is copied verbatim, and the
+  // group is only present when crosses were fitted (a 128-dim artifact stays exactly as it was).
+  if (crossCount) spec.cross = slice(DIM, DIM + crossCount);
+  return spec;
 }
 
 function round(numbers, dp) {
@@ -376,7 +398,8 @@ function specSnippet(spec) {
     '    items: ' + JSON.stringify(round(spec.items)) + ',\n' +
     '    threat: ' + JSON.stringify(round([spec.threat])[0]) +
     ', threatActive: ' + JSON.stringify(round([spec.threatActive])[0]) + ',\n' +
-    '    macro: ' + JSON.stringify(round(spec.macro)) + '\n  }\n}';
+    '    macro: ' + JSON.stringify(round(spec.macro)) +
+    (spec.cross ? ',\n    cross: ' + JSON.stringify(round(spec.cross)) : '') + '\n  }\n}';
 }
 
 function rowsOf(payload) {
@@ -384,6 +407,51 @@ function rowsOf(payload) {
   if (payload && Array.isArray(payload.rows)) return payload.rows;
   if (payload && Array.isArray(payload.data)) return payload.data;
   throw new Error('fit_weights: input must be an array of {x,y} rows, or {rows:[...]} / {data:[...]}');
+}
+
+/**
+ * appendCrosses(x, pairs) -> a NEW row: the base features followed by x[a] * x[b] per pair,
+ * f32-rounded the way a Float32Array store rounds (v[a] * v[b] assigned into one), which is the
+ * convention a future engine cross block must match: the fit and the engine may not disagree on
+ * a single bit of a cross term.
+ */
+function appendCrosses(x, pairs) {
+  if (!Array.isArray(pairs) || !pairs.length) return x;
+  const out = new Array(x.length + pairs.length);
+  for (let i = 0; i < x.length; i++) out[i] = x[i];
+  for (let k = 0; k < pairs.length; k++) {
+    const pair = pairs[k];
+    out[x.length + k] = Math.fround(x[pair[0]] * x[pair[1]]);
+  }
+  return out;
+}
+
+/** Every pair must name two integer indices inside the base layout. */
+function validatePairs(pairs, base) {
+  pairs.forEach(function (p, i) {
+    if (!Array.isArray(p) || p.length !== 2 ||
+        typeof p[0] !== 'number' || typeof p[1] !== 'number' ||
+        p[0] % 1 !== 0 || p[1] % 1 !== 0 ||
+        p[0] < 0 || p[1] < 0 || p[0] >= base || p[1] >= base) {
+      throw new Error('fit_weights: cross pair ' + i + ' is not two integer indices inside 0..' + (base - 1));
+    }
+  });
+  return pairs;
+}
+
+/**
+ * Read a --crosses file: a bare [[a,b],...] list, a {pairs:[[a,b],...]} payload, or a
+ * select_cross_features report (`picked` entries carry `a`/`b` plus their screening stats).
+ */
+function pairsOf(payload, baseDim) {
+  const base = baseDim || DIM;
+  let pairs;
+  if (Array.isArray(payload)) pairs = payload.map(function (p) { return [p[0], p[1]]; });
+  else if (payload && Array.isArray(payload.pairs)) pairs = payload.pairs.map(function (p) { return [p[0], p[1]]; });
+  else if (payload && Array.isArray(payload.picked)) pairs = payload.picked.map(function (p) { return [p.a, p.b]; });
+  else throw new Error('fit_weights: --crosses must carry [[a,b],...], {pairs:[...]} or a ' +
+    'select_cross_features report with `picked`');
+  return validatePairs(pairs, base);
 }
 
 /** Turn a dataset payload into a validated { X, y } pair; refuses anything ragged or non-finite. */
@@ -419,6 +487,9 @@ function matrixOf(payload, dim) {
 function run(payload, options) {
   const opts = options || {};
   const dim = opts.dim || DIM;
+  const crosses = Array.isArray(opts.crosses) && opts.crosses.length
+    ? validatePairs(opts.crosses.map(function (p) { return [p[0], p[1]]; }), dim)
+    : [];
   const lambda = typeof opts.lambda === 'number' && opts.lambda >= 0 ? opts.lambda : 0.5;
   const data = matrixOf(payload, dim);
   // The payload's provenance carries one entry per battle with its row count, in row order, so the
@@ -436,9 +507,9 @@ function run(payload, options) {
   const usableGroups = (groupRows > 0 && groupRows === data.X.length) ? groups : null;
   const split = splitIndices(data.X.length, opts.holdout, usableGroups);
 
-  const trainX = split.train.map(function (i) { return data.X[i]; });
+  const trainX = split.train.map(function (i) { return appendCrosses(data.X[i], crosses); });
   const trainY = split.train.map(function (i) { return data.y[i]; });
-  const testX = split.test.map(function (i) { return data.X[i]; });
+  const testX = split.test.map(function (i) { return appendCrosses(data.X[i], crosses); });
   const testY = split.test.map(function (i) { return data.y[i]; });
   if (!testX.length) throw new Error('fit_weights: the hold-out split left no test rows (need at least 2 samples)');
 
@@ -452,21 +523,23 @@ function run(payload, options) {
   const score = function (X) { return X.map(function (x) { return scoreOf(model, x); }); };
   const aucTrain = auc(score(trainX), trainY);
   const aucTest = auc(score(testX), testY);
-  const spec = dim === DIM ? mapToSpec(model.coef) : null;
+  const spec = dim === DIM ? mapToSpec(model.coef, crosses) : null;
 
-  // Per-dim support: how many rows carried a non-zero value, and how many of those were
-  // positives. The counts are what makes a huge coefficient reviewable — a dim with five
-  // non-zero rows cannot identify anything, however small its p-value looks.
+  // Per-dim support, over the features actually fitted (the cross dims included): how many rows
+  // carried a non-zero value, and how many of those were positives. The counts are what makes a
+  // huge coefficient reviewable — a dim with five non-zero rows cannot identify anything.
   const lowSupport = [];
-  for (let j = 0; j < data.X[0].length; j++) {
+  const allX = trainX.concat(testX);
+  const allY = trainY.concat(testY);
+  for (let j = 0; j < allX[0].length; j++) {
     let nonzero = 0, positives = 0;
-    for (let i = 0; i < data.X.length; i++) {
-      if (data.X[i][j] !== 0) { nonzero++; if (data.y[i]) positives++; }
+    for (let i = 0; i < allX.length; i++) {
+      if (allX[i][j] !== 0) { nonzero++; if (allY[i]) positives++; }
     }
     if (nonzero < LOW_SUPPORT_ROWS) lowSupport.push({ dim: j, nonzero: nonzero, positives: positives });
   }
 
-  return {
+  const report = {
     lambda: lambda,
     iterations: model.iterations,
     converged: model.converged,
@@ -482,24 +555,31 @@ function run(payload, options) {
     lowSupportThreshold: LOW_SUPPORT_ROWS,
     lowSupport: lowSupport,
     positives: data.y.reduce(function (s, v) { return s + v; }, 0),
-    features: dim,
+    features: dim + crosses.length,
     aucTrain: aucTrain,
     aucTest: aucTest,
     intercept: model.intercept,
-    weights128: model.coef,
+    weights128: model.coef.slice(0, DIM),
     weightsFull: [model.intercept].concat(model.coef),
     spec: spec
   };
+  // Cross fields only exist when crosses were fitted, so a 128-dim artifact stays byte-identical.
+  if (crosses.length) {
+    report.crossPairs = crosses;
+    report.weightsCross = model.coef.slice(DIM);
+  }
+  return report;
 }
 
 /* ---------------------------------------------------------------------------- CLI */
 
 function parseArgs(argv) {
-  const out = { input: null, out: 'lib/trained-weights.json', lambda: 0.5, holdout: 5, maxIter: 25, quiet: false };
+  const out = { input: null, out: 'lib/trained-weights.json', lambda: 0.5, holdout: 5, maxIter: 25, quiet: false, crosses: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--input' || a === '-i') out.input = argv[++i];
     else if (a === '--out' || a === '-o') out.out = argv[++i];
+    else if (a === '--crosses' || a === '-x') out.crosses = argv[++i];
     else if (a === '--lambda') out.lambda = parseFloat(argv[++i]);
     else if (a === '--holdout') out.holdout = parseInt(argv[++i], 10);
     else if (a === '--max-iter') out.maxIter = parseInt(argv[++i], 10);
@@ -513,13 +593,17 @@ function parseArgs(argv) {
 function main(argv) {
   const opts = parseArgs(argv || process.argv.slice(2));
   if (opts.help) {
-    console.log('usage: node tools/fit_weights.js --input training_data.json [--lambda 0.5] ' +
-      '[--holdout 5] [--max-iter 25] [--out lib/trained-weights.json]');
+    console.log('usage: node tools/fit_weights.js --input training_data.json [--crosses crosses.json] ' +
+      '[--lambda 0.5] [--holdout 5] [--max-iter 25] [--out lib/trained-weights.json]');
     return 0;
   }
   if (!opts.input) throw new Error('--input is required');
   const payload = JSON.parse(fs.readFileSync(path.resolve(ROOT, opts.input), 'utf8'));
-  const report = run(payload, { lambda: opts.lambda, holdout: opts.holdout, maxIter: opts.maxIter });
+  // A --crosses file (a bare pair list, {pairs}, or a select_cross_features report) switches the
+  // fit to dim + N features and the report to one that carries weightsCross. Absent, nothing about
+  // the 128-dim artifact changes.
+  const crosses = opts.crosses ? pairsOf(JSON.parse(fs.readFileSync(path.resolve(ROOT, opts.crosses), 'utf8'))) : null;
+  const report = run(payload, { lambda: opts.lambda, holdout: opts.holdout, maxIter: opts.maxIter, crosses: crosses });
   const target = path.resolve(ROOT, opts.out);
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, JSON.stringify(report, null, 2) + '\n');
@@ -528,6 +612,10 @@ function main(argv) {
       report.testSamples + ' test), positives ' + report.positives + ', lambda ' + report.lambda +
       ', iterations ' + report.iterations + (report.converged ? ' (converged)' : ' (hit the cap)'));
     console.log('  AUC train ' + fmt(report.aucTrain) + ' | AUC test ' + fmt(report.aucTest));
+    if (report.crossPairs) {
+      console.log('  features ' + report.features + ' = 128 base + ' + report.crossPairs.length + ' crosses: ' +
+        report.crossPairs.map(function (p) { return p[0] + 'x' + p[1]; }).join(' '));
+    }
     console.log('  low-support dims (<' + LOW_SUPPORT_ROWS + ' non-zero rows): ' +
       (report.lowSupport.length
         ? report.lowSupport.map(function (e) { return e.dim + '(' + e.nonzero + ')'; }).join(' ')
@@ -546,7 +634,8 @@ module.exports = {
   DIM: DIM, sigmoid: sigmoid, meanOf: meanOf, solveLinearSystem: solveLinearSystem,
   columnStats: columnStats, fitLogistic: fitLogistic, scoreOf: scoreOf, auc: auc,
   splitIndices: splitIndices, mapToSpec: mapToSpec, specSnippet: specSnippet, round: round,
-  rowsOf: rowsOf, matrixOf: matrixOf, run: run, parseArgs: parseArgs, main: main
+  rowsOf: rowsOf, matrixOf: matrixOf, appendCrosses: appendCrosses, validatePairs: validatePairs,
+  pairsOf: pairsOf, run: run, parseArgs: parseArgs, main: main
 };
 
 if (require.main === module) {

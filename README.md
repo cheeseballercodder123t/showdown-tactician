@@ -129,7 +129,10 @@ tools/fetch_replays.js    a ladder search -> the replay corpus (the only step of
                           one file, best-rated first
 tools/extract_training_data.js  a replay corpus -> 128D rows labelled by the eventual winner
 tools/fit_weights.js       IRLS logistic regression over those rows -> weights + a hold-out AUC
-                           taken over whole battles, not over turns of one battle
+                           taken over whole battles, not over turns of one battle; `--crosses`
+                           appends interaction terms to the fitted matrix (measured, not adopted)
+tools/select_cross_features.js  screens products of the aggregate dims on the TRAINING half and
+                           writes the candidate list `--crosses` reads — a selector, not a verdict
 .github/workflows/chaos-sync.yml  monthly cron: download the dump, resync the overlay, commit it
 ARCHITECTURE.md            frozen interface contract every module binds to
 ```
@@ -149,6 +152,7 @@ node tests/hardening_audit.js #  48 checks: the bug-hunt regressions + a 40-batt
 node tests/upgrades_check.js  # 118 checks: the mixed-strategy solve, the vetoes, the clock, damage evidence
 node tests/chaos_sync_check.js # 70 checks: the chaos sync + the usage overlay (fixtures only, no network)
 node tests/weights_check.js   # 233 checks: the downloader + the extractor + the fitter + the config adoption
+node tests/cross_check.js     #  79 checks: the cross screening, the --crosses refit, and the refusal to adopt
 node tests/hud_check.js       # 175 checks: the seven HUD extras (stub DOM), the bench-tap sandbox end to end + their engine data
 node tests/discrete_check.js  # 110 checks: the 16 discrete rolls, the exact KO count, EV pinning, residual order
 node tests/scout_check.js     #  78 checks: the scouting tool, the overlay, the pruner's re-weighting
@@ -165,9 +169,11 @@ mixed-strategy solver against matrices whose equilibrium is known analytically, 
 into `evaluateTurn`, the three newer vetoes, the deliberation clock (driven with injected
 timestamps, so it is deterministic), and the reverse-damage deduction. The last two suites cover
 the offline tooling: `tests/chaos_sync_check.js` runs the chaos-sync generator and the usage
-re-weighting against fixtures, and `tests/weights_check.js` proves the corpus downloader labels a
+re-weighting against fixtures, `tests/weights_check.js` proves the corpus downloader labels a
 replay only from the log's own `|win|` line and that the fitter recovers a planted weight vector
-from synthetic rows with test AUC ≥ 0.8.
+from synthetic rows with test AUC ≥ 0.8, and `tests/cross_check.js` proves the cross-feature
+screen recovers a planted interaction from synthetic battles, refuses the sparse candidates its
+share floor exists for, and left no residue in the engine.
 
 The second one bypasses the fixtures and drives the deduction engine itself with battle lines:
 Boots confirmed disproved and never credited to a Flying switch-in, the Choice lock from two
@@ -400,6 +406,23 @@ the side table the log declares, and skipping rather than guessing when it canno
 winner; and `tools/fit_weights.js` fits them by IRLS with an L2 ridge, reports a train AUC-ROC and
 a hold-out AUC-ROC taken over whole battles, prints a ready `evaluator.weights` snippet, and lists
 every dim the corpus barely observed (`lowSupport`) so an adoption has to decide about each by name.
+
+The last question asked of that pipeline was whether it pays to add interaction terms. A single
+dot product cannot say "Kingambit is only worth this once its allies have fainted and no
+Fighting-type is left", and a product of two dims the evaluator already measures can — so
+`tools/select_cross_features.js` screens every pair of the aggregate and active-mon dims (squares
+included; the per-slot HP/faint dims and the pairwise threat matrix are excluded, because "slot 1
+x slot 4" cannot transfer between battles) on the **training half only**, and `--crosses` refits
+with the winners appended. **On this corpus the answer was no.** The screen's 16 picks (Trick
+Room turns x hazard differential, the opponent's paralysis count x their spent recovery, my sleep
+x my spent recovery, ...) scored **0.7005** projected on the battle-level hold-out against the
+adopted vector's **0.7049**, and the raw 144-coefficient fit scored **0.6922** — worse, which is
+what selecting the top of a few thousand noisy candidates on the training half looks like. The
+best four-cross subset did post **0.7061**, but its +0.0012 did not survive a paired bootstrap over
+battles (median **0.0000**, 95 % CI **[-0.0047, +0.0015]**, ahead in **41 %** of resamples). So no
+cross block was adopted: `--crosses` and the selector stay so the next corpus can be tested with
+one command, and the cross path is otherwise inert — a 128-dim fit and the shipped artifact are
+unchanged, which `tests/cross_check.js` pins.
 
 One property of the replay search is worth knowing before pointing the fetcher at it: the rating
 sort on the replay browser is a **server-side** query, not a re-sort of what came back.
@@ -664,8 +687,14 @@ the current turn, so it says which line to click now, not how the stall resolves
   to the battle-level 0.7011 the artifact now reports. The rating-diversity bands are in the
   shipped corpus, but at this size they are worth about +0.002, so they are a cheap hedge rather
   than a measured necessity.
+* The cross-feature experiment is a **negative** result, and a corpus-bound one: products of the
+  128D vector's own dims scored 0.7005 projected against the adopted vector's 0.7049 on the same
+  battle-level hold-out, so nothing was adopted. It leaves hypotheses untested rather than refuted
+  — three-way products, per-dim thresholds, and a small non-linear model such as a 16-neuron MLP
+  over the same 128 inputs are all different bets, and any of them would have to clear the same
+  hold-out and bootstrap gate before it could touch the engine.
 * Nothing here has been verified in a real browser. The parser, state manager, engines and HUD
-  are covered by the fifteen Node suites and stub DOMs; no suite can prove how Showdown's live
+  are covered by the seventeen Node suites and stub DOMs; no suite can prove how Showdown's live
   control bar renders or how the extension behaves on an actual Android device.
 * `tests/hardening_audit.js` is the bug-hunt regression suite: ten defects found by the audit
   (symptoms, root causes, fixes and the verification evidence are in `BUGS_AUDIT_REPORT.md`),
