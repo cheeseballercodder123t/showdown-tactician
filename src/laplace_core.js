@@ -2,7 +2,8 @@
  * The master coordinator (Part 2, Module 13). Recreates the 2231-Elo Laplace loop:
  *   sample K worlds -> enumerate legal actions -> 1-ply simultaneous payoff matrix ->
  *   128D leaf evaluation -> 0.6 avg / 0.4 min blend -> world vote pooling ->
- *   tempo policy mask -> deterministic blunder vetoes -> softmax (T = 35).
+ *   mixed-Nash solve (fictitious play) -> tempo policy mask -> deterministic blunder
+ *   vetoes -> frequency-weighted line (legacy softmax T = 35 when nash is off).
  */
 (function () {
   'use strict';
@@ -18,6 +19,58 @@
     : function (path, fallback) { return fallback; };
 
   const VETO_SCORE = -9999;   // published static contract; the live value is laplace.vetoScore
+  const NASH_ITERATIONS = 2000; // literal fallback for laplace.nash.iterations (see config.js)
+
+  /**
+   * Fictitious play on a 2-player normal-form game (the simultaneous payoff matrix).
+   *
+   * The 0.6*avg + 0.4*min world blend is a PURE-strategy risk heuristic: the engine prints one
+   * line, so a patient opponent can read it. A 4x5..5x9 matrix is small enough to solve for a
+   * mixed equilibrium in microseconds, and those frequencies ARE the unexploitable advice
+   * ("click this 70% of the time, the punish 30%").
+   *
+   * `payoffMatrix[i][j]` is OUR payoff for action i against their action j, so the opponent's
+   * cumulative payoff is its negation (the matrix is treated as zero-sum: our gain is their
+   * loss). Each side then best-responds to the other's empirical history — the classic
+   * Brown-Robinson iteration, which converges to a Nash equilibrium in zero-sum games.
+   *
+   * -> { myStrategy, oppStrategy, rowValues } with probabilities in [0, 1].
+   */
+  function solveNashFictitiousPlay(payoffMatrix, iterations) {
+    const rows = Array.isArray(payoffMatrix) ? payoffMatrix.length : 0;
+    const cols = rows && Array.isArray(payoffMatrix[0]) ? payoffMatrix[0].length : 0;
+    if (!rows || !cols) return { myStrategy: [], oppStrategy: [], rowValues: [] };
+    const iters = Math.max(1, Math.floor(iterations) || 1);
+    const myCount = new Array(rows).fill(0);
+    const oppCount = new Array(cols).fill(0);
+    const myCum = new Array(rows).fill(0);
+    const oppCum = new Array(cols).fill(0);
+    let myAction = 0;
+    let oppAction = 0;
+    for (let t = 0; t < iters; t++) {
+      myCount[myAction]++;
+      oppCount[oppAction]++;
+      for (let i = 0; i < rows; i++) myCum[i] += payoffMatrix[i][oppAction];
+      for (let j = 0; j < cols; j++) oppCum[j] -= payoffMatrix[myAction][j];
+      let bestI = 0;
+      for (let i = 1; i < rows; i++) if (myCum[i] > myCum[bestI]) bestI = i;
+      let bestJ = 0;
+      for (let j = 1; j < cols; j++) if (oppCum[j] > oppCum[bestJ]) bestJ = j;
+      myAction = bestI;
+      oppAction = bestJ;
+    }
+    const myStrategy = myCount.map(function (c) { return c / iters; });
+    const oppStrategy = oppCount.map(function (c) { return c / iters; });
+    // Expected payoff of each of our actions against THEIR equilibrium mix — the number that
+    // says what a line is worth when the opponent also plays unexploitably.
+    const rowValues = [];
+    for (let i = 0; i < rows; i++) {
+      let ev = 0;
+      for (let j = 0; j < cols; j++) ev += oppStrategy[j] * payoffMatrix[i][j];
+      rowValues.push(ev);
+    }
+    return { myStrategy: myStrategy, oppStrategy: oppStrategy, rowValues: rowValues };
+  }
 
   class LaplaceEngine {
     constructor(options) {
@@ -38,6 +91,37 @@
       this.struggleChipPercent = options.struggleChipPercent || cfgGet('laplace.struggleChipPercent', 5);
       // Reward for a payoff where their switch ate our move for free.
       this.switchAteHitBonus = options.switchAteHitBonus || cfgGet('laplace.switchAteHitBonus', 25);
+      // Mixed-strategy solve (same precedence as every other tunable). `enabled: false` restores
+      // the pure risk blend + softmax behaviour exactly.
+      this.nash = Object.assign({
+        enabled: cfgGet('laplace.nash.enabled', true),
+        iterations: cfgGet('laplace.nash.iterations', NASH_ITERATIONS)
+      }, options.nash || {});
+      // Risk-adjusted volatility (ARCHITECTURE §6.5). `enabled: false` restores the raw payoff.
+      this.volatility = Object.assign({
+        enabled: cfgGet('laplace.volatility.enabled', true),
+        accuracyWeight: cfgGet('laplace.volatility.accuracyWeight', 1),
+        fragilityScale: cfgGet('laplace.volatility.fragilityScale', 2.4),
+        lethalMultiplier: cfgGet('laplace.volatility.lethalMultiplier', 3),
+        accuracyFloor: cfgGet('laplace.volatility.accuracyFloor', 100),
+        lethalChargeMaxAccuracy: cfgGet('laplace.volatility.lethalChargeMaxAccuracy', 90)
+      }, options.volatility || {});
+      // PP-stall gauge + format sentinel knobs (ARCHITECTURE §6.4 / §6.6).
+      this.ppStallCfg = Object.assign({
+        enabled: cfgGet('ppStall.enabled', true),
+        watch: cfgGet('ppStall.watch', ['suckerpunch', 'protect', 'substitute']),
+        headline: cfgGet('ppStall.headline', 'suckerpunch'),
+        minPpFraction: cfgGet('ppStall.minPpFraction', 0.2),
+        setupThreatHp: cfgGet('ppStall.setupThreatHp', 80),
+        adviceLabel: cfgGet('ppStall.adviceLabel', 'PP-stall pivot')
+      }, options.ppStall || {});
+      this.sentinelCfg = Object.assign({
+        enabled: cfgGet('sentinel.enabled', true),
+        minBodiesForFreedom: cfgGet('sentinel.minBodiesForFreedom', 1),
+        freedomLabel: cfgGet('sentinel.freedomLabel', 'TACTICAL FREEDOM'),
+        burnedLabel: cfgGet('sentinel.burnedLabel', 'BURNED'),
+        liveLabel: cfgGet('sentinel.liveLabel', 'LIVE')
+      }, options.sentinel || {});
       this.damage = options.damage || (ST.DamageEngine ? new ST.DamageEngine({ gen: 9 }) : null);
       this.evaluator = options.evaluator || (ST.DenseStateEvaluator ? new ST.DenseStateEvaluator() : null);
       this.trickRoom = options.trickRoom || (ST.TrickRoomEngine ? new ST.TrickRoomEngine(this.damage) : null);
@@ -125,7 +209,549 @@
         out.push({ kind: 'switch', name: bench[i].species, moveId: null, targetId: bench[i].species });
       }
       if (!out.length) out.push({ kind: 'move', name: 'Struggle', moveId: 'struggle' });
-      return out.slice(0, this.maxOppActions);
+
+      // Opponent deliberation prior (src/opponent_clock.js): a body that submits its move
+      // essentially the instant we do is not studying the switch screen. When the reading is
+      // confident and fast, their PIVOTS are dropped from the reply space instead of being
+      // kept at equal weight — every payoff, world vote and equilibrium frequency downstream
+      // then reads "they are attacking", which is the whole point of the telemetry. The
+      // fallback matters: a reply space with no moves left over must not become empty.
+      const prior = this._oppSwitchPrior(state);
+      this.lastOppPrior = prior;
+      if (prior.keepSwitchReplies) return out.slice(0, this.maxOppActions);
+      const attacksOnly = out.filter(function (action) { return action.kind !== 'switch'; });
+      return (attacksOnly.length ? attacksOnly : out).slice(0, this.maxOppActions);
+    }
+
+    /**
+     * Read the clock telemetry (state.clock, written by src/content.js from OpponentClock) and
+     * decide whether this turn's opponent reply space keeps their switch lines. No clock, no
+     * snapshot or a disabled clock all mean "no opinion": every reply is kept, exactly as
+     * before the telemetry existed.
+     */
+    _oppSwitchPrior(state) {
+      const none = { label: 'unknown', factor: 1, keepSwitchReplies: true };
+      const clock = state && state.clock;
+      if (!clock || clock.enabled === false) return none;
+      const factor = (typeof clock.switchFactor === 'number' && isFinite(clock.switchFactor) && clock.switchFactor > 0)
+        ? clock.switchFactor : 1;
+      const label = typeof clock.label === 'string' ? clock.label : 'unknown';
+      const keep = factor >= cfgGet('clock.switchKeepThreshold', 0.5);
+      return { label: label, factor: factor, keepSwitchReplies: keep };
+    }
+
+    /* ------------------------------------------------------- HUD previews */
+
+    /**
+     * preview(targetMon, state) -> what OUR legal moves do to ONE named body.
+     *
+     * This is the data behind two HUD features at once: the bench-tap sandbox (preview what a
+     * coverage move does to the body they are about to bring in) and the lethal-roll gauge (the
+     * KO probability the library itself computes). It never guesses: a move the target is immune
+     * to reports 0 / 'none' because that is what the calculator returns, and every line carries
+     * the band the config's `hud.lethal` thresholds put it in, so the HUD colours nothing itself.
+     *
+     * Returns null when there is nothing to say (no active pair, no damage engine, no lines).
+     */
+    preview(targetMon, state) {
+      const myActive = state && state.active ? state.active.my : null;
+      if (!myActive || !targetMon || !this.damage) return null;
+      const field = (state && state.field) || {};
+      const actions = this.getMyActions(state);
+      const lines = [];
+      const opts = this._believedTargetOpts(targetMon);
+      for (let i = 0; i < actions.length; i++) {
+        const action = actions[i];
+        if (!action || action.kind === 'switch') continue;   // switching is not a damage line
+        const name = action.name || action.moveId;
+        if (!name) continue;
+        const data = U.getMoveData(name);
+        let res = null;
+        try { res = this.damage.calculateDamage(myActive, targetMon, name, field, opts); } catch (e) { res = null; }
+        if (!res || res.failed) continue;
+        const minPercent = typeof res.minPercent === 'number' ? res.minPercent : 0;
+        const maxPercent = typeof res.maxPercent === 'number' ? res.maxPercent : 0;
+        const koChancePct = (typeof res.koChancePct === 'number' && isFinite(res.koChancePct)) ? res.koChancePct : 0;
+        const isStatus = !!(data && data.isStatus);
+        const lethal = isStatus ? 'none' : this.lethalBand(res);
+        lines.push({
+          moveId: action.moveId || U.toID(name),
+          name: name,
+          isStatus: isStatus,
+          minPercent: U.round1(minPercent),
+          maxPercent: U.round1(maxPercent),
+          koChancePct: U.round1(koChancePct),
+          isOHKO: !!res.isOHKO,
+          is2HKO: !!res.is2HKO,
+          lethal: lethal,
+          verdict: this.lethalVerdict(res, data),
+          desc: res.desc || ''
+        });
+      }
+      if (!lines.length) return null;
+      return {
+        target: {
+          species: targetMon.species || targetMon.id || '',
+          id: targetMon.id || U.toID(targetMon.species),
+          hpPercent: typeof targetMon.hpPercent === 'number' ? targetMon.hpPercent : null,
+          isActive: !!targetMon.isActive
+        },
+        lines: lines
+      };
+    }
+
+    /**
+     * _believedTargetOpts(mon) -> the `{ defender: {...} }` override that describes a target by
+     * the set we BELIEVE it holds, or `{}` when we have no opinion yet.
+     *
+     * This exists because a body's own card is not its set. A monster seen on the field carries an
+     * all-zero EV placeholder and no item, so describing it verbatim prices our moves against an
+     * uninvested, item-less defender: the first bench-tap fixture read 500% for a Ground move into
+     * an Air Balloon Gholdengo that the library scores at 0, and every other number was inflated in
+     * the same direction. `liveSet` is the pruner's current best set — the same one the sampler
+     * weights — and it carries the spread, the nature and the item (whose type immunity is a fact
+     * about the matchup, not a detail: an Air Balloon is a Ground immunity and a Choice Band is a
+     * 1.5x Attack). Falls back to the first surviving candidate set, then to the bare card.
+     */
+    _believedTargetOpts(mon) {
+      const set = (mon && mon.liveSet && typeof mon.liveSet === 'object')
+        ? mon.liveSet
+        : ((mon && mon.candidateSets && mon.candidateSets[0]) || null);
+      if (!set) return {};
+      return { defender: {
+        evs: set.evs,
+        ivs: set.ivs,
+        nature: set.nature,
+        item: set.item,
+        ability: set.ability,
+        level: set.level
+      } };
+    }
+
+    /** previewVsBench(species, state) -> the same shape for an opponent BENCH body, else null. */
+    previewVsBench(species, state) {
+      const wanted = U.toID(species);
+      if (!wanted) return null;
+      const team = (state && state.oppTeam) || [];
+      for (let i = 0; i < team.length; i++) {
+        const mon = team[i];
+        if (!mon || mon.fainted || mon.isActive) continue;
+        if (mon.id === wanted || U.toID(mon.species) === wanted) {
+          const preview = this.preview(mon, state);
+          if (preview) preview.target.isActive = false;
+          return preview;
+        }
+      }
+      return null;
+    }
+
+    /** The lethal band for a damage result: config thresholds, never a number written here. */
+    lethalBand(res) {
+      if (!res) return 'none';
+      if (res.isOHKO) return 'guaranteed';
+      const ko = (typeof res.koChancePct === 'number' && isFinite(res.koChancePct)) ? res.koChancePct : 0;
+      if (ko >= cfgGet('hud.lethal.high', 67)) return 'high';
+      if (ko >= cfgGet('hud.lethal.mid', 34)) return 'mid';
+      return 'none';
+    }
+
+    /** Short human verdict for the gauge, in the same voice as the request's example card. */
+    lethalVerdict(res, moveData) {
+      if (!res) return '';
+      if (moveData && moveData.isStatus) return 'status move';
+      if (res.isOHKO) return 'Guaranteed lethal';
+      const max = typeof res.maxPercent === 'number' ? res.maxPercent : 0;
+      const ko = (typeof res.koChancePct === 'number' && isFinite(res.koChancePct)) ? res.koChancePct : 0;
+      if (max <= 0) return '0% (Immune)';
+      if (res.is2HKO) return '2HKO';
+      if (ko >= 1) return Math.round(ko) + '% KO chance';
+      return 'leaves them at ~' + Math.max(0, Math.round(100 - max)) + '% HP';
+    }
+
+    /* ------------------------------------------------ risk-adjusted volatility */
+
+    /** The accuracy the client's own dex reported for this action, or null when unknown. */
+    _accuracyOf(state, action) {
+      const table = state && state.moveAccuracy ? state.moveAccuracy : null;
+      if (!table || !action) return null;
+      const id = U.toID(action.moveId || action.name || '');
+      if (!id) return null;
+      const v = table[id];
+      if (v === true) return true;
+      return typeof v === 'number' && isFinite(v) ? v : null;
+    }
+
+    /**
+     * _volatilityDelta(action, state, field, score) -> { penalty, why }
+     *
+     * The "tilt penalty" (ARCHITECTURE §6.5). Standard scoring prices a 70%-accurate move at 0.7
+     * of its damage, but a MISS in a Trick Room window does not merely cost 30% of a move: it
+     * gives the opponent a free turn with the setter exposed. So the row loses
+     *     accuracyWeight * (1 - acc) * score        -- the part of the upside a miss throws away
+     *   + (1 - acc) * threat * fragilityScale * m   -- and the swinging door it leaves behind
+     * where `threat` is the library's own best incoming damage into our active mon and `m` is the
+     * extra `lethalMultiplier` when that threat is itself lethal (accuracy <= 
+     * lethalChargeMaxAccuracy, and a MINIMUM roll already kills).
+     *
+     * Every input is measured — the accuracy from the client's dex (`|stacc|`), the threat from
+     * the damage engine — and an action whose accuracy we do not know is charged NOTHING rather
+     * than an assumed number. Returns a zero penalty for status moves, switch rows and whenever
+     * `laplace.volatility.enabled` is false.
+     */
+    _volatilityDelta(action, state, field, score) {
+      const none = { penalty: 0, why: null };
+      const cfgObj = this.volatility;
+      if (!cfgObj || cfgObj.enabled === false) return none;
+      if (!action || action.kind !== 'move' || !this.damage) return none;
+      const data = U.getMoveData(action.name || action.moveId);
+      if (!data || data.isStatus || !data.basePower) return none;
+      const accuracy = this._accuracyOf(state, action);
+      if (accuracy === null) return none;
+      if (accuracy === true || accuracy >= cfgObj.accuracyFloor) return none;
+      const miss = 1 - accuracy / 100;
+      if (!(miss > 0)) return none;
+
+      const opp = state && state.active ? state.active.opp : null;
+      const mine = state && state.active ? state.active.my : null;
+      let threat = 0;
+      let threatBy = '';
+      let lethal = false;
+      if (opp && mine) {
+        let best = null;
+        try { best = this.damage.getBestIncomingThreat(opp, mine, field); } catch (e) { best = null; }
+        if (best) {
+          threat = (typeof best.avgPercent === 'number' && isFinite(best.avgPercent)) ? best.avgPercent : 0;
+          threatBy = best.move || '';
+          const myHp = this._hp(mine);
+          lethal = typeof best.minPercent === 'number' && best.minPercent >= myHp;
+        }
+      }
+      const w = U.clamp(typeof cfgObj.accuracyWeight === 'number' ? cfgObj.accuracyWeight : 1, 0, 1);
+      const upsideLost = w * miss * (typeof score === 'number' && isFinite(score) ? score : 0);
+      const chargedLethal = lethal && accuracy <= cfgObj.lethalChargeMaxAccuracy;
+      const charge = miss * threat * cfgObj.fragilityScale * (chargedLethal ? cfgObj.lethalMultiplier : 1);
+      const penalty = -(upsideLost + charge);
+      if (!penalty) return none;
+      let why = (data.name || action.name) + ' lands ' + accuracy + '% of the time: ' +
+        U.round1(upsideLost) + ' of upside given up';
+      if (charge) {
+        why += ' + ' + U.round1(charge) + ' fragility';
+        if (chargedLethal) why += ' (a miss hands ' + U.round1(threat) + '% from ' + threatBy + ', which is lethal)';
+      }
+      return { penalty: penalty, why: why };
+    }
+
+    /* ------------------------------------------------------- the PP-stall pivot */
+
+    /** Every move id we know a body can hold, from the paste, the log or its surviving sets. */
+    _knownMoves(mon) {
+      if (!mon) return [];
+      const lists = [mon.setMoves, mon.revealedMoves,
+        mon.liveSet && mon.liveSet.moves,
+        mon.candidateSets && mon.candidateSets[0] && mon.candidateSets[0].moves];
+      const out = [];
+      const seen = Object.create(null);
+      for (let i = 0; i < lists.length; i++) {
+        const list = lists[i];
+        if (!Array.isArray(list)) continue;
+        for (let k = 0; k < list.length; k++) {
+          const id = U.toID(list[k]);
+          if (!id || seen[id]) continue;
+          seen[id] = true;
+          out.push(id);
+        }
+      }
+      return out;
+    }
+
+    /** Set-legal setup / recovery moves a body can hide behind, from what we actually know. */
+    _setupThreats(mon) {
+      if (!mon) return [];
+      const lists = [mon.revealedMoves, mon.setMoves, mon.liveSet && mon.liveSet.moves];
+      const candidate = mon.candidateSets && mon.candidateSets[0];
+      if (candidate && candidate.moves) lists.push(candidate.moves);
+      const out = [];
+      const seen = Object.create(null);
+      for (let i = 0; i < lists.length; i++) {
+        const list = lists[i];
+        if (!Array.isArray(list)) continue;
+        for (let k = 0; k < list.length; k++) {
+          const id = U.toID(list[k]);
+          if (!id || seen[id]) continue;
+          const data = U.getMoveData(list[k]);
+          if (!data) continue;
+          const stalling = data.isStatus && (data.isSetup || data.isRecovery || data.isProtect);
+          if (!stalling) continue;
+          seen[id] = true;
+          out.push(data.name || list[k]);
+        }
+      }
+      return out;
+    }
+
+    /**
+     * ppStall(state) -> the Sucker Punch PP gauge and the 3-way pivot (ARCHITECTURE §6.4).
+     *
+     * This is OUR move: the counter answers "how many Sucker Punches do I still have", which is
+     * the question the whole feature exists for (the busted play is clicking Sucker Punch into a
+     * Protect/Substitute/Dance loop until it runs out). So the PP comes off OUR body, in order of
+     * authority: the `|request|` payload (the server's own numbers for our side), then the
+     * `|stpp|` snapshot, then the count of times we have SEEN it clicked. With no snapshot the
+     * readout flags `observesOnly` and shows that count, so nobody can mistake it for a real
+     * remaining total. The THREAT, on the other hand, is theirs — their setup/recovery moves are
+     * what stalls the move out.
+     *
+     * The matrix is built from the engine's own `_payoff` and solved with the same fictitious
+     * play the main decision uses; a column whose action the opponent cannot legally click is
+     * dropped rather than filled in with a stand-in.
+     *
+     * Null when there is nothing honest to show.
+     */
+    ppStall(state) {
+      const cfgObj = this.ppStallCfg;
+      if (!cfgObj || cfgObj.enabled === false || !state) return null;
+      const opp = state.active ? state.active.opp : null;
+      const mine = state.active ? state.active.my : null;
+      if (!opp || !mine) return null;
+      const watch = Array.isArray(cfgObj.watch) ? cfgObj.watch : [];
+      const headlineId = U.toID(cfgObj.headline || watch[0] || '');
+      if (!headlineId) return null;
+
+      // 1. the server's own numbers for OUR side, when a |request| has arrived — but only if that
+      // request is still about the body standing there. `legalActions.forId` is the body the
+      // numbers belong to; after a switch with no request behind it they belong to the body that
+      // left, and reading them here would print ONE body's PP next to ANOTHER body's moves.
+      const reqForId = U.toID((state.legalActions && state.legalActions.forId) || '');
+      const mineId = U.toID((mine.id || mine.species) || '');
+      const staleRequest = !!(reqForId && mineId && reqForId !== mineId);
+      const legal = (!staleRequest && state.legalActions && Array.isArray(state.legalActions.moves))
+        ? state.legalActions.moves : [];
+      let pp = null;
+      let maxpp = null;
+      let observesOnly = true;
+      for (let i = 0; i < legal.length; i++) {
+        const m = legal[i];
+        if (!m || U.toID(m.id || m.name) !== headlineId) continue;
+        if (typeof m.pp === 'number' && isFinite(m.pp)) { pp = m.pp; observesOnly = false; }
+        if (typeof m.maxpp === 'number' && isFinite(m.maxpp)) maxpp = m.maxpp;
+        break;
+      }
+      // 2. then the page's own snapshot of our body
+      const snapshot = (mine.ppSnapshot && mine.ppSnapshot[headlineId]) || null;
+      if (!observesOnly && snapshot) {
+        if (pp === null && typeof snapshot.pp === 'number') pp = snapshot.pp;
+        if (maxpp === null && typeof snapshot.maxpp === 'number') maxpp = snapshot.maxpp;
+      } else if (snapshot && (typeof snapshot.pp === 'number' || typeof snapshot.maxpp === 'number')) {
+        if (typeof snapshot.pp === 'number') { pp = snapshot.pp; observesOnly = false; }
+        if (typeof snapshot.maxpp === 'number') maxpp = snapshot.maxpp;
+      }
+      const usedCount = (mine.ppUsed && typeof mine.ppUsed[headlineId] === 'number') ? mine.ppUsed[headlineId] : 0;
+      if (pp === null && maxpp === null && !usedCount) return null;
+      // A second guard on the same question, for the case the request cannot answer: the move has
+      // to belong to the body we are counting it FOR. When the observed PP is trustworthy (the
+      // request was stale and this came off our own body instead), a body whose known moves
+      // EXCLUDE the watched move still cannot be the body that owns that PP. Only a body whose
+      // moves we actually know can be contradicted; an unknown body is never disproved.
+      const known = this._knownMoves(mine);
+      if (known.length && known.indexOf(headlineId) === -1) return null;
+      const data = U.getMoveData(headlineId);
+      const move = {
+        id: headlineId,
+        label: (data && data.name) || headlineId,
+        pp: pp,
+        maxpp: maxpp,
+        remaining: pp,
+        used: usedCount,
+        observesOnly: observesOnly
+      };
+
+      // The threat is THEIRS: their setup / recovery / Protect moves are what strands the move.
+      const setupMoves = this._setupThreats(opp);
+      const theirHp = this._hp(opp);
+      const read = setupMoves.length
+        ? (setupMoves.join(' / ') + ' can stall it out' +
+          (theirHp > cfgObj.setupThreatHp ? '' : ' and they are at ' + U.round1(theirHp) + '%: expect the stall click'))
+        : null;
+
+      // The matrix is only worth solving while the watched move still has PP to lose.
+      let matrix = null;
+      let advice = null;
+      const fraction = (typeof pp === 'number' && typeof maxpp === 'number' && maxpp > 0) ? pp / maxpp : 1;
+      if (fraction >= cfgObj.minPpFraction) {
+        const rows = [{ label: move.label, kind: 'move', moveId: headlineId, action: { kind: 'move', name: (data && data.name) || headlineId, moveId: headlineId } }];
+        // Our best other attack, straight from the damage engine.
+        const other = this.damage && typeof this.damage.getBestOutgoingMove === 'function'
+          ? this.damage.getBestOutgoingMove(mine, opp, state.field || null) : null;
+        if (other && other.move && U.toID(other.move) !== headlineId) {
+          rows.push({ label: other.move, kind: 'move', action: { kind: 'move', name: other.move, moveId: U.toID(other.move) } });
+        }
+        const setupName = this._setupThreats(mine)[0] || null;
+        if (setupName) {
+          rows.push({ label: setupName, kind: 'move', action: { kind: 'move', name: setupName, moveId: U.toID(setupName) } });
+        }
+        const cols = [];
+        const theirBest = this.damage && typeof this.damage.getBestOutgoingMove === 'function'
+          ? this.damage.getBestOutgoingMove(opp, mine, state.field || null) : null;
+        if (theirBest && theirBest.move) {
+          cols.push({ label: theirBest.move, kind: 'move', action: { kind: 'move', name: theirBest.move, moveId: U.toID(theirBest.move) } });
+        }
+        const theirSetup = this._setupThreats(opp)[0] || null;
+        if (theirSetup) {
+          cols.push({ label: theirSetup, kind: 'move', action: { kind: 'move', name: theirSetup, moveId: U.toID(theirSetup) } });
+        }
+        if (rows.length > 1 && cols.length) {
+          const payoff = [];
+          for (let i = 0; i < rows.length; i++) {
+            const row = [];
+            for (let j = 0; j < cols.length; j++) {
+              let value = 0;
+              try { value = this._payoff(rows[i].action, cols[j].action, state, state.field || {}); }
+              catch (e) { value = 0; }
+              row.push(value);
+            }
+            payoff.push(row);
+          }
+          const solution = solveNashFictitiousPlay(payoff, (this.nash && this.nash.iterations) || NASH_ITERATIONS);
+          matrix = { rows: rows, cols: cols, payoff: payoff, solution: solution };
+          let best = 0;
+          for (let i = 1; i < solution.rowValues.length; i++) {
+            if (solution.rowValues[i] > solution.rowValues[best]) best = i;
+          }
+          advice = {
+            moveId: rows[best].moveId || rows[best].action.moveId,
+            label: rows[best].label,
+            frequency: U.round1(solution.myStrategy[best] * 100),
+            reason: cfgObj.adviceLabel + ': ' + rows[best].label + ' is worth ' +
+              U.round1(solution.rowValues[best]) + ' against their equilibrium mix, so click it ' +
+              U.round1(solution.myStrategy[best] * 100) + '% of the time'
+          };
+        }
+      }
+
+      return {
+        // OUR body: the move being counted is ours, so the gauge must be labelled with ours.
+        species: mine.species || mine.id || '',
+        opponent: opp.species || opp.id || '',
+        move: move,
+        threat: { setupMoves: setupMoves, theirHp: U.round1(theirHp), read: read },
+        matrix: matrix,
+        advice: advice
+      };
+    }
+
+    /* -------------------------------------------------------- format sentinel */
+
+    /**
+     * formatSentinel(state) -> the Z-Move / Mega Trap readout (ARCHITECTURE §6.6).
+     *
+     * Read entirely off `state.formatLocks` and the bodies themselves. "TACTICAL FREEDOM" is only
+     * claimed when the lock is actually burned AND there are still unrevealed opposing bodies it
+     * applies to; a sentence about a bench that does not exist would be noise.
+     */
+    formatSentinel(state) {
+      const cfgObj = this.sentinelCfg;
+      if (!cfgObj || cfgObj.enabled === false || !state) return null;
+      const locks = state.formatLocks || {};
+      const oppTeam = state.oppTeam || [];
+      const findBody = function (flag) {
+        for (let i = 0; i < oppTeam.length; i++) {
+          const mon = oppTeam[i];
+          if (mon && mon[flag]) return mon;
+        }
+        return null;
+      };
+      const megaMon = findBody('megaEvolved');
+      const zMon = findBody('usedZMove');
+      const mega = {
+        burned: !!locks.oppHasMegaEvolved,
+        species: megaMon ? (megaMon.species || megaMon.id) : null,
+        turn: megaMon && megaMon.megaTurn ? megaMon.megaTurn : null,
+        label: locks.oppHasMegaEvolved ? cfgObj.burnedLabel : cfgObj.liveLabel
+      };
+      const z = {
+        burned: !!locks.oppHasUsedZMove,
+        species: zMon ? (zMon.species || zMon.id) : null,
+        turn: zMon && zMon.zMoveTurn ? zMon.zMoveTurn : null,
+        label: locks.oppHasUsedZMove ? cfgObj.burnedLabel : cfgObj.liveLabel
+      };
+      const bench = {};
+      let unrevealed = 0;
+      for (let i = 0; i < oppTeam.length; i++) {
+        const mon = oppTeam[i];
+        if (!mon || mon.fainted) continue;
+        if (!(mon.revealedMoves && mon.revealedMoves.length) && !mon.confirmedItem) unrevealed++;
+      }
+      bench.unrevealed = unrevealed;
+      bench.stonesPossible = typeof locks.oppMegasRemaining === 'number' ? locks.oppMegasRemaining : 0;
+      // `kind` names WHICH tactic a row is, so the glyph is the renderer's business: the bar maps
+      // it through MobileHUD's own icon table (src/ui_overlay.js). The engine must not invent
+      // bullet characters — the placeholders that used to live here ('X', '.', 'o') shipped as
+      // visible text in the HUD.
+      const tactics = [];
+      if (mega.burned) {
+        tactics.push({ kind: 'mega', label: 'Mega Evolution', detail: 'cannot be used again by any of their bodies' });
+      }
+      if (z.burned) {
+        tactics.push({ kind: 'z', label: 'Z-Move', detail: 'cannot be used again by any of their bodies' });
+      }
+      if (mega.burned && z.burned && unrevealed >= cfgObj.minBodiesForFreedom) {
+        tactics.push({
+          kind: 'freedom', label: cfgObj.freedomLabel,
+          detail: 'no unrevealed body can nuke you with a Z-Move, and ' +
+            (bench.stonesPossible ? bench.stonesPossible + ' Mega Stone-carrying body is still possible'
+              : 'no surviving candidate set can hold a Mega Stone')
+        });
+      }
+      if (!mega.burned && !z.burned && !tactics.length) {
+        tactics.push({ kind: 'live', label: 'Both mechanics live', detail: 'respect the unrevealed bench' });
+      }
+      return { mega: mega, z: z, tactics: tactics, bench: bench };
+    }
+
+    /**
+     * overlordGauge(state) -> the Supreme Overlord readout, MEASURED rather than modelled.
+     *
+     * RULE 1 forbids writing the ability's "+10% Attack per fallen ally, max 5" rule down here,
+     * so the multiplier is obtained by asking the library the same question twice — one probe
+     * move against one probe defender, with `alliesFainted` set to the real count and then to
+     * zero — and dividing its two answers. The effective Attack figure is the library's own stat
+     * for this body scaled by that measured ratio. Null whenever the active body does not have
+     * the ability, or when the library cannot answer.
+     */
+    overlordGauge(state) {
+      const mon = state && state.active ? state.active.my : null;
+      if (!mon || !this.damage) return null;
+      if (U.toID(mon.revealedAbility || '') !== 'supremeoverlord') {
+        const abilities = (mon.possibleAbilities && mon.possibleAbilities.length)
+          ? mon.possibleAbilities : U.getAbilities(mon.species);
+        let has = false;
+        for (let i = 0; i < abilities.length; i++) {
+          if (U.toID(abilities[i]) === 'supremeoverlord') { has = true; break; }
+        }
+        if (!has) return null;
+      }
+      const fallen = typeof mon.alliesFainted === 'number' ? mon.alliesFainted : 0;
+      const probeMove = cfgGet('hud.overlord.probeMove', 'Kowtow Cleave');
+      const probeDefender = { species: cfgGet('hud.overlord.probeDefender', 'Great Tusk'), hpPercent: 100 };
+      let base = null, boosted = null;
+      try {
+        base = this.damage.calculateDamage(mon, probeDefender, probeMove, (state && state.field) || null, { attacker: { alliesFainted: 0 } });
+        boosted = this.damage.calculateDamage(mon, probeDefender, probeMove, (state && state.field) || null, { attacker: { alliesFainted: fallen } });
+      } catch (e) { return null; }
+      if (!base || base.failed || !boosted || boosted.failed || !(base.avgDmg > 0)) return null;
+      const ratio = boosted.avgDmg / base.avgDmg;
+      const stats = U.statTable(mon.species || mon.id, {
+        ivs: mon.ivs, evs: mon.evs, level: mon.level || 100, nature: mon.nature
+      });
+      const atk = stats && typeof stats.atk === 'number' ? stats.atk : null;
+      return {
+        species: mon.species || mon.id,
+        fallen: fallen,
+        ratio: ratio,
+        percentBoost: Math.round((ratio - 1) * 100),
+        effectiveAtk: atk === null ? null : Math.round(atk * ratio),
+        probeMove: probeMove
+      };
     }
 
     /* ------------------------------------------------------------- simulation */
@@ -366,14 +992,34 @@
         : [{ id: 'w0', team: state.oppTeam || [], sets: [], weight: 1, violations: [] }];
 
       const aggregate = {};
+      const cellSum = [];      // cellSum[i][j]    = world-weighted payoff of our action i against their action j
+      const cellWeight = [];   // cellWeight[i][j] = total world weight behind that cell
       for (let i = 0; i < myActions.length; i++) {
         const key = this._actionKey(myActions[i]);
         aggregate[key] = { action: myActions[i], scores: [], avg: 0, min: Infinity, worldScores: [] };
+        cellSum.push([]);
+        cellWeight.push([]);
       }
+      // Each world may expose a different opponent action set, so the matrix columns are the
+      // UNION of their replies in first-seen order; a cell no world produced falls back to that
+      // row's mean, which is exactly the "average over their plausible replies" the risk blend
+      // used. `allOppActions[j]` is the action behind column j.
+      const oppKeyIndex = Object.create(null);
+      const allOppActions = [];
 
       for (let w = 0; w < worlds.length; w++) {
         const world = worlds[w];
         const oppActions = this.getOppActions(world, state);
+        const wgt = typeof world.weight === 'number' && world.weight > 0 ? world.weight : 1;
+        const colIdx = [];
+        for (let j = 0; j < oppActions.length; j++) {
+          const okey = this._actionKey(oppActions[j]);
+          if (oppKeyIndex[okey] === undefined) {
+            oppKeyIndex[okey] = allOppActions.length;
+            allOppActions.push(oppActions[j]);
+          }
+          colIdx.push(oppKeyIndex[okey]);
+        }
         for (let i = 0; i < myActions.length; i++) {
           const mine = myActions[i];
           const key = this._actionKey(mine);
@@ -382,6 +1028,10 @@
             const payoff = this._payoff(mine, oppActions[j], state, state.field || {});
             sum += payoff;
             if (payoff < min) min = payoff;
+            const col = colIdx[j];
+            if (typeof cellSum[i][col] !== 'number') { cellSum[i][col] = 0; cellWeight[i][col] = 0; }
+            cellSum[i][col] += payoff * wgt;
+            cellWeight[i][col] += wgt;
           }
           const avg = oppActions.length ? sum / oppActions.length : 0;
           if (min === Infinity) min = avg;
@@ -412,11 +1062,38 @@
         });
       });
 
+      // Risk-adjusted volatility (ARCHITECTURE §6.5): a per-row delta on OUR rows, computed
+      // before the mask so the mask's own nudge still applies on top of it.
+      const volDelta = [];
+      const volWhy = [];
+      for (let i = 0; i < myActions.length; i++) {
+        const scoredRow = scored[i];
+        const v = this._volatilityDelta(myActions[i], state, state && state.field,
+          scoredRow && typeof scoredRow.score === 'number' ? scoredRow.score : 0);
+        volDelta.push(v.penalty);
+        volWhy.push(v.why);
+      }
+
       // Tempo policy mask (Protect/Bunker rhythm) before vetoes, per the brief.
       const masked = this.tempo ? this.tempo.applyPolicyMask(scored, tempoVector, state) : scored;
+      // The mask is a policy nudge (multiplicative for contact attacks, additive for the Bunker
+      // bonus), not a payoff. Keep it as a per-row delta so the mixed solve can fold it into the
+      // matrix instead of silently overriding it.
+      const maskDelta = [];
+      for (let i = 0; i < masked.length; i++) {
+        const base = scored[i] && typeof scored[i].score === 'number' ? scored[i].score : 0;
+        const nudged = masked[i] && typeof masked[i].score === 'number' ? masked[i].score : 0;
+        maskDelta.push(nudged - base);
+      }
 
-      const ranked = masked.map(function (row) {
+      const ranked = masked.map(function (row, index) {
         const copy = Object.assign({}, row);
+        // The volatility charge is published on the row so the HUD (and a reader) can see why a
+        // 70%-accurate line is no longer top of the list.
+        if (volDelta[index]) {
+          copy.volatilityPenalty = U.round1(volDelta[index]);
+          copy.volatilityWhy = volWhy[index] || null;
+        }
         if (this.veto) {
           const verdict = this.veto.evaluateVetoes({ kind: copy.kind, name: copy.name, moveId: copy.moveId, targetId: copy.targetId }, state, tempoVector);
           if (verdict && verdict.isVetoed) {
@@ -429,34 +1106,63 @@
         return copy;
       }, this);
 
-      const live = ranked.filter(function (r) { return !r.isVetoed; });
-      let T = typeof opts.temperature === 'number' ? opts.temperature : this.temperature;
-      if (!(T > 0)) T = this.temperature > 0 ? this.temperature : 1;
-      // Numerically stable softmax: shift every live score by the best one before the
-      // exponential. Scores legitimately reach ~1400 (lethal bonus 260 + the evaluator's
-      // +-1000 bound), so exp(score / T) overflows to Infinity for any T below ~1.7 and the
-      // ratio Infinity / Infinity came out as NaN for every line (and NaN in the sort
-      // comparator). The shift cannot change the relative weights,
-      // exp((s - max) / T) / sum == exp(s / T) / sum, it only keeps the numerator in range.
-      let maxScore = -Infinity;
-      for (let i = 0; i < live.length; i++) {
-        if (live[i].score > maxScore) maxScore = live[i].score;
+      // ---- the simultaneous payoff matrix, with the tempo nudge folded in ----
+      const matrix = [];
+      for (let i = 0; i < myActions.length; i++) {
+        const row = [];
+        let sum = 0, seen = 0;
+        for (let j = 0; j < allOppActions.length; j++) {
+          const wgt = cellWeight[i][j];
+          const value = (typeof cellSum[i][j] === 'number' && wgt > 0) ? cellSum[i][j] / wgt : null;
+          row.push(value);
+          if (value !== null) { sum += value; seen++; }
+        }
+        const mean = seen ? sum / seen : 0;
+        // Both deltas are per-ROW, so folding them in here (rather than overwriting a score) lets
+        // the mixed solve price the risk-adjusted line without losing the tempo policy nudge.
+        const delta = (maskDelta[i] || 0) + (volDelta[i] || 0);
+        for (let j = 0; j < row.length; j++) row[j] = (row[j] === null ? mean : row[j]) + delta;
+        matrix.push(row);
       }
-      let denom = 0;
-      for (let i = 0; i < live.length; i++) {
-        live[i]._exp = Math.exp((live[i].score - maxScore) / T);
-        denom += live[i]._exp;
-      }
+
+      const live = [];
+      const liveIdx = [];
       for (let i = 0; i < ranked.length; i++) {
-        const row = ranked[i];
-        if (row.isVetoed) { row.confidence = 0; continue; }
-        row.confidence = denom > 0 ? 100 * (row._exp / denom) : (100 / Math.max(1, ranked.length));
-        delete row._exp;
+        if (!ranked[i].isVetoed) { live.push(ranked[i]); liveIdx.push(i); }
+      }
+
+      // ---- mixed-strategy solve over the LIVE submatrix only ----
+      // A vetoed line must not absorb equilibrium frequency, so it is excluded from the solve
+      // rather than being given a zero payoff.
+      let nash = null;
+      const nashOn = !this.nash || this.nash.enabled !== false;
+      if (nashOn && live.length > 1 && allOppActions.length > 0) {
+        const sub = [];
+        for (let k = 0; k < liveIdx.length; k++) sub.push(matrix[liveIdx[k]].slice());
+        nash = solveNashFictitiousPlay(sub, (this.nash && this.nash.iterations) || NASH_ITERATIONS);
+        if (!nash || nash.myStrategy.length !== live.length) nash = null;
+      }
+
+      if (nash) {
+        for (let k = 0; k < live.length; k++) {
+          live[k].confidence = 100 * nash.myStrategy[k];
+          live[k].nashFrequency = nash.myStrategy[k];
+          live[k].score = nash.rowValues[k];
+        }
+        for (let i = 0; i < ranked.length; i++) {
+          if (ranked[i].isVetoed) ranked[i].confidence = 0;
+        }
+      } else {
+        this._softmaxConfidence(ranked, live, opts.temperature);
       }
 
       ranked.sort(function (a, b) {
         if (a.isVetoed !== b.isVetoed) return a.isVetoed ? 1 : -1;
-        return b.confidence - a.confidence;
+        // Nash frequencies tie often (a mixed equilibrium gives every supported line the same
+        // EV), so the tie is broken by payoff and then by name for determinism.
+        if (b.confidence !== a.confidence) return b.confidence - a.confidence;
+        if ((b.score || 0) !== (a.score || 0)) return (b.score || 0) - (a.score || 0);
+        return String(a.name) < String(b.name) ? -1 : 1;
       });
       if (ranked.length && !ranked[0].isVetoed) {
         ranked[0].isOptimal = true;
@@ -467,6 +1173,7 @@
       this.lastReadout = {
         worlds: worlds,
         tempo: tempoVector,
+        clock: this.lastOppPrior || { label: 'unknown', factor: 1, keepSwitchReplies: true },
         ranked: ranked,
         myActions: myActions,
         elapsedMs: U.round1(elapsed),
@@ -474,6 +1181,37 @@
         tooltip: this.describeTopLines(ranked, 2)
       };
       return ranked;
+    }
+
+    /**
+     * Legacy confidence path (laplace.nash.enabled === false): a numerically stable softmax over
+     * the live scores. Every live score is shifted by the best one before the exponential.
+     * Scores legitimately reach ~1400 (lethal bonus 260 + the evaluator's +-1000 bound), so
+     * exp(score / T) overflows to Infinity for any T below ~1.7 and the ratio Infinity / Infinity
+     * came out as NaN for every line (and NaN in the sort comparator). The shift cannot change
+     * the relative weights — exp((s - max) / T) / sum == exp(s / T) / sum — it only keeps the
+     * numerator in a representable range.
+     */
+    _softmaxConfidence(ranked, live, temperature) {
+      let T = typeof temperature === 'number' ? temperature : this.temperature;
+      if (!(T > 0)) T = this.temperature > 0 ? this.temperature : 1;
+      let maxScore = -Infinity;
+      for (let i = 0; i < live.length; i++) {
+        if (live[i].score > maxScore) maxScore = live[i].score;
+      }
+      let denom = 0;
+      for (let i = 0; i < live.length; i++) {
+        live[i]._exp = Math.exp((live[i].score - maxScore) / T);
+        denom += live[i]._exp;
+      }
+      for (let i = 0; i < live.length; i++) {
+        const row = live[i];
+        row.confidence = denom > 0 ? 100 * (row._exp / denom) : (100 / Math.max(1, ranked.length));
+        delete row._exp;
+      }
+      for (let i = 0; i < ranked.length; i++) {
+        if (ranked[i].isVetoed) ranked[i].confidence = 0;
+      }
     }
 
     _actionKey(action) {
@@ -503,6 +1241,10 @@
   }
 
   LaplaceEngine.VETO_SCORE = VETO_SCORE;
+  // Exported so the mixed-strategy solver can be unit-tested against matrices with a known
+  // equilibrium, independently of the battle pipeline.
+  LaplaceEngine.solveNashFictitiousPlay = solveNashFictitiousPlay;
+  LaplaceEngine.NASH_ITERATIONS = NASH_ITERATIONS;
 
   ST.LaplaceEngine = LaplaceEngine;
 })();

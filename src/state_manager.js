@@ -182,17 +182,35 @@
         active: { my: null, opp: null },
         bench: { my: [], opp: [] },
         recoveryPP: {},
+        // Move accuracy, straight from the client's own dex via the `|stacc|` snapshot
+        // (ARCHITECTURE §6.5). A number, or `true` for a move that cannot miss.
+        moveAccuracy: {},
         protect: {
           oppTurnsSinceLastProtect: 99, oppConsecutiveProtects: 0, oppLastProtectTurn: -99,
           myTurnsSinceLastProtect: 99, myConsecutiveProtects: 0, myLastProtectTurn: -99,
           oppProtectedLastTurn: false
         },
         request: null,
-        legalActions: { moves: [], switches: [], trapped: false, forceSwitch: false },
+        legalActions: { moves: [], switches: [], trapped: false, forceSwitch: false, forId: null },
         history: { turns: [], events: [] },
         log: [],
         result: null,
         teamsize: { p1: 6, p2: 6 },
+        // Post-match receipt (src/content.js renders it, src/ui_overlay.js draws it). Every
+        // number here is counted from the log as it arrives — nothing is estimated. `damage`
+        // and `kos` are keyed by mon id and cover BOTH sides, so the MVP line and the "who
+        // nearly died" line come from the same tally.
+        battleStats: {
+          damage: {},          // monId -> total percent of the opponent's HP it removed
+          kos: {},             // monId -> bodies it has taken off the board
+          trActiveTurns: 0,    // |turn| headers with Trick Room up
+          trAttackTurns: 0,    // ...of those, turns OUR side actually attacked in
+          snowTurns: 0,        // turns with snow/hail up (Abomasnow's Def boost)
+          magicBounce: 0,      // Magic Bounce activations (a reflected hazard)
+          bestHit: null        // our hardest single hit: { turn, monId, moveId, percent }
+        },
+        // internal: the last mon to damage each slot, consumed by |faint| to credit the KO
+        _lastDamager: {},
         // internal bookkeeping (not part of the frozen shape but harmless / documented)
         _trSetOnTurn: null,
         _seenTeraWarning: false
@@ -229,6 +247,15 @@
         terastallized: false,
         turnedThisTurn: false,
 
+        // Reverse damage deduction (src/set_pruner.js): every hit this mon landed on OUR side,
+        // with the moves, the HP before/after and the field context needed to re-run it through
+        // each candidate spread later. An observation is appended only when the defender is
+        // ours (so its exact stats are known) and the attacker is theirs; the pruner decides
+        // what it means. `critTurn` is the |-crit| latch for the turn (crits are recorded but
+        // never used as evidence — a critical hit tells us nothing about investment).
+        damageDealt: [],
+        critTurn: null,
+
         originalArchetypeItem: null,
         confirmedItem: null,
         currentBattleItem: null,
@@ -258,7 +285,12 @@
         revealedMoves: [],
         activeStintMoves: [],
         activeStintCount: 0,
-        movePP: {},
+        movePP: {},                   // rule 4: 8-PP recovery moves, counted down from OUR use
+        // Observed PP, straight off the page's own battle object via the `|stpp|` snapshot
+        // (ARCHITECTURE §6.4). `movePP` above is a derived counter for one family of moves;
+        // this is the measured truth, kept separate so the two can never be confused.
+        ppSnapshot: {},
+        ppUsed: {},                   // how many times we have SEEN each move clicked
         lastMove: null,
         lastMoveTurn: 0,
 
@@ -269,6 +301,9 @@
         speedCeiling: 1012,
         speedEvidence: [],
         speedOverride: null,
+        // Residual-order relations, recorded raw (the pruner converts them into a bracket).
+        residualOrderBefore: [],
+        residualOrderAfter: [],
 
         candidateSets: [],
         prunedReasons: [],
@@ -554,6 +589,7 @@
         case 'setboost': this._onSetBoost(event); break;
         case 'clearallboost': this._onClearAllBoost(); break;
         case 'clearnegativeboost': this._onClearNegativeBoost(event); break;
+        case 'crit': this._onCrit(event); break;
         case 'damage': this._onHPDelta(event, 'damage'); break;
         case 'heal': this._onHPDelta(event, 'heal'); break;
         case 'sethp': this._onHPDelta(event, 'sethp'); break;
@@ -574,6 +610,9 @@
         case 'terrain': this._onTerrain(event); break;
         case 'turn': this._onTurn(event); break;
         case 'request': this._onRequest(event); break;
+        case 'pp': this._onPp(event); break;
+        case 'accuracy': this._onAccuracy(event); break;
+        case 'residualorder': this._onResidualOrder(event); break;
         case 'formechange': this._onFormeChange(event); break;
         case 'detailschange': this._onDetailsChange(event); break;
         case 'terastallize': this._onTerastallize(event); break;
@@ -846,6 +885,9 @@
       if (!mon) return;
       const moveName = event.move || '';
       const moveId = event.moveId || toID(moveName);
+      // Receipt: a turn of Trick Room OUR side actually attacked in. A hard switch under TR is
+      // exactly the turn the receipt is meant to expose as wasted, so it is not counted here.
+      if (this.state.field.trickRoom && side === this.state.mySide) this.state.battleStats.trAttackTurns++;
       mon.lastMove = moveName;
       mon.lastMoveTurn = this.state.turn;
       mon.turnedThisTurn = true;
@@ -857,6 +899,11 @@
       // stint tracking (rule 3). Struggle is a forced pseudo-move, so it must not enter the
       // stint: otherwise one real move plus Struggle reads as "2 distinct moves" and the
       // pruner permanently blacklists every Choice item for that mon.
+      // Observed PP usage: one click of a move is one PP, whether or not the page ever handed
+      // us a snapshot. This is the fallback the gauge prints as "used N times".
+      if (moveId && !FORCED_MOVE_IDS.has(moveId)) {
+        mon.ppUsed[moveId] = (mon.ppUsed[moveId] || 0) + 1;
+      }
       if (moveName && !FORCED_MOVE_IDS.has(moveId) && mon.activeStintMoves.indexOf(moveName) === -1) {
         mon.activeStintMoves.push(moveName);
         if (mon.activeStintMoves.length > MAX_ACTIVE_STINTS) mon.activeStintMoves.shift();
@@ -964,7 +1011,14 @@
       const mon = this._findBySlot(event.slot) || this._findBySpecies(side, event.species);
       if (!mon) return;
       const from = String(event.from || '');
+      // Capture the pre-hit HP before _setHP overwrites it: the difference IS the damage roll we
+      // are about to reason from, and it only exists for this instant.
+      const hpBefore = typeof mon.hpPercent === 'number' ? mon.hpPercent : 100;
       this._setHP(mon, event.hp, event.status);
+      if (kind === 'damage') {
+        this._recordDamageObservation(event, mon, side, hpBefore, from);
+        this._creditDamage(event, mon, side, hpBefore, from);
+      }
       if (kind === 'damage') {
         if (/stealth rock|spikes|sticky web/i.test(from)) {
           if (mon.itemRuledOut.indexOf('Heavy-Duty Boots') === -1) mon.itemRuledOut.push('Heavy-Duty Boots');
@@ -978,6 +1032,118 @@
       if (kind === 'heal' && /sys|item: leftovers|item: black sludge|item: shell bell/i.test(from)) {
         mon.turnedThisTurn = false;
       }
+    }
+
+    /**
+     * Receipt bookkeeping for one damaging line, independent of the pruner's evidence rule:
+     * every hit is credited to the attacker (both sides), the turn's last damager is remembered
+     * so |faint| can attribute the KO, and OUR hardest single hit so far is kept for the card.
+     * Never throws: a battle log always contains damage this does not model.
+     */
+    _creditDamage(event, victim, victimSide, hpBefore, from) {
+      if (!victim || !victimSide) return;
+      const hpAfter = typeof victim.hpPercent === 'number' ? victim.hpPercent : 0;
+      const percent = Math.round((hpBefore - hpAfter) * 10) / 10;
+      if (!(percent > 0)) return;
+      const raw = String(event.raw || '');
+      const moveMatch = /move:\s*([^\[\]]*?)(?=\s*\[|$)/i.exec(from) ||
+        /move:\s*([^\[\]]*?)(?=\s*\[|$)/i.exec(raw);
+      let attacker = null;
+      let ident = parseIdent(event.ofRaw || '');
+      if (!ident.side) {
+        const fallback = /\[of\]\s*(p[12][a-f]):\s*([^\[\]]*)/i.exec(raw);
+        if (fallback) ident = { side: fallback[1].slice(0, 2), slot: fallback[1].toLowerCase(), name: (fallback[2] || '').trim() };
+      }
+      if (ident.side && ident.side !== victimSide) {
+        attacker = this._findBySlot(ident.slot) || this._findBySpecies(ident.side, ident.name);
+      }
+      if (!attacker) return;
+      const stats = this.state.battleStats;
+      stats.damage[attacker.id] = Math.round(((stats.damage[attacker.id] || 0) + percent) * 10) / 10;
+      if (victim.slot) this.state._lastDamager[victim.slot] = attacker.id;
+      const moveId = moveMatch ? toID(moveMatch[1].trim()) : '';
+      if (attacker.side === this.state.mySide) {
+        const best = stats.bestHit;
+        if (!best || percent > best.percent) {
+          stats.bestHit = { turn: this.state.turn, monId: attacker.id, moveId: moveId, percent: percent };
+        }
+      }
+    }
+
+    /** |-crit| — a critical hit landed. Recorded so a hit can be EXCLUDED from the evidence. */
+    _onCrit(event) {
+      const side = event.side || sideOf(event.slot);
+      const mon = this._findBySlot(event.slot) || this._findBySpecies(side, event.species);
+      if (!mon) return;
+      mon.critTurn = this.state.turn;
+    }
+
+    /**
+     * Reverse damage deduction, the observation half (the pruner owns the verdict).
+     *
+     * A `|-damage|p1a: Slowking|68/100|[from] move: Make It Rain|[of] p2a: Gholdengo` line on
+     * OUR body is a measurement of the ATTACKER's offence: we know our own spread exactly, so
+     * their candidate spreads can be tested against the number we just took. Stored on the
+     * attacker, not the victim, because that is whose candidate pool the pruner will narrow.
+     *
+     * Deliberately conservative: residual/recoil/hazard damage carries no `move:` clause and is
+     * ignored, only our own side is ever used as the ruler, and a critical hit is flagged rather
+     * than trusted. Anything this cannot model (weather, a screen, a boost) is stored alongside
+     * the number so the pruner can rebuild the exact context instead of guessing at it.
+     */
+    _recordDamageObservation(event, defender, defenderSide, hpBefore, from) {
+      if (!defender) return;
+      if (defenderSide !== this.state.mySide) return;          // only our body can be the ruler
+      // `from` is the parsed clause list; fall back to the raw line so a shape the clause
+      // splitter has never seen still yields its move name instead of silently dropping the
+      // observation. The attacker ident gets the same treatment.
+      const raw = String(event.raw || '');
+      const moveMatch = /move:\s*([^\[\]]*?)(?=\s*\[|$)/i.exec(from) ||
+        /move:\s*([^\[\]]*?)(?=\s*\[|$)/i.exec(raw);
+      if (!moveMatch) return;                                  // hazards, recoil, Life Orb, ...
+      const moveName = moveMatch[1].trim();
+      const moveId = toID(moveName);
+      if (!moveId || moveId === 'struggle') return;
+      let attackerIdent = parseIdent(event.ofRaw || '');
+      if (!attackerIdent.side) {
+        const fallback = /\[of\]\s*(p[12][a-f]):\s*([^\[\]]*)/i.exec(raw);
+        if (fallback) attackerIdent = { side: fallback[1].slice(0, 2), slot: fallback[1].toLowerCase(), name: (fallback[2] || '').trim() };
+      }
+      if (!attackerIdent.side || attackerIdent.side === defenderSide) return;
+      const attacker = this._findBySlot(attackerIdent.slot) || this._findBySpecies(attackerIdent.side, attackerIdent.name);
+      if (!attacker) return;                                   // an attacker we never saw: nothing to prune
+      const hpAfter = typeof defender.hpPercent === 'number' ? defender.hpPercent : 0;
+      const damagePercent = Math.round((hpBefore - hpAfter) * 10) / 10;
+      if (!(damagePercent > 0)) return;
+      if (!Array.isArray(attacker.damageDealt)) attacker.damageDealt = [];
+      const max = cfg('pruner.damageEvidence.maxObservations', 8);
+      const obs = {
+        turn: this.state.turn,
+        moveName: moveName,
+        moveId: moveId,
+        damagePercent: damagePercent,
+        hpBefore: hpBefore,
+        hpAfter: hpAfter,
+        // |-crit| latches on the mon that TOOK the critical hit — our defender here. Reading it
+        // off the attacker (as the first draft did) left the flag permanently false.
+        crit: defender.critTurn === this.state.turn,
+        attackerIsP1: attacker.side === 'p1',
+        defenderId: defender.id,
+        defenderSlot: defender.slot,
+        defenderBoosts: Object.assign({}, defender.boosts || {}),
+        defenderStatus: defender.status || '',
+        weather: (this.state.field && this.state.field.weather) || '',
+        terrain: (this.state.field && this.state.field.terrain) || '',
+        sig: this.state.turn + ':' + moveId + ':' + damagePercent + ':' + (defender.critTurn === this.state.turn ? 'crit' : '')
+      };
+      // An identical signature means we are re-reading the same hit (a mirrored poll line);
+      // appending it twice would double-weight one measurement.
+      for (let i = 0; i < attacker.damageDealt.length; i++) {
+        if (attacker.damageDealt[i] && attacker.damageDealt[i].sig === obs.sig) return;
+      }
+      attacker.damageDealt.push(obs);
+      while (attacker.damageDealt.length > max) attacker.damageDealt.shift();
+      this._addItemEvidence(attacker, 'Dealt ' + damagePercent + '% to ' + defender.species + ' with ' + moveName);
     }
 
     _onStatus(event) {
@@ -1014,6 +1180,15 @@
       const side = event.side || sideOf(event.slot);
       const mon = this._findBySlot(event.slot) || this._findBySpecies(side, event.species);
       if (!mon) return;
+      // Credit the KO to whoever landed the last hit on that slot. Showdown sends a lone
+      // `|faint|` per body, so this is the one place a knockout is counted; the `0 fnt` damage
+      // line that precedes it must NOT count it twice.
+      const killerId = mon.slot ? this.state._lastDamager[mon.slot] : null;
+      if (killerId) {
+        const stats = this.state.battleStats;
+        stats.kos[killerId] = (stats.kos[killerId] || 0) + 1;
+        delete this.state._lastDamager[mon.slot];
+      }
       mon.fainted = true;
       mon.hp = 0;
       mon.hpPercent = 0;
@@ -1121,6 +1296,9 @@
     _onActivate(event) {
       const side = event.side || sideOf(event.slot);
       const mon = this._findBySlot(event.slot) || this._findBySpecies(side, event.species);
+      // Receipt counter, taken BEFORE the mon lookup so an activation on a body we have not
+      // tracked yet is still tallied. Both the |-ability| and |-activate| shapes land here.
+      if (/magic bounce/i.test(String(event.effect || event.effectName || ''))) this.state.battleStats.magicBounce++;
       if (!mon) return;
       const effect = String(event.effect || '');
       const abilityMatch = effect.match(/ability:\s*(.+)$/i);
@@ -1359,6 +1537,10 @@
         if (m.status === 'tox') m.toxicCounter = Math.max(1, m.statusTurns);
       }
 
+      // Receipt counters, read from the state the turn actually starts with.
+      if (st.field.trickRoom) st.battleStats.trActiveTurns++;
+      if (st.field.weather === 'snow' || st.field.weather === 'hail') st.battleStats.snowTurns++;
+
       st.history.turns.push({
         turn: n,
         weather: st.field.weather,
@@ -1430,7 +1612,7 @@
         actions.forceSwitch = true;
       }
       if (json.wait) {
-        st.legalActions = { moves: [], switches: [], trapped: false, forceSwitch: false, wait: true };
+        st.legalActions = { moves: [], switches: [], trapped: false, forceSwitch: false, wait: true, forId: null };
         st.waiting = true;
         return;
       }
@@ -1449,6 +1631,12 @@
           slot: m.slot || (st.mySide + slotLetter(m.index))
         });
       }
+      // WHICH body this request is about. `st.active.my` moves on, but these numbers are a
+      // snapshot of one body's move list: a switch in the log with no request after it (a real
+      // pattern in a fast log) would otherwise leave them describing the body that just left,
+      // and any reader that pairs them with the incoming body is describing two Pokemon at once.
+      const forMon = (st.myTeam || []).filter(function (m) { return m && m.isActive; })[0] || null;
+      actions.forId = forMon ? toID(forMon.id || forMon.species) : null;
       st.legalActions = actions;
 
       // the request is the authoritative moment to refresh the speed hint
@@ -1535,6 +1723,8 @@
     _markMega(mon, forme) {
       if (!mon) return;
       mon.megaEvolved = true;
+      // The turn it happened, for the format sentinel's "BURNED (X, turn N)" line.
+      if (!mon.megaTurn) mon.megaTurn = this.state.turn;
       const name = String(forme === undefined || forme === null ? '' : forme).trim();
       const info = name ? U.getSpecies(name) : null;
       if (info && info.name && toID(info.name) !== toID(mon.species)) {
@@ -1555,7 +1745,10 @@
     }
 
     _markZMove(side, mon) {
-      if (mon) mon.usedZMove = true;
+      if (mon) {
+        mon.usedZMove = true;
+        if (!mon.zMoveTurn) mon.zMoveTurn = this.state.turn;
+      }
       const st = this.state;
       if (side === st.oppSide) {
         st.formatLocks.oppHasUsedZMove = true;
@@ -1629,6 +1822,69 @@
         try { this.pruner.handleSpeedFloorEvent(event, this.state); } catch (e) { debug('pruner speedfloor failed', e && e.message); }
       }
       this.emit('speedfloor', { side: side, value: value, mon: mon.species, reason: reason });
+    }
+
+    /**
+     * `|stpp|` — the observed PP snapshot from the page's own battle object (ARCHITECTURE §6.4).
+     *
+     * One line per move slot, so this merges rather than replaces: the four lines of a body
+     * arrive in the same tick and each one owns a single move. A snapshot is authoritative for
+     * what it says and silent about the rest, so a move it never mentions keeps whatever we knew.
+     */
+    _onPp(event) {
+      const side = event.side || sideOf(event.slot);
+      const mon = (event.slot ? this._findBySlot(event.slot) : null) ||
+        (event.species ? this._findBySpecies(side, event.species) : null);
+      if (!mon) return;
+      const list = Array.isArray(event.moves) ? event.moves : [];
+      let stored = 0;
+      for (let i = 0; i < list.length; i++) {
+        const mv = list[i];
+        if (!mv || !mv.id) continue;
+        const pp = typeof mv.pp === 'number' && isFinite(mv.pp) ? mv.pp : null;
+        const maxpp = typeof mv.maxpp === 'number' && isFinite(mv.maxpp) ? mv.maxpp : null;
+        if (pp === null && maxpp === null) continue;
+        mon.ppSnapshot[mv.id] = { pp: pp, maxpp: maxpp, turn: this.state.turn };
+        stored++;
+      }
+      if (stored) this.emit('pp', { mon: mon.species, moves: stored, side: side });
+    }
+
+    /**
+     * `|stacc|` — the client's own accuracy for a move (ARCHITECTURE §6.5). Battle-wide, not
+     * per-mon: accuracy is a property of the move, and the same table answers for both sides.
+     * `true` means the move cannot miss, and that is kept as `true` rather than coerced to 100 so
+     * a caller can tell "sure-hit" from "95% accuracy".
+     */
+    _onAccuracy(event) {
+      const list = Array.isArray(event && event.moves) ? event.moves : [];
+      for (let i = 0; i < list.length; i++) {
+        const mv = list[i];
+        if (!mv || !mv.id) continue;
+        if (typeof mv.accuracy !== 'number' && mv.accuracy !== true) continue;
+        this.state.moveAccuracy[mv.id] = mv.accuracy;
+      }
+    }
+
+    /**
+     * Residual-order evidence (ARCHITECTURE §6.2). The parser asserts the ORDER; the raw
+     * relation is recorded on both bodies here, and the conversion into a speed bracket is the
+     * pruner's `handleResidualOrderEvent` — the same division of labour the synthesised
+     * `speedfloor` event already uses.
+     */
+    _onResidualOrder(event) {
+      const state = this.state;
+      const faster = this._findBySlot(event.slot) || this._findBySpecies(event.side, event.species);
+      const slower = this._findBySlot(event.otherSlot) || this._findBySpecies(event.otherSide, event.otherSpecies);
+      if (!faster || !slower || faster === slower) return;
+      const rel = { id: slower.id || toID(slower.species), species: slower.species || slower.id || '', turn: event.turn, reason: event.reason || 'residual resolved first' };
+      if (faster.residualOrderBefore.indexOf(rel) === -1) faster.residualOrderBefore.push(rel);
+      const back = { id: faster.id || toID(faster.species), species: faster.species || faster.id || '', turn: event.turn, reason: event.reason || 'residual resolved first' };
+      if (slower.residualOrderAfter.indexOf(back) === -1) slower.residualOrderAfter.push(back);
+      if (this.pruner && typeof this.pruner.handleResidualOrderEvent === 'function') {
+        try { this.pruner.handleResidualOrderEvent(event, state); } catch (e) { debug('pruner residualorder failed', e && e.message); }
+      }
+      this.emit('residualorder', { before: faster.species, after: slower.species, turn: event.turn });
     }
 
     _onEndBattle(event, type) {

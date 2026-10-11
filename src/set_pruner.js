@@ -6,7 +6,8 @@
  * (originalArchetypeItem, confirmedItem, currentBattleItem, itemConsumed, itemKnockedOff,
  * itemIsIrremovable, itemless, cannotBeChoice, cannotBeBoosterEnergy, megaEvolved,
  * usedZMove, boosterConsumed, boosterActive), speedFloor/speedCeiling/speedEvidence,
- * candidateSets/prunedReasons/liveSet, plus state.formatLocks.
+ * residualOrderBefore/residualOrderAfter, candidateSets/prunedReasons/liveSet,
+ * pinnedEvs/evPinned, plus state.formatLocks.
  *
  * Nothing here ever throws: a battle log will always contain something we did not model.
  */
@@ -23,6 +24,72 @@
   const SPEED_MAX_CEILING = cfg('pruner.speedMaxCeiling', 1012); // Regieleki @ Choice Scarf, L100, +Spe, 252 EV
   const FLOOR_KEEP = cfg('pruner.speedFloorFallbackKeep', 4);    // kept when no set reaches the floor
 
+  // Reverse damage deduction (upgrade: live EV solving). Values come from config.js, like every
+  // other heuristic here; the literals are the standalone fallback.
+  const DMG_EVIDENCE_ON = cfg('pruner.damageEvidence.enabled', true);
+  const DMG_SLACK_PCT = cfg('pruner.damageEvidence.slackPct', 3);
+  const DMG_SLACK_REL = cfg('pruner.damageEvidence.slackRel', 0.15);
+  const DMG_MIN_PCT = cfg('pruner.damageEvidence.minDamagePct', 5);
+  const DMG_MAX_OBS = cfg('pruner.damageEvidence.maxObservations', 8);
+  const DMG_MAX_SETS = cfg('pruner.damageEvidence.maxSetsTested', 64);
+
+  // The discrete half of reverse damage (ARCHITECTURE §6.1): damage is one of 16 integer rolls,
+  // so a set that cannot produce the exact integer percentage the protocol printed is out even
+  // when its RANGE covers it. This is a refinement only — the caller keeps the pool when every
+  // candidate fails, exactly like the range check above it.
+  const DISCRETE_ON = cfg('pruner.discreteRolls.enabled', true);
+  const DR_SLACK_PCT = cfg('pruner.discreteRolls.slackPct', 0.05);
+  const DR_REQUIRE_OBS = cfg('pruner.discreteRolls.requireObservations', 2);
+
+  // Residual-order speed evidence (ARCHITECTURE §6.2): end-of-turn residuals resolve in Speed
+  // order, which is a RELATIVE fact. `trust` decides how far the relative order may bite once it
+  // is turned into a floor/ceiling against the other body's believed speed; at 0 the order is
+  // recorded as telemetry and nothing is pruned.
+  const RESID_ON = cfg('pruner.residualOrder.enabled', true);
+  const RESID_TRUST = cfg('pruner.residualOrder.trust', 1);
+
+  // The optional scouting prior (ARCHITECTURE §6.3). Like the ladder overlay it only ever
+  // re-weights sets the curated database already holds, on a COPY, and a species it never saw
+  // keeps every curated weight untouched.
+  const SCOUT_ON = cfg('pruner.scout.enabled', true);
+  const SCOUT_MAX_BEND = cfg('pruner.scout.maxBend', 0.5);
+
+  /** Stable signature of an EV vector, used to decide whether a pool has collapsed to one. */
+  function evSignature(evs) {
+    if (!evs) return '';
+    return ['hp', 'atk', 'def', 'spa', 'spd', 'spe'].map(function (k) {
+      return typeof evs[k] === 'number' ? evs[k] : 0;
+    }).join('/');
+  }
+
+  /** "252 HP / 4 SpD" — the shortest true description of an EV vector. */
+  function evText(evs) {
+    if (!evs) return '';
+    const labels = { hp: 'HP', atk: 'Atk', def: 'Def', spa: 'SpA', spd: 'SpD', spe: 'Spe' };
+    const out = [];
+    ['hp', 'atk', 'def', 'spa', 'spd', 'spe'].forEach(function (k) {
+      const v = typeof evs[k] === 'number' ? evs[k] : 0;
+      if (v) out.push(v + ' ' + labels[k]);
+    });
+    return out.length ? out.join(' / ') : 'no investment';
+  }
+
+  // Moves whose damage the library's stat line cannot predict from the set alone. A fixed-damage
+  // move (Seismic Toss = the user's level), a weight/speed/HP-ratio move or a boost-scaling move
+  // computes the same base power for every candidate spread, so the observed number would
+  // "prove" whichever set happened to be modelled first. They are skipped rather than trusted.
+  const UNPREDICTABLE_DAMAGE = new Set([
+    'seismictoss', 'nightshade', 'sonicboom', 'dragonrage', 'superfang', 'naturesmadness',
+    'ruination', 'endeavor', 'counter', 'mirrorcoat', 'metalburst', 'comeuppance', 'finalgambit',
+    'painsplit', 'psywave', 'flail', 'reversal', 'magnitude', 'present', 'trumpcard', 'spitup',
+    'punishment', 'wringout', 'crushgrip', 'heavyslam', 'heatcrash', 'grassknot', 'lowkick',
+    'gyroball', 'electroball', 'storedpower', 'powertrip', 'ragefist', 'return', 'frustration',
+    'punishment', 'fling', 'naturalgift', 'beatup', 'dreameater', 'synchronoise', 'grasspledge',
+    'waterpledge', 'firepledge', 'payback', 'avalanche', 'revenge', 'assurance', 'boltbeak',
+    'fishiousrend', 'echoedvoice', 'rollout', 'iceball', 'furycutter', 'brine', 'venoshock',
+    'hex', 'acrobatics', 'facade', 'brutalswing', 'lastrespects', 'rage', 'bide', 'shelter'
+  ]);
+
   const CHOICE_REASON = 'Choice lock: 2+ distinct moves in one stint => no Choice item';
   const MEGA_LOCK_REASON = 'Format lock: opponent already Mega Evolved => no Mega Stone';
   const Z_LOCK_REASON = 'Format lock: opponent already used its Z-Move => no Z-Crystal';
@@ -35,6 +102,9 @@
       opts = opts || {};
       this.opts = opts;
       this.maxReasons = opts.maxReasons || MAX_REASONS;
+      // The damage engine is optional: without it the reverse-damage rule degrades to a no-op
+      // and every other deduction still runs (src/content.js passes the shared engine).
+      this.damage = opts.damage || null;
       // mon.id -> pristine SetCandidate[] (deep-cloned once so prune() is idempotent)
       this._pristine = Object.create(null);
     }
@@ -148,8 +218,81 @@
         if (copy && copy.species && !copy.id) copy.id = U.toID(copy.species) + '-' + i;
         pool.push(copy);
       }
+      // The scouting prior is applied HERE, to the clones and never to the database object, and
+      // before the pool is captured as pristine, so every later deduction narrows an already
+      // opponent-shaped pool. It re-weights; it cannot add or remove a set.
+      this._applyScoutPrior(mon, pool);
       this._pristine[key] = pool;
       return pool;
+    }
+
+    /* -------------------------------------------------------- scouting prior */
+
+    /** The generated overlay's entry for this mon (src/scout_prior.js), or null. */
+    _scoutEntry(mon) {
+      if (!SCOUT_ON || !mon) return null;
+      let table = null;
+      try {
+        if (typeof window !== 'undefined' && window && window.ST_SCOUT) table = window.ST_SCOUT;
+        else if (ST.SCOUT) table = ST.SCOUT;
+      } catch (e) { table = null; }
+      if (!table || !table.species) return null;
+      const id = U.toID(mon.species || mon.id);
+      return (id && table.species[id]) || null;
+    }
+
+    /**
+     * Re-weight a freshly seeded pool by what the opponent's own replays revealed. Dimensions the
+     * overlay never observed are skipped entirely, so a corpus that only ever showed items does
+     * not silently vote against every set's moves. Returns the number of sets it moved.
+     */
+    _applyScoutPrior(mon, pool) {
+      const entry = this._scoutEntry(mon);
+      if (!entry || !pool || !pool.length) return 0;
+      const observed = {
+        items: entry.items && Object.keys(entry.items).length ? entry.items : null,
+        abilities: entry.abilities && Object.keys(entry.abilities).length ? entry.abilities : null,
+        moves: entry.moves && Object.keys(entry.moves).length ? entry.moves : null
+      };
+      if (!observed.items && !observed.abilities && !observed.moves) return 0;
+      let moved = 0;
+      for (let i = 0; i < pool.length; i++) {
+        const set = pool[i];
+        if (!set) continue;
+        const shares = [];
+        if (observed.items) {
+          const itemId = U.toID(set.item);
+          shares.push(itemId && observed.items[itemId] !== undefined ? observed.items[itemId] : 0);
+        }
+        if (observed.abilities) {
+          const abilityId = U.toID(set.ability);
+          shares.push(abilityId && observed.abilities[abilityId] !== undefined ? observed.abilities[abilityId] : 0);
+        }
+        if (observed.moves && Array.isArray(set.moves) && set.moves.length) {
+          let sum = 0;
+          for (let m = 0; m < set.moves.length; m++) {
+            const mid = U.toID(set.moves[m]);
+            sum += (mid && observed.moves[mid] !== undefined) ? observed.moves[mid] : 0;
+          }
+          shares.push(sum / set.moves.length);
+        }
+        if (!shares.length) continue;
+        let total = 0;
+        for (let s = 0; s < shares.length; s++) total += shares[s];
+        const score = U.clamp(total / shares.length / 100, 0, 1);
+        const factor = U.clamp(1 + SCOUT_MAX_BEND * (2 * score - 1),
+          1 - SCOUT_MAX_BEND, 1 + SCOUT_MAX_BEND);
+        const before = typeof set.weight === 'number' ? set.weight : 0;
+        set.weight = before * factor;
+        set.scoutFactor = factor;
+        if (Math.abs(factor - 1) > 0.001) moved++;
+      }
+      if (moved) {
+        this._addReason(mon, 'Scouting prior: re-weighted ' + moved + ' of ' + pool.length +
+          ' candidate sets from ' + (entry.seen || 0) + ' observed appearance' +
+          ((entry.seen || 0) === 1 ? '' : 's') + ' (up to ' + Math.round(SCOUT_MAX_BEND * 100) + '% either way)');
+      }
+      return moved;
     }
 
     /** Distinct moves the opponent actually clicked during the current stint. */
@@ -432,6 +575,202 @@
       return { pruned: dropped > 0, dropped: dropped, floor: floor, survivors: survivors };
     }
 
+    /* ------------------------------------------------- reverse damage deduction */
+
+    /**
+     * Which candidate sets cannot have thrown an observed hit?
+     *
+     * We know OUR body exactly (the paste carries its EVs, IVs and nature) and we know how many
+     * percent of it just disappeared, so every candidate spread of the attacker can be run
+     * through the calculator and checked: a set whose maximum roll is still below what we took is
+     * not the set we are facing, and neither is one whose minimum roll exceeds it.
+     *
+     * Three things keep this honest, because it is the most speculative deduction in the file:
+     *   - a generous tolerance band (`slackPct` absolute + `slackRel` relative) absorbs Showdown's
+     *     integer HP rounding, a roll we did not see the extremes of, and any small factor we did
+     *     not model;
+     *   - a critical hit is flagged at the source and never used, and moves whose damage is not a
+     *     function of the set (fixed damage, weight/speed/HP ratio) are skipped outright;
+     *   - if one observation would eliminate EVERY candidate, the observation is discarded instead
+     *     of the database: an unmodelled Z-move or a mid-turn ability is far more likely than the
+     *     set database being wrong. All of this is recorded on the mon, so the HUD can show why.
+     *
+     * Verdicts are memoised per observation signature: the pools are re-derived on every single
+     * protocol event, and re-running 40 damage calculations each time is not affordable.
+     */
+    damageVerdicts(mon, state, pristine) {
+      if (!mon) return Object.create(null);
+      const obs = Array.isArray(mon.damageDealt) ? mon.damageDealt : [];
+      const sig = obs.map(function (o) { return (o && o.sig) || ''; }).join(';');
+      if (!obs.length || !DMG_EVIDENCE_ON || !this.damage || typeof this.damage.calculateDamage !== 'function') {
+        return Object.create(null);
+      }
+      if (!mon.damageVerdictCache || typeof mon.damageVerdictCache !== 'object') {
+        mon.damageVerdictCache = { sig: null, verdicts: Object.create(null) };
+      }
+      const cache = mon.damageVerdictCache;
+      if (cache.sig === sig) return cache.verdicts;
+      const pool = Array.isArray(pristine) && pristine.length ? pristine : this._poolFor(mon);
+      const committed = Object.create(null);
+      for (let o = 0; o < obs.length && o < DMG_MAX_OBS; o++) {
+        const observation = obs[o];
+        if (!observation || observation.crit) continue;
+        if (observation.damagePercent < DMG_MIN_PCT) continue;          // chip, not evidence
+        if (UNPREDICTABLE_DAMAGE.has(observation.moveId)) continue;
+        const defender = this._myMonById(state, observation.defenderId);
+        if (!defender) continue;                                        // no ruler, no measurement
+        const perObservation = Object.create(null);
+        let survivors = 0, tested = 0;
+        for (let s = 0; s < pool.length && tested < DMG_MAX_SETS; s++) {
+          const set = pool[s];
+          if (!set) continue;
+          tested++;
+          const key = set.id || ('candidate-' + s);
+          if (perObservation[key]) continue;
+          const reason = this._damageVerdict(set, observation, defender, state);
+          if (reason) perObservation[key] = reason;
+          else survivors++;
+        }
+        if (!tested) continue;
+        if (!survivors) {
+          this._addReason(mon, 'Damage evidence ignored: ' + U.round1(observation.damagePercent) + '% from ' +
+            observation.moveName + ' contradicts every candidate set');
+          continue;
+        }
+        // Pass 2 — the discrete refinement, only over what the range test just accepted, and only
+        // when it leaves something standing. It can therefore never turn one observation into an
+        // all-candidates-eliminated event, which would throw the range verdict away with it.
+        if (DISCRETE_ON && survivors > 0) {
+          const discrete = Object.create(null);
+          let left = 0;
+          let walked = 0;                                // its own cap: `tested` counts pass 1 only
+          for (let s = 0; s < pool.length && walked < DMG_MAX_SETS; s++) {
+            walked++;
+            const set = pool[s];
+            if (!set) continue;
+            const key = set.id || ('candidate-' + s);
+            if (perObservation[key]) continue;      // already refused by the range test
+            const reason = this._discreteVerdict(set, observation, defender, state);
+            if (reason) discrete[key] = reason;
+            else left++;
+          }
+          if (left > 0) {
+            const dkeys = Object.keys(discrete);
+            for (let k = 0; k < dkeys.length; k++) perObservation[dkeys[k]] = discrete[dkeys[k]];
+            survivors = left;
+          } else if (Object.keys(discrete).length) {
+            this._addReason(mon, 'Exact-roll evidence ignored: no candidate can produce ' +
+              U.round1(observation.damagePercent) + '% exactly, so the range verdict stands');
+          }
+        }
+        const keys = Object.keys(perObservation);
+        for (let k = 0; k < keys.length; k++) {
+          if (!committed[keys[k]]) committed[keys[k]] = perObservation[keys[k]];
+        }
+      }
+      cache.sig = sig;
+      cache.verdicts = committed;
+      return committed;
+    }
+
+    /** One set against one observed hit: a reason to drop it, or null. */
+    _damageVerdict(set, observation, defender, state) {
+      let res = null;
+      try {
+        res = this.damage.calculateDamage(set, defender, observation.moveName, (state && state.field) || null, {
+          attackerIsP1: !!observation.attackerIsP1,
+          weather: observation.weather || '',
+          terrain: observation.terrain || '',
+          defender: {
+            hpPercent: observation.hpBefore,
+            boosts: observation.defenderBoosts,
+            status: observation.defenderStatus
+          }
+        });
+      } catch (e) { return null; }
+      if (!res || res.failed) return null;
+      const lo = res.minPercent, hi = res.maxPercent;
+      if (typeof lo !== 'number' || typeof hi !== 'number' || !isFinite(lo) || !isFinite(hi)) return null;
+      const slack = DMG_SLACK_PCT + DMG_SLACK_REL * Math.max(hi, observation.damagePercent);
+      const seen = U.round1(observation.damagePercent);
+      if (seen > hi + slack) {
+        return 'Took ' + seen + '% from ' + observation.moveName + ': this set maxes at ' +
+          U.round1(hi) + '% (offence too low)';
+      }
+      if (seen < lo - slack) {
+        return 'Took ' + seen + '% from ' + observation.moveName + ': this set cannot go below ' +
+          U.round1(lo) + '% (offence too high)';
+      }
+      return null;
+    }
+
+    /**
+     * The exact half of the same deduction (ARCHITECTURE §6.1), run as its OWN pass over the sets
+     * the range test already accepted.
+     *
+     * A damage roll is an integer, and the number Showdown printed is that integer as a percentage
+     * of our max HP, so a set is only possible if ONE OF ITS OWN 16 ROLLS rounds to the printed
+     * percentage. Two spreads with the same type effectiveness and base power can differ by a
+     * single EV point and land on different rolls, which is how this pins a spread instead of
+     * guessing one.
+     *
+     * It lives in its own pass rather than inside `_damageVerdict` for one reason: when the
+     * discrete test would eliminate EVERY remaining candidate the honest answer is "this
+     * refinement is not usable here" (the observed percentage may come from a factor we do not
+     * model), NOT "discard the observation the range test just made". The caller drops this
+     * pass in that case and keeps the range verdict.
+     *
+     * Returns null when the set survives, and also when the library gave no roll list: a
+     * fixed-damage or multi-hit move genuinely has no single roll list, and silence is correct.
+     */
+    _discreteVerdict(set, observation, defender, state) {
+      if (!DISCRETE_ON || !set || !observation) return null;
+      if (UNPREDICTABLE_DAMAGE.has(observation.moveId)) return null;
+      let res = null;
+      try {
+        res = this.damage.calculateDamage(set, defender, observation.moveName, (state && state.field) || null, {
+          attackerIsP1: !!observation.attackerIsP1,
+          weather: observation.weather || '',
+          terrain: observation.terrain || '',
+          defender: {
+            hpPercent: observation.hpBefore,
+            boosts: observation.defenderBoosts,
+            status: observation.defenderStatus
+          }
+        });
+      } catch (e) { return null; }
+      if (!res || res.failed) return null;
+      if (!Array.isArray(res.rolls) || !res.rolls.length) return null;
+      const maxHp = res.defenderMaxHP || 0;
+      if (!(maxHp > 0)) return null;
+      const seen = U.round1(observation.damagePercent);
+      // The observation carries one decimal place of percentage, so the integer rolls that could
+      // have produced it sit in a narrow band; half an HP of slack absorbs the percentile
+      // arithmetic at both ends of it.
+      const low = (seen - DR_SLACK_PCT) / 100 * maxHp - 0.5;
+      const high = (seen + DR_SLACK_PCT) / 100 * maxHp + 0.5;
+      for (let i = 0; i < res.rolls.length; i++) {
+        const v = res.rolls[i];
+        if (v >= low && v <= high) return null;
+      }
+      return 'Took ' + seen + '% from ' + observation.moveName + ': none of this set\'s ' +
+        res.rolls.length + ' rolls (' + U.round1(res.rolls[0] / maxHp * 100) + '-' +
+        U.round1(res.rolls[res.rolls.length - 1] / maxHp * 100) + '%) can round to ' + seen +
+        '% (exact-roll elimination)';
+    }
+
+    /** Resolve the ruler of an observation: our own body, by id (or species as a fallback). */
+    _myMonById(state, id) {
+      if (!state) return null;
+      const team = state.myTeam || [];
+      for (let i = 0; i < team.length; i++) {
+        const mon = team[i];
+        if (!mon) continue;
+        if (mon.id === id || (id && U.toID(mon.species) === id)) return mon;
+      }
+      return null;
+    }
+
     /** Speed-floor event handler used by BattleStateManager (see ARCHITECTURE §2). */
     handleSpeedFloorEvent(event, state) {
       if (!event || !state) return { pruned: false, dropped: 0, floor: 0, survivors: [] };
@@ -459,6 +798,155 @@
       return res;
     }
 
+    /* --------------------------------------------- residual-order speed evidence */
+
+    /** Resolve a body from one side's team by slot first, then by species id. */
+    _monFromTeam(team, slot, species) {
+      if (!Array.isArray(team) || !team.length) return null;
+      if (slot) {
+        for (let i = 0; i < team.length; i++) {
+          if (team[i] && team[i].slot === slot) return team[i];
+        }
+      }
+      const id = U.toID(species);
+      if (id) {
+        for (let i = 0; i < team.length; i++) {
+          if (team[i] && (team[i].id === id || U.toID(team[i].species) === id)) return team[i];
+        }
+      }
+      return null;
+    }
+
+    /** The speed we currently believe for a body: its surviving set's own Speed. */
+    _believedSpeed(mon) {
+      const set = (mon && mon.liveSet) ? mon.liveSet : (mon ? this.bestSet(mon) : null);
+      if (!set) return 0;
+      return U.maxSpeedForSet(set);
+    }
+
+    /**
+     * Residual-order event handler, the twin of handleSpeedFloorEvent (ARCHITECTURE §6.2).
+     *
+     * The conversion only: `BattleStateManager._onResidualOrder` has already written the raw
+     * relation onto BOTH bodies (it owns MonState, and it is the single writer of these fields),
+     * so this resolves the two bodies and asks each of them to narrow its own pool. Doing the
+     * recording here as well would mean two writers for one fact.
+     */
+    handleResidualOrderEvent(event, state) {
+      const nothing = { pruned: false, dropped: 0, floor: 0, ceiling: 0, survivors: [] };
+      if (!event || !state) return nothing;
+      const faster = this._monFromTeam(event.side === state.mySide ? state.myTeam : state.oppTeam,
+        event.slot, event.species);
+      const slower = this._monFromTeam(event.otherSide === state.mySide ? state.myTeam : state.oppTeam,
+        event.otherSlot, event.otherSpecies);
+      if (!faster || !slower || faster === slower) return nothing;
+
+      const a = this.applyResidualOrder(faster, state);
+      const b = this.applyResidualOrder(slower, state);
+      return {
+        pruned: a.pruned || b.pruned,
+        dropped: a.dropped + b.dropped,
+        floor: a.floor, ceiling: b.ceiling,
+        survivors: a.survivors && a.survivors.length ? a.survivors : b.survivors
+      };
+    }
+
+    /**
+     * Turn the recorded residual relations into a speed floor/ceiling and narrow the pool.
+     *
+     * End-of-turn residual damage and healing resolve in Speed order (fastest first) regardless of
+     * Trick Room, so "my Leftovers ticked before yours" means my Speed is strictly greater. The
+     * relative fact becomes a number only through the OTHER body's believed Speed, so this is the
+     * most indirect deduction in the file and every step is allowed to fail soft: no candidate
+     * surviving the new bracket republishes the pristine pool and says why.
+     */
+    applyResidualOrder(mon, state) {
+      const pool0 = this._poolFor(mon);
+      const idle = { pruned: false, dropped: 0, floor: 0, ceiling: 0, survivors: pool0 };
+      if (!mon || !RESID_ON) return idle;
+      const before = Array.isArray(mon.residualOrderBefore) ? mon.residualOrderBefore : [];
+      const after = Array.isArray(mon.residualOrderAfter) ? mon.residualOrderAfter : [];
+      if (!before.length && !after.length) return idle;
+      // `trust` says how far the relative order may bite: below half a step the order is recorded
+      // as telemetry only, because a residual that ticked first is not always a Speed comparison
+      // (a switch-in, a consumed berry and a weather heal can reorder the same block).
+      if (RESID_TRUST < 0.5) {
+        this._addEvidence(mon, 'Residual order logged (' + before.length + ' before / ' +
+          after.length + ' after); pruner.residualOrder.trust too low to convert it');
+        return idle;
+      }
+      const margin = Math.max(1, Math.round(RESID_TRUST));
+      let floor = Math.max(mon.speedFloor | 0, 0);
+      let ceiling = typeof mon.speedCeiling === 'number' ? mon.speedCeiling : SPEED_MAX_CEILING;
+      const notes = [];
+      for (let i = 0; i < before.length; i++) {
+        const other = this._bodyFromState(state, before[i]);
+        const beat = other ? this._believedSpeed(other) : 0;
+        if (beat > 0 && beat + margin > floor) {
+          floor = beat + margin;
+          notes.push('beat ' + (before[i].species || before[i].id) + ' (' + beat + ')');
+        }
+      }
+      for (let i = 0; i < after.length; i++) {
+        const other = this._bodyFromState(state, after[i]);
+        const won = other ? this._believedSpeed(other) : 0;
+        if (won > 0 && won - margin < ceiling) {
+          ceiling = won - margin;
+          notes.push('lost to ' + (after[i].species || after[i].id) + ' (' + won + ')');
+        }
+      }
+      if (!notes.length || (floor <= (mon.speedFloor | 0) && ceiling >= (typeof mon.speedCeiling === 'number' ? mon.speedCeiling : SPEED_MAX_CEILING))) {
+        return idle;
+      }
+
+      const survivors = [];
+      const dropped = [];
+      for (let i = 0; i < pool0.length; i++) {
+        const set = pool0[i];
+        const spe = U.maxSpeedForSet(set);
+        set.maxSpeed = spe;
+        if (floor && spe < floor) { dropped.push(set); continue; }
+        if (ceiling < SPEED_MAX_CEILING && spe > ceiling) { dropped.push(set); continue; }
+        survivors.push(set);
+      }
+      if (!survivors.length) {
+        this._addReason(mon, 'Residual order (' + notes.join('; ') + ') would leave no candidate; ignored');
+        return { pruned: false, dropped: 0, floor: floor, ceiling: ceiling, survivors: pool0 };
+      }
+      const key = this._poolKey(mon);
+      if (key) this._pristine[key] = survivors;
+      mon.candidateSets = survivors.slice();
+      if (floor) mon.speedFloor = floor;
+      if (ceiling < SPEED_MAX_CEILING) mon.speedCeiling = ceiling;
+      const best = this.bestSet(mon);
+      if (best) mon.liveSet = best;
+      this._addEvidence(mon, 'Residual order: ' + notes.join('; ') +
+        ' => Speed bracket [' + (floor || 0) + ', ' + (ceiling >= SPEED_MAX_CEILING ? '?' : ceiling) + ']');
+      if (dropped.length) {
+        this._addReason(mon, 'Residual order bracket [' + (floor || 0) + '-' +
+          (ceiling >= SPEED_MAX_CEILING ? '?' : ceiling) + ']: eliminated ' + dropped.length +
+          ' set' + (dropped.length === 1 ? '' : 's') + ' (' + notes.join('; ') + ')');
+      }
+      return { pruned: dropped.length > 0, dropped: dropped.length, floor: floor, ceiling: ceiling, survivors: survivors };
+    }
+
+    /** Resolve the counterpart of a residual relation against the live battle state. */
+    _bodyFromState(state, rel) {
+      if (!state || !rel) return null;
+      const id = rel.id || U.toID(rel.species);
+      if (!id) return null;
+      const teams = [state.myTeam, state.oppTeam, state.bench && state.bench.opp, state.bench && state.bench.my];
+      for (let t = 0; t < teams.length; t++) {
+        const team = teams[t];
+        if (!Array.isArray(team)) continue;
+        for (let i = 0; i < team.length; i++) {
+          const mon = team[i];
+          if (mon && (mon.id === id || U.toID(mon.species) === id)) return mon;
+        }
+      }
+      return null;
+    }
+
     /* ------------------------------------------------------------ main entry */
 
     /**
@@ -479,6 +967,9 @@
       // 1. Rule evaluation first — it decides the item filters below.
       const choice = this.applyChoiceLockRule(mon, state);
       const itemless = this._applyItemlessClassification(mon, state);
+      // Every hit this mon has already landed on our side, judged against the pool. Memoised
+      // per observation signature, so this is a handful of comparisons on a repeat call.
+      const damageVerdicts = this.damageVerdicts(mon, state, pristine);
       const canMega = U.canMegaEvolve(mon.species);
       const megaLocked = !!locks.oppHasMegaEvolved && !mon.megaEvolved;
       const zLocked = !!locks.oppHasUsedZMove && !mon.usedZMove;
@@ -564,6 +1055,12 @@
           }
         }
 
+        // Reverse damage deduction: an observed hit this set cannot have produced.
+        if (!drop && damageVerdicts) {
+          const setKey = set.id || ('candidate-' + i);
+          if (damageVerdicts[setKey]) drop = damageVerdicts[setKey];
+        }
+
         // Speed bracket.
         if (!drop && floor) {
           const maxSpe = U.maxSpeedForSet(set);
@@ -603,6 +1100,7 @@
 
       mon.candidateSets = published;
       mon.liveSet = this.bestSet(mon);
+      this._publishEvPin(mon, published);
       if (mon.liveSet) {
         if (!mon.originalArchetypeItem) mon.originalArchetypeItem = mon.liveSet.item || null;
         if (!mon.confirmedItem && !mon.currentBattleItem && published.length === 1) {
@@ -611,6 +1109,31 @@
         }
       }
       return published;
+    }
+
+    /**
+     * EV pinning (ARCHITECTURE §6.1): when the surviving pool has collapsed to a single EV
+     * vector, we know the opponent's exact investment. Two independent observations are required
+     * (`pruner.discreteRolls.requireObservations`) because one lucky match can fit several
+     * spreads by coincidence — a single-hit "pin" would be a guess wearing a badge.
+     */
+    _publishEvPin(mon, published) {
+      if (!mon) return null;
+      mon.evPinned = false;
+      mon.pinnedEvs = null;
+      if (!Array.isArray(published) || !published.length) return null;
+      const obs = Array.isArray(mon.damageDealt) ? mon.damageDealt.length : 0;
+      if (obs < Math.max(1, DR_REQUIRE_OBS | 0)) return null;
+      const sig = evSignature(published[0].evs);
+      if (!sig) return null;
+      for (let i = 1; i < published.length; i++) {
+        if (evSignature(published[i].evs) !== sig) return null;
+      }
+      mon.pinnedEvs = published[0].evs;
+      mon.evPinned = true;
+      this._addReason(mon, 'Exact spread pinned from ' + obs + ' observed hits: ' + evText(mon.pinnedEvs) +
+        ' (all ' + published.length + ' surviving set' + (published.length === 1 ? '' : 's') + ' share it)');
+      return mon.pinnedEvs;
     }
 
     /** Highest-weight surviving set (ties broken by id for determinism). */

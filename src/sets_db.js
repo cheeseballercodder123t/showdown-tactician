@@ -958,6 +958,50 @@
   });
 
   /* ==========================================================================================
+   *  LADDER-USAGE OVERLAY (optional, data lives in src/sets_usage.js)
+   * ========================================================================================*/
+
+  /**
+   * Re-weight a candidate pool by how often the ladder actually held each set's item.
+   *
+   * The curated `weight` is the prior and the observed item share is the likelihood, so the
+   * product is the posterior-shaped weight the sampler wants. Three rules make this safe:
+   *   - an item or species the overlay has never heard of is NOT evidence of rarity: that set
+   *     keeps its curated weight untouched. (The failure mode this avoids is an empty or thin
+   *     overlay silently flattening the whole database down to the floor.)
+   *   - a reported share IS used, clamped into [usage.floor, 1], so a genuinely rare set can
+   *     still be drawn at all; sampler.minSetWeight is the backstop after this.
+   *   - nothing is ever invented: this only moves the weight of a set that already exists.
+   *
+   * Pure: returns a NEW array and never mutates a set object.
+   */
+  function reweightByUsage(sets, overlay) {
+    const list = Array.isArray(sets) ? sets : [];
+    const out = [];
+    const cfg = ST.configGet || function (path, fallback) { return fallback; };
+    const usable = !!overlay && !!overlay.species && typeof overlay.species === 'object' &&
+      cfg('usage.enabled', true) !== false;
+    if (!usable) return list.slice();
+    const floor = cfg('usage.floor', 0.05);
+    for (let i = 0; i < list.length; i++) {
+      const set = list[i];
+      if (!set) { out.push(set); continue; }
+      const entry = overlay.species[U.toID(set.species || '')];
+      const items = entry && entry.items;
+      const share = items ? items[U.toID(set.item || '')] : undefined;
+      if (typeof share !== 'number' || !isFinite(share)) { out.push(set); continue; }
+      const copy = {};
+      const keys = Object.keys(set);
+      for (let k = 0; k < keys.length; k++) copy[keys[k]] = set[keys[k]];
+      copy.weight = (typeof set.weight === 'number' ? set.weight : 0) *
+        Math.max(floor, U.clamp(share / 100, 0, 1));
+      copy.usageShare = share;
+      out.push(copy);
+    }
+    return out;
+  }
+
+  /* ==========================================================================================
    *  PUBLIC API
    * ========================================================================================*/
 
@@ -990,8 +1034,30 @@
       return [];
     },
     genericFor: genericFor,
+    reweightByUsage: reweightByUsage,
     allSpecies: function () { return ALL_SPECIES.slice(); },
     has: function (name) { return !!DB[U.toID(name)]; },
     size: function () { return ALL_SPECIES.length; }
   };
+
+  // Apply the generated overlay once, at load, when one is actually present. Each species' pool
+  // is REPLACED by its re-weighted copy so `forSpecies()` — and therefore the pruner's pristine
+  // pool and the world sampler — see the ladder-informed weights with no extra call site.
+  (function applyUsageOverlay() {
+    const overlay = window.ST_USAGE;
+    const applied = !!(overlay && overlay.species && overlay.speciesCount);
+    ST.SetDatabase.report.usage = {
+      applied: applied,
+      generatedAt: applied ? (overlay.generatedAt || null) : null,
+      source: applied ? (overlay.source || null) : null,
+      species: applied ? overlay.speciesCount : 0,
+      pools: 0
+    };
+    if (!applied) return;
+    const ids = Object.keys(DB);
+    for (let i = 0; i < ids.length; i++) {
+      DB[ids[i]] = reweightByUsage(DB[ids[i]], overlay);
+    }
+    ST.SetDatabase.report.usage.pools = ids.length;
+  })();
 })();

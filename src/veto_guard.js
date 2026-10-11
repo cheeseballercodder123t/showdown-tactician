@@ -47,7 +47,10 @@
         this.vetoProtectRhythm(action, battleState, tempoVector),
         this.vetoAbilityImmunity(action, battleState),
         this.vetoLoneTRSetter(action, battleState),
-        this.vetoSpeedSuicide(action, battleState)
+        this.vetoSpeedSuicide(action, battleState),
+        this.vetoContactSuicide(action, battleState),
+        this.vetoSuckerPunchSetup(action, battleState),
+        this.vetoSelfCancellingTrickRoom(action, battleState)
       ];
       for (let i = 0; i < checks.length; i++) {
         if (checks[i] && checks[i].isVetoed) {
@@ -228,6 +231,132 @@
       return this._veto(VETO_CODES.VETO4,
         'Slower and facing a guaranteed ' + U.round1(best.minPercent) + '-' + U.round1(best.maxPercent) +
         '% KO from ' + (best.move || 'their attack') + ' before you act.');
+    }
+
+    /* ------------------------------------------------------------- VETO 5 */
+
+    /**
+     * Contact suicide: the target punishes contact (Iron Barbs / Rough Skin / Rocky Helmet) and
+     * our own HP is low enough that the recoil finishes the body. Clicking a contact move there
+     * throws the mon away for nothing — unless the hit KOs, because the punishment only fires
+     * when the target SURVIVES the attack.
+     *
+     * The chips are game rules, not opinions: Iron Barbs / Rough Skin are 1/8 of max HP (12.5%)
+     * and Rocky Helmet is 1/6 (16.7%), and they stack to ~29% — which is where the 29% ceiling in
+     * `veto.contactPunishHp` comes from. Unknown items/abilities are never assumed.
+     */
+    vetoContactSuicide(action, state) {
+      if (!action || action.kind !== 'move') return null;
+      const moveName = action.name || action.moveId || '';
+      const data = U.getMoveData(moveName);
+      if (!data || data.isStatus || !data.makesContact) return null;
+      const my = state && state.active ? state.active.my : null;
+      const opp = state && state.active ? state.active.opp : null;
+      if (!my || !opp) return null;
+      const chip = this._contactChipPercent(opp);
+      if (!chip) return null;
+      const hp = typeof my.hpPercent === 'number' ? my.hpPercent : 100;
+      if (hp > cfg('veto.contactPunishHp', 29) || hp > chip) return null;
+      // A guaranteed KO means the target never gets to punish us.
+      if (this._guaranteedKO(my, opp, moveName)) return null;
+      return this._veto(VETO_CODES.VETO5,
+        'Contact move into ' + (opp.species || opp.id) + ': up to ' + U.round1(chip) +
+        '% recoil (Iron Barbs / Rough Skin / Rocky Helmet) finishes you at ' + U.round1(hp) + '%.');
+    }
+
+    /** Known contact punishment, as a % of the target's max HP. 0 when nothing is known. */
+    _contactChipPercent(opp) {
+      const ability = U.toID(this._abilityOf(opp));
+      const item = U.toID(this._itemOf(opp));
+      const barbs = (ability === 'ironbarbs' || ability === 'roughskin') ? 12.5 : 0;
+      const helmet = item === 'rockyhelmet' ? 16.7 : 0;
+      return barbs + helmet;
+    }
+
+    /** Does our move knock the target out from the HP we can see? Never guesses. */
+    _guaranteedKO(my, opp, moveName) {
+      if (!this.damage || typeof this.damage.calculateDamage !== 'function') return false;
+      try {
+        const hit = this.damage.calculateDamage(my, opp, moveName, {});
+        if (!hit || typeof hit.minPercent !== 'number') return false;
+        return hit.minPercent >= (opp.hpPercent === undefined ? 100 : opp.hpPercent);
+      } catch (e) { return false; }
+    }
+
+    /* ------------------------------------------------------------- VETO 6 */
+
+    /**
+     * The Sucker Punch setup trap. Sucker Punch only connects if the target picks an ATTACK, so
+     * a healthy opponent holding a setup/recovery/status move simply clicks that and the turn is
+     * lost. Only a SECOND consecutive Sucker Punch is vetoed: the first one is a legitimate
+     * prediction, and this layer removes blunders rather than reads.
+     */
+    vetoSuckerPunchSetup(action, state) {
+      if (!action || action.kind !== 'move') return null;
+      if (U.toID(action.moveId || action.name || '') !== 'suckerpunch') return null;
+      const my = state && state.active ? state.active.my : null;
+      const opp = state && state.active ? state.active.opp : null;
+      if (!my || !opp) return null;
+      if (U.toID(my.lastMove || '') !== 'suckerpunch') return null;
+      // A stale lastMove from an earlier stint is not "consecutive".
+      const lastTurn = typeof my.lastMoveTurn === 'number' ? my.lastMoveTurn : -1;
+      const turn = typeof state.turn === 'number' ? state.turn : 0;
+      if (lastTurn < turn - 1) return null;
+      const hp = typeof opp.hpPercent === 'number' ? opp.hpPercent : 100;
+      if (hp < cfg('veto.suckerPunchSetupHp', 80)) return null;   // a chipped target attacks back
+      if (!this._hasNonAttackMove(opp)) return null;
+      return this._veto(VETO_CODES.VETO6,
+        'Consecutive Sucker Punch into a ' + U.round1(hp) + '% ' + (opp.species || opp.id) +
+        ' that can click a status/setup move — Sucker Punch fails and the turn is lost.');
+    }
+
+    /**
+     * Does the opponent plausibly hold something that makes Sucker Punch fail? Only proven
+     * sources count (revealed moves, the active set, or a candidate set): an entirely unknown
+     * body is left alone rather than vetoed on a guess.
+     */
+    _hasNonAttackMove(opp) {
+      const moveLists = [opp.revealedMoves, opp.setMoves, opp.liveSet && opp.liveSet.moves];
+      for (let l = 0; l < moveLists.length; l++) {
+        const list = moveLists[l];
+        if (!Array.isArray(list)) continue;
+        for (let i = 0; i < list.length; i++) {
+          const id = U.toID(list[i]);
+          if (!id) continue;
+          if (U.SETUP_MOVES.has(id) || PROTECT_IDS.has(id)) return true;
+          const data = U.getMoveData(list[i]);
+          if (data && (data.isStatus || data.isRecovery)) return true;
+        }
+      }
+      const sets = opp.candidateSets;
+      if (Array.isArray(sets)) {
+        for (let s = 0; s < Math.min(sets.length, 8); s++) {
+          const moves = sets[s] && sets[s].moves;
+          if (!Array.isArray(moves)) continue;
+          for (let i = 0; i < moves.length; i++) {
+            const id = U.toID(moves[i]);
+            if (!id) continue;
+            const data = U.getMoveData(moves[i]);
+            if (data && (data.isStatus || data.isRecovery)) return true;
+          }
+        }
+      }
+      return false;
+    }
+
+    /* ------------------------------------------------------------- VETO 7 */
+
+    /**
+     * Trick Room is already up: clicking it again can only waste the turn. (In Gen 5+ the move
+     * simply FAILS while the room is active — it does not cancel or refresh it — so there is no
+     * universe where re-clicking it is the right line, and for a TR team it burns a TR turn.)
+     */
+    vetoSelfCancellingTrickRoom(action, state) {
+      if (!action || action.kind !== 'move') return null;
+      if (U.toID(action.moveId || action.name || '') !== 'trickroom') return null;
+      if (!(state && state.field && state.field.trickRoom)) return null;
+      return this._veto(VETO_CODES.VETO7,
+        'Trick Room is already active: the move fails and the turn is lost.');
     }
 
     /**

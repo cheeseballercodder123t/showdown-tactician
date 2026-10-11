@@ -108,13 +108,24 @@
   function parseClauses(args, startIndex) {
     const from = [];
     let ofRaw = '';
+    const pushFrom = function (text) {
+      const t = String(text || '').replace(/^\[from\]\s*/i, '').replace(/^\[|\]$/g, '').trim();
+      if (t) from.push(t);
+    };
     for (let i = startIndex; i < args.length; i++) {
-      const a = args[i];
+      let a = args[i];
       if (!a) continue;
-      if (a.indexOf('of]') !== -1 || /^\[of\]/i.test(a)) { ofRaw = a.replace(/^\[of\]\s*/i, ''); continue; }
-      if (/^\[from\]/i.test(a)) { from.push(a.replace(/^\[from\]\s*/i, '')); continue; }
-      if (a.charAt(0) === '[') { from.push(a.replace(/^\[|\]$/g, '')); continue; }
-      from.push(a);
+      // `[of] p2a: X` reaches us in TWO shapes: as its own argument, and — the shape a real
+      // battle log actually uses for damage — riding at the END of the `[from]` clause:
+      //     |-damage|p1a: X|34/100|[from] move: Hydro Pump [of] p2a: Rotom-Wash
+      // The old code only knew the first, so those lines lost their `[from]` entirely (the
+      // whole argument was consumed as `ofRaw`). Splitting on the marker handles both.
+      const ofIdx = a.search(/\[of\]/i);
+      if (ofIdx !== -1) {
+        ofRaw = a.slice(ofIdx).replace(/^\[of\]\s*/i, '').trim();
+        a = a.slice(0, ofIdx).trim();
+      }
+      pushFrom(a);
     }
     return { from: from.join(' ').trim(), ofRaw: ofRaw };
   }
@@ -136,6 +147,10 @@
       this.pendingZ = { p1: null, p2: null };
       this.pendingMega = { p1: null, p2: null };
       this._speedFloorTurn = -1;
+      // Residual-order synthesis (see _maybeResidualOrder): the last residual line of this turn,
+      // and the directions already reported for it.
+      this._residualLast = null;
+      this._residualPairs = Object.create(null);
       this.winner = null;
       this.tied = false;
       this.speedHint = { mySpeed: null, mySpecies: null };
@@ -213,6 +228,10 @@
       this.pendingZ = { p1: null, p2: null };
       this.pendingMega = { p1: null, p2: null };
       this._speedFloorTurn = -1;
+      // Residual-order synthesis (see _maybeResidualOrder): the last residual line of this turn,
+      // and the directions already reported for it.
+      this._residualLast = null;
+      this._residualPairs = Object.create(null);
       this.winner = null;
       this.tied = false;
       this.speedHint = { mySpeed: null, mySpecies: null };
@@ -335,6 +354,14 @@
         // Both commands appear in every real battle, so they get a type of their own rather
         // than falling through to `unknown`: a consumer can tell a lucky roll from a roll.
         case '-crit': return this._parseMonEvent('crit', args, raw);
+        // NOT a Showdown command: the `|stpp|` snapshot is synthesised by src/injected.js from
+        // the page's own battle object, because max PP is game data the engine may not invent
+        // (ARCHITECTURE §6.4). The `st` prefix keeps it from ever colliding with a real line.
+        case 'stpp': return this._parseStpp(args, raw);
+        // `|stacc|<moveid>|<accuracy>|<true?>` — the move's accuracy, read from the CLIENT's own
+        // dex by src/injected.js, because the vendored damage bundle ships no accuracy data and
+        // the risk-adjusted scoring needs the real number rather than a hardcoded table.
+        case 'stacc': return this._parseStacc(args, raw);
         case '-fail': return this._parseEffect('fail', args, raw);
         default:
           if (NOISE[cmd] === 1) return null;
@@ -595,6 +622,45 @@
       };
     }
 
+    /**
+     * `|stpp|p2a: Kingambit|suckerpunch|5|8` — one move slot of one body.
+     * `pp`/`maxpp` are whatever the page reported, and stay `null` when the page did not give a
+     * number, so a consumer can tell "8 max PP" from "unknown".
+     */
+    _parseStpp(args, raw) {
+      const ident = splitIdent(args[0]);
+      const moveId = U.toID(args[1] || '');
+      const pp = parseInt(args[2], 10);
+      const maxpp = parseInt(args[3], 10);
+      const moves = moveId ? [{
+        id: moveId,
+        pp: isFinite(pp) ? pp : null,
+        maxpp: isFinite(maxpp) ? maxpp : null
+      }] : [];
+      return {
+        type: 'pp', raw: raw,
+        side: ident.side, slot: ident.slot, slotChar: ident.slotChar,
+        species: this.resolveSpecies(ident.side, ident.slotChar, ident.name),
+        moves: moves
+      };
+    }
+
+    /** `|stacc|focusblast|70` or `|stacc|suckerpunch|true` (cannot miss). */
+    _parseStacc(args, raw) {
+      const id = U.toID(args[0] || '');
+      const raw_acc = String(args[1] === undefined ? '' : args[1]).trim();
+      let accuracy = null;
+      if (raw_acc === 'true') accuracy = true;
+      else {
+        const n = parseInt(raw_acc, 10);
+        if (isFinite(n) && n > 0) accuracy = n;
+      }
+      return {
+        type: 'accuracy', raw: raw,
+        moves: id && accuracy !== null ? [{ id: id, accuracy: accuracy }] : []
+      };
+    }
+
     _parseZPower(args, raw) {
       const ident = splitIdent(args[0]);
       const move = args[1] || '';
@@ -628,6 +694,7 @@
             this.slots[evt.side][evt.slotChar] = evt.newSpecies || evt.species;
             this.active[evt.side] = this.slots[evt.side][evt.slotChar];
           }
+          this._residualLast = null;
           break;
         }
         case 'detailschange': case 'formechange': {
@@ -673,9 +740,24 @@
           this.turnMoves = { p1: [], p2: [] };
           this.pendingZ = { p1: null, p2: null };
           this._speedFloorTurn = -1;
+          this._residualLast = null;
+          this._residualPairs = Object.create(null);
+          break;
+        }
+        // Anything that ends a residual block breaks the adjacency the order evidence needs, so
+        // a pairing is only ever made between two consecutive residual lines of the same turn.
+        // (The switch/move cases above already reset it; this covers the rest.)
+        case 'faint': {
+          this._residualLast = null;
+          break;
+        }
+        case 'damage': case 'heal': {
+          const rel = this._maybeResidualOrder(evt);
+          if (rel) synthesised.push(rel);
           break;
         }
         case 'move': {
+          this._residualLast = null;
           const side = evt.side;
           if (side && this.turnMoves[side]) {
             this.turnMoves[side].push({
@@ -765,6 +847,47 @@
         type: 'speedfloor', raw: evt.raw,
         side: oppSide, value: mySpeed, species: oppEntry.species,
         oppMove: oppEntry.move, myMove: evt.move, turn: this.currentTurn, reason: reason
+      };
+    }
+
+    /**
+     * Residual-order synthesis (ARCHITECTURE §2/§6.2).
+     *
+     * End-of-turn residual damage and healing resolve in Speed order, fastest first, so when two
+     * residual lines for OPPOSITE sides land back to back — nothing but residuals between them —
+     * the first body is the faster of the two. This is deliberately narrow: a line whose clause
+     * list names a `move:` is a move's own damage and is not part of the residual phase, a
+     * `|switch|`/`|move|`/`|faint|`/`|turn|` in between breaks the pairing, and each direction is
+     * reported at most once per turn (only one body per side is ever on the field). The parser
+     * asserts the ORDER and nothing else; turning it into a Speed is the pruner's job.
+     */
+    _maybeResidualOrder(evt) {
+      if (!evt || !evt.side || !evt.slotChar) return null;
+      // `from` reaches us as a joined STRING on the HP events (and as a list on a switch), so
+      // normalise once instead of assuming either shape.
+      const raw = evt.from;
+      const clauses = Array.isArray(raw) ? raw : (raw ? [String(raw)] : []);
+      let residual = false;
+      for (let i = 0; i < clauses.length; i++) {
+        const c = String(clauses[i] || '');
+        if (/^move:/i.test(c)) return null;             // a move's own damage: not the residual phase
+        if (c) residual = true;
+      }
+      if (!residual) return null;                       // no clause at all: not attributable
+      const me = { side: evt.side, slot: evt.slot, species: evt.species, turn: this.currentTurn };
+      const prev = this._residualLast;
+      this._residualLast = me;
+      if (!prev || prev.turn !== this.currentTurn || prev.side === evt.side) return null;
+      if (!this._residualPairs) this._residualPairs = Object.create(null);
+      const key = prev.side + '|' + evt.side;
+      if (this._residualPairs[key]) return null;
+      this._residualPairs[key] = true;
+      return {
+        type: 'residualorder', raw: evt.raw,
+        side: prev.side, slot: prev.slot, species: prev.species,
+        otherSide: evt.side, otherSlot: evt.slot, otherSpecies: evt.species,
+        before: true, turn: this.currentTurn,
+        reason: 'residual resolved first'
       };
     }
 

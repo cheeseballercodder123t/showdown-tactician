@@ -161,6 +161,20 @@ button[data-move].st-optimal {
   color: #fecaca;
   animation: st-pulse 1.6s ease-in-out infinite;
 }
+/* The last Trick Room turn: gold, and it breathes rather than blinks. It is the one chip that
+   is also announced by a haptic pulse (src/content.js _maybeAlertTR), so it has to read as a
+   reward for looking up, not as another red error. */
+.tactician-tr-chip.tr-gold {
+  border-color: #fbbf24;
+  color: #fde68a;
+  background: rgba(251, 191, 36, 0.16);
+  animation: st-glow 2.2s ease-in-out infinite;
+}
+
+@keyframes st-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.0); }
+  50% { box-shadow: 0 0 0 5px rgba(251, 191, 36, 0.28); }
+}
 
 @keyframes st-pulse {
   0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.0); }
@@ -341,4 +355,332 @@ button[data-move].st-optimal {
 @media (prefers-reduced-motion: reduce) {
   .team-drawer { transition: none; }
   .tactician-tr-chip.tr-danger { animation: none; }
+}
+
+/* ========================================================= lethal roll gauges */
+/* A thin colour-coded band inside each move button showing the KO odds for the TARGET being
+ * previewed (the opponent's active mon, or a benched one after a bench tap). Deliberately in
+ * normal flow rather than absolute: the confidence badge already owns the top-right corner. */
+.st-lethal-bar {
+  display: block;
+  margin-top: 4px;
+  padding: 2px 6px;
+  border-left: 4px solid var(--st-low);
+  border-radius: calc(var(--st-radius) - 2px);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--st-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.4;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+button[data-st-lethal="guaranteed"] .st-lethal-bar {
+  background: rgba(34, 197, 94, 0.18);
+  border-left-color: var(--st-high);
+}
+button[data-st-lethal="high"] .st-lethal-bar {
+  background: rgba(234, 179, 8, 0.18);
+  border-left-color: var(--st-mid);
+}
+button[data-st-lethal="mid"] .st-lethal-bar {
+  background: rgba(100, 116, 139, 0.22);
+  border-left-color: var(--st-low);
+}
+button[data-st-lethal="none"] .st-lethal-bar {
+  background: rgba(148, 163, 184, 0.12);
+  border-left-color: #475569;
+  color: var(--st-muted);
+}
+
+/* =============================================================== bench sandbox */
+/* The opponent's bench as tappable pills. Fixed above the move bar, horizontally scrollable,
+ * one 48px touch target per mon, safe-area aware for gesture-navigation phones. */
+.st-bench-strip {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: calc(var(--st-touch) + 8px);
+  z-index: 40;
+  display: flex;
+  gap: 8px;
+  padding: 6px 10px calc(6px + env(safe-area-inset-bottom, 0px)) 10px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0) 0%, rgba(15, 23, 42, 0.82) 40%, var(--st-panel) 100%);
+  border-top: var(--st-border);
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+.st-bench-strip::-webkit-scrollbar { display: none; }
+
+.st-bench-pill {
+  flex: 0 0 auto;
+  min-width: 96px;
+  min-height: var(--st-touch);
+  padding: 8px 12px;
+  border: var(--st-border);
+  border-radius: var(--st-radius);
+  background: rgba(15, 23, 42, 0.9);
+  color: var(--st-text);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.st-bench-pill:active { background: rgba(30, 41, 59, 0.95); }
+
+/* The tapped target: gold, because it is a prediction, not a fact. */
+.st-bench-pill.st-selected {
+  border-color: var(--st-mid);
+  box-shadow: 0 0 0 2px rgba(234, 179, 8, 0.35) inset;
+  color: #fde68a;
+}
+
+.st-bench-pill.st-fainted {
+  border-style: dashed;
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+
+/* ============================================================ detective badges */
+/* The deductions the engine has actually PROVEN, over the opponent's card. */
+.st-badge-row {
+  position: fixed;
+  left: 8px;
+  right: 8px;
+  top: 46px;
+  z-index: 35;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 6px;
+  pointer-events: none;
+}
+
+.st-unmask-badge {
+  display: inline-block;
+  max-width: 100%;
+  padding: 3px 8px;
+  border: var(--st-border);
+  border-radius: 999px;
+  background: var(--st-panel);
+  color: var(--st-text);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.st-unmask-badge.st-unmasked { border-color: rgba(34, 197, 94, 0.6); color: #bbf7d0; }
+.st-unmask-badge.st-choice-broken { border-color: rgba(239, 68, 68, 0.6); color: #fecaca; }
+.st-unmask-badge.st-lockout { border-color: rgba(148, 163, 184, 0.6); color: #e2e8f0; }
+
+/* =============================================================== match receipt */
+/* The post-match summary sheet. Sits above the bench strip so the receipt is never hidden
+ * behind it, and below the TR chip's alert level, which must stay the loudest element. */
+.st-receipt-card {
+  position: fixed;
+  left: 8px;
+  right: 8px;
+  bottom: calc(var(--st-touch) + 16px);
+  z-index: 60;
+  padding: 12px 14px;
+  border: var(--st-border);
+  border-radius: 14px;
+  background: var(--st-panel-solid);
+  box-shadow: var(--st-shadow);
+  color: var(--st-text);
+}
+
+.st-receipt-title {
+  margin: 0 0 4px;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.st-receipt-headline {
+  margin: 0 0 8px;
+  color: var(--st-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.st-receipt-row {
+  padding: 3px 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}
+
+.st-receipt-copy {
+  display: block;
+  width: 100%;
+  min-height: var(--st-touch);
+  margin-top: 10px;
+  border: var(--st-border);
+  border-radius: var(--st-radius);
+  background: rgba(34, 197, 94, 0.16);
+  color: #dcfce7;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.st-receipt-copy:active { background: rgba(34, 197, 94, 0.28); }
+
+/* =========================================================== Supreme Overlord */
+/* Inline pill above the card: a multiplier the opponent's Kingambit is earning. */
+.st-overlord-gauge {
+  position: fixed;
+  left: 8px;
+  right: 8px;
+  top: 18px;
+  z-index: 36;
+  padding: 4px 10px;
+  border: 1px solid rgba(234, 179, 8, 0.55);
+  border-radius: 999px;
+  background: var(--st-panel);
+  color: #fde68a;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  pointer-events: none;
+}
+
+/* Portrait phone: keep the new chrome compact so it never eats the battlefield. */
+@media (orientation: portrait) {
+  .st-lethal-bar { font-size: 10.5px; padding: 2px 4px; }
+  .st-bench-pill { min-width: 84px; font-size: 11.5px; }
+  .st-unmask-badge { font-size: 10.5px; }
+  .st-receipt-card { max-height: 46vh; overflow-y: auto; }
+}
+
+/* Very tall screens (2340px class): lift the strip clear of the taller move bar. */
+@media (min-height: 2000px) {
+  .st-bench-strip { bottom: calc(var(--st-touch) + 16px); }
+}
+
+/* A receipt that animates in is the only motion this block introduces; honour the preference. */
+@media (prefers-reduced-motion: reduce) {
+  .st-receipt-card { animation: none; }
+}
+
+/* ================================================== PP-stall gauge & sentinel */
+/* The two "sweaty" readouts. The PP gauge tracks how much of the opponent's one set-defining
+ * move (Sucker Punch, Protect, Substitute) is left, because a PP-stalled pivot is the whole
+ * reason to click a coverage move; the sentinel bar says which of their format mechanics are
+ * already spent, which is the one thing about their bench we can be certain of. Both sit in the
+ * chip band (z 37/38): under the bench strip (40) so a tap target is never covered, and well
+ * under the receipt (60) and the TR chip, which must stay the loudest thing on screen.
+ * These blocks are `position: fixed` like the rest of the chrome, so they cannot stack in CSS,
+ * and both neighbours are content-driven: the badge row grows with how much we have deduced, and
+ * the gauge grows with how many lines the engine fills in (the advice line wraps). So each block
+ * MEASURES what it follows and publishes it as a custom property, consumed here with a static
+ * fallback for the case where the stylesheet loads without ui_overlay.js having run:
+ *   --st-chip-bottom   the chip band's real bottom  (fallback 104px: three badges at phone width)
+ *   --st-pp-gauge-h    the gauge's own height        (fallback 58px: headline + threat + advice)
+ * Both are set in px and are only ever read by the offsets below, so the stack stays gap-true
+ * however much either block has to say. A hand-tuned offset was tried first and was wrong within
+ * a minute of looking at it: without `box-sizing` (which this file sets per rule, not globally)
+ * the gauge rendered 56px tall instead of the assumed 46 and sat on top of the sentinel. */
+.st-pp-gauge {
+  position: fixed;
+  box-sizing: border-box;
+  left: 8px;
+  right: 8px;
+  top: calc(var(--st-chip-bottom, 104px) + 2px);
+  z-index: 38;
+  max-height: 40vh;   /* a real cap for pathological content, never a mid-glyph crop the UI assumed */
+  overflow: hidden;
+  padding: 5px 10px;
+  border: 1px solid rgba(148, 163, 184, 0.5);
+  border-radius: var(--st-radius);
+  background: var(--st-panel);
+  color: var(--st-text);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+.st-pp-headline { font-weight: 700; }
+
+/* The threat read is a warning, not a fact: it names moves they MIGHT hold. */
+.st-pp-threat {
+  margin-top: 2px;
+  color: #fcd34d;
+}
+
+/* The advised line is the solver's own output, so it is quoted flat, never styled as advice. */
+.st-pp-advice {
+  margin-top: 2px;
+  color: var(--st-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+.st-format-sentinel {
+  position: fixed;
+  box-sizing: border-box;
+  left: 8px;
+  right: 8px;
+  top: calc(var(--st-chip-bottom, 104px) + 2px + var(--st-pp-gauge-h, 58px) + 2px);
+  z-index: 37;
+  max-height: 34vh;
+  overflow: hidden;
+  padding: 6px 10px;
+  border: var(--st-border);
+  border-radius: var(--st-radius);
+  background: var(--st-panel);
+  color: var(--st-text);
+  font-size: 11.5px;
+  pointer-events: none;
+}
+
+.st-sentinel-head {
+  margin-top: 2px;
+  color: var(--st-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.st-sentinel-head:first-child { margin-top: 0; }
+
+/* A burned mechanic is struck through; a live one is the quiet default. */
+.st-sentinel-row { font-weight: 600; }
+.st-sentinel-row.st-burned { color: #fecaca; text-decoration: line-through; }
+.st-sentinel-row.st-live { color: #bbf7d0; }
+
+/* "TACTICAL FREEDOM": the reward for a burned mechanic, so it reads as good news. */
+.st-sentinel-tactic {
+  padding-left: 10px;
+  color: #bbf7d0;
+  line-height: 1.45;
+}
+
+.st-sentinel-bench {
+  color: var(--st-muted);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Portrait phone: these two stack under the banner, so keep them to one or two lines each. */
+@media (orientation: portrait) {
+  .st-pp-gauge { font-size: 11px; padding: 4px 8px; }
+  .st-pp-advice { font-size: 10.5px; }
+  .st-format-sentinel { font-size: 11px; padding: 5px 8px; }
+  .st-sentinel-tactic { padding-left: 8px; }
+}
+
+/* Very tall screens (2340px class): there is room, so let both readouts breathe. The offsets are
+ * derived, so the taller variant only has to give the gauge room to say more. */
+@media (min-height: 2000px) {
+  .st-pp-gauge { max-height: 46vh; }
+}
+
+/* Both readouts change every turn; nothing here animates, but the guard stays for symmetry. */
+@media (prefers-reduced-motion: reduce) {
+  .st-pp-gauge, .st-format-sentinel { animation: none; }
 }

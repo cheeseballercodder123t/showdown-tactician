@@ -11,6 +11,16 @@
  *                          WebSocket instance ever constructed
  *   3. a polling fallback over window.app.curRoom.battle.log every 250 ms, kept behind a
  *      cursor so no line is ever emitted twice
+ *   4. the PP snapshot (ARCHITECTURE §6.4): the page's own battle object holds every body's
+ *      move slots with their REAL pp/maxpp, which the protocol stream never reveals for the
+ *      opponent. Once per poll — and only when a number actually changed — each slot is
+ *      forwarded as the synthetic protocol line `|stpp|<ident>|<moveid>|<pp>|<maxpp>`, which
+ *      the ISOLATED-world parser reads like any other line. Max PP is game data the engine may
+ *      not invent, so it is measured here instead.
+ *   5. the accuracy snapshot (ARCHITECTURE §6.5): the vendored damage bundle carries no accuracy
+ *      data at all, and the risk-adjusted scoring needs it, so every move either side holds is
+ *      looked up in the CLIENT's own dex and forwarded once as `|stacc|<moveid>|<accuracy>`
+ *      (`true` = cannot miss). Again: measured from the page, never hardcoded.
  *
  * Each line is forwarded twice for robustness:
  *   document.dispatchEvent(new CustomEvent('ShowdownTactician_ProtocolEvent', {
@@ -32,7 +42,7 @@
   var POLL_INTERVAL_MS = 250;
   var MAX_MIRROR_CHARS = 4000;
 
-  var counters = { sent: 0, received: 0, polled: 0, dispatched: 0, errors: 0 };
+  var counters = { sent: 0, received: 0, polled: 0, dispatched: 0, errors: 0, ppSnapshots: 0, accuracy: 0 };
   window.__ST_INJECTED_DEBUG = counters;
 
   /* ------------------------------------------------------------------ forwarding */
@@ -195,6 +205,125 @@
     }
   }
 
+  /* ------------------------------------------------------------------ PP snapshot */
+
+  // The last PP table we forwarded, so an unchanged battle costs nothing. PP only moves when a
+  // move is clicked, so this fires a handful of times per battle.
+  var lastPpSignature = '';
+
+  function sideIdent(sideKey, index, name) {
+    // Showdown's own convention: p1a/p1b are the first two entries of the side's roster.
+    return sideKey + String.fromCharCode(97 + index) + ': ' + name;
+  }
+
+  function collectMoveSlots(battle) {
+    var out = [];
+    var sides = ['p1', 'p2'];
+    for (var s = 0; s < sides.length; s++) {
+      var key = sides[s];
+      var side = battle[key];
+      var roster = side && side.pokemon;
+      if (!roster || typeof roster.length !== 'number') continue;
+      for (var i = 0; i < roster.length; i++) {
+        var mon = roster[i];
+        if (!mon) continue;
+        var slots = mon.moveSlots;
+        if (!slots || typeof slots.length !== 'number') continue;
+        var name = mon.name || mon.speciesForme || mon.species || 'unknown';
+        for (var k = 0; k < slots.length; k++) {
+          var mv = slots[k];
+          if (!mv) continue;
+          var id = mv.id || (mv.move ? String(mv.move).toLowerCase().replace(/[^a-z0-9]/g, '') : '');
+          if (!id) continue;
+          if (typeof mv.pp !== 'number' && typeof mv.maxpp !== 'number') continue;
+          out.push([sideIdent(key, i, name), id, mv.pp, mv.maxpp]);
+        }
+      }
+    }
+    return out;
+  }
+
+  function pollPpSnapshot() {
+    try {
+      var app = window.app;
+      var room = app && app.curRoom;
+      var battle = room && room.battle;
+      if (!battle) return;
+      var rows = collectMoveSlots(battle);
+      if (!rows.length) return;
+      var signature = '';
+      for (var i = 0; i < rows.length; i++) {
+        signature += rows[i][0] + '|' + rows[i][1] + '|' + rows[i][2] + '|' + rows[i][3] + ';';
+      }
+      if (signature === lastPpSignature) return;
+      lastPpSignature = signature;
+      for (var j = 0; j < rows.length; j++) {
+        var row = rows[j];
+        counters.ppSnapshots++;
+        forward('|stpp|' + row[0] + '|' + row[1] + '|' + row[2] + '|' + row[3], 'pp');
+      }
+    } catch (e) { counters.errors++; }
+  }
+
+  /* ---------------------------------------------------------------- accuracy snapshot */
+
+  var lastAccuracySignature = '';
+
+  /** The client's own move dex entry for a move id, or null. Never invents a default. */
+  function clientMoveData(battle, id) {
+    try {
+      if (battle && battle.dex && battle.dex.moves && typeof battle.dex.moves.get === 'function') {
+        const mv = battle.dex.moves.get(id);
+        if (mv) return mv;
+      }
+      if (window.BattleMovedex && window.BattleMovedex[id]) return window.BattleMovedex[id];
+      if (window.BattleMovedex && window.BattleMovedex[id.replace(/[^a-z0-9]/g, '')]) {
+        return window.BattleMovedex[id.replace(/[^a-z0-9]/g, '')];
+      }
+    } catch (e) { /* a client build without a readable dex simply yields nothing */ }
+    return null;
+  }
+
+  function pollAccuracySnapshot(battle) {
+    try {
+      if (!battle) return;
+      var ids = [];
+      var seen = {};
+      var sides = ['p1', 'p2'];
+      for (var s = 0; s < sides.length; s++) {
+        var roster = battle[sides[s]] && battle[sides[s]].pokemon;
+        if (!roster || typeof roster.length !== 'number') continue;
+        for (var i = 0; i < roster.length; i++) {
+          var slots = roster[i] && roster[i].moveSlots;
+          if (!slots || typeof slots.length !== 'number') continue;
+          for (var k = 0; k < slots.length; k++) {
+            var id = slots[k] && (slots[k].id || (slots[k].move ? String(slots[k].move).toLowerCase().replace(/[^a-z0-9]/g, '') : ''));
+            if (!id || seen[id]) continue;
+            seen[id] = true;
+            ids.push(id);
+          }
+        }
+      }
+      if (!ids.length) return;
+      var signature = ids.join(',');
+      if (signature === lastAccuracySignature) return;
+      var rows = [];
+      for (var n = 0; n < ids.length; n++) {
+        var data = clientMoveData(battle, ids[n]);
+        if (!data || data.accuracy === undefined || data.accuracy === null) continue;
+        rows.push(ids[n] + '|' + data.accuracy);
+      }
+      if (!rows.length) return;
+      // Only remember the signature once something was actually forwarded, otherwise a client
+      // whose dex is not readable yet would never be retried.
+      lastAccuracySignature = signature;
+      for (var r = 0; r < rows.length; r++) {
+        counters.accuracy++;
+        forward('|stacc|' + rows[r], 'accuracy');
+      }
+    } catch (e) { counters.errors++; }
+  }
+
   /* ------------------------------------------------------------------ polling fallback */
 
   var pollCursor = 0;
@@ -218,6 +347,8 @@
         counters.polled++;
         forward(line, 'poll');
       }
+      pollPpSnapshot();
+      pollAccuracySnapshot(battle);
     } catch (e) {
       counters.errors++;
     }
@@ -253,4 +384,9 @@
 
   // Expose a manual trigger for diagnostics from the page console.
   window.__ST_INJECTED_FLUSH = pollBattleLog;
+  window.__ST_INJECTED_PP_FLUSH = pollPpSnapshot;
+  window.__ST_INJECTED_ACC_FLUSH = function () {
+    var battle = window.app && window.app.curRoom && window.app.curRoom.battle;
+    return pollAccuracySnapshot(battle);
+  };
 })();

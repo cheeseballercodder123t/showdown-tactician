@@ -11,7 +11,8 @@ lib/calc-data.min.js   -> window.calc.{SPECIES,MOVES,ITEMS,ABILITIES,TYPE_CHART,
 lib/calc.min.js        -> window.calc.{Generations,Pokemon,Move,Field,Side,Result,calculate}
 src/config.js          -> ST.CONFIG, ST.configGet/configSnapshot/configMerge (RULE 4: every heuristic)
 src/util.js            -> ST.util
-src/sets_db.js         -> ST.SetDatabase
+src/sets_usage.js      -> window.ST_USAGE      (GENERATED DATA, ships empty; read by sets_db at load)
+src/sets_db.js         -> ST.SetDatabase       (reweightByUsage() applies the overlay above)
 src/team_parser.js     -> ST.TeamParser
 src/protocol_parser.js -> ST.ProtocolParser
 src/state_manager.js   -> ST.BattleStateManager
@@ -20,6 +21,7 @@ src/calc_engine.js     -> ST.DamageEngine
 src/trick_room.js      -> ST.TrickRoomEngine
 src/evaluator_128d.js  -> ST.DenseStateEvaluator
 src/tempo_vector.js    -> ST.TempoEngine
+src/opponent_clock.js  -> ST.OpponentClock
 src/veto_guard.js      -> ST.BlunderVetoGuard
 src/world_sampler.js   -> ST.WorldSampler
 src/laplace_core.js    -> ST.LaplaceEngine
@@ -52,6 +54,9 @@ Rules:
   only for a stripped build, never a place to keep a second opinion.
 * Never touch `document`/`chrome` at load time — only inside methods (the Node test
   harness loads these files with no DOM).
+* When setting classes on a real DOM node, pass ONE token at a time. `classList.add('a b')` throws
+  `InvalidCharacterError`, and the harness stub (whose `classList` is a plain Set) will not catch
+  it: `_el()` in ui_overlay.js adds each token separately for exactly this reason.
 * Never use `chrome.*` outside of `try/catch` (the test harness has no `chrome`).
 * No `console.log` spam on hot paths; use `ST.util.debug(...)` which is a no-op unless
   `ST.util.DEBUG` is true.
@@ -111,6 +116,17 @@ ST.util.PIVOT_MOVES, ST.util.HAZARD_MOVES, ST.util.TR_SETTERS, ST.util.STATS, ST
   volatiles: { substitute:false, leechseed:false, encore:false, taunt:false, disable:false, confusion:false },
   terastallized: false,
   turnedThisTurn: false,      // set by |-prepare|/|move|, cleared on |turn|
+
+  // reverse damage deduction (src/set_pruner.js) — written by BattleStateManager only
+  damageDealt: [ {            // every hit THIS mon landed on our side, newest last (<= 8)
+    turn: 4, moveName: 'Power Whip', moveId: 'powerwhip',
+    damagePercent: 38, hpBefore: 100, hpAfter: 62,   // percent of the VICTIM's max HP
+    crit: false,                                     // |-crit| latch, never used as evidence
+    attackerIsP1: false, defenderId: 'hatterene',
+    defenderBoosts: {}, defenderStatus: '', weather: '', terrain: '',
+    sig: '4:powerwhip:38:'                      // dedupe key for a mirrored poll line
+  } ],
+  critTurn: null,             // the turn the last |-crit| on this mon landed
 
   // item knowledge — THE ONLY FIELDS THE PRUNER MAY WRITE
   originalArchetypeItem: null,  // what the candidate set assumed it holds
@@ -241,6 +257,11 @@ ST.SetDatabase.DEFAULT                 // SetCandidate[] used for unknown specie
   active: { my: MonState|null, opp: MonState|null },
   bench:  { my: MonState[], opp: MonState[] },
   recoveryPP: { 'p2a:recover': 8 },   // key: '<slot>:<moveid>'
+  clock: null,                        // OpponentClock.snapshot() — see src/opponent_clock.js.
+                                      // Written by src/content.js on every protocol line and
+                                      // read by laplace_core (_oppSwitchPrior) and the HUD.
+                                      // null or enabled:false means "no opinion": every
+                                      // opponent reply is kept.
   protect: {                          // stall-rhythm tracking (TempoEngine reads this)
     oppTurnsSinceLastProtect: 99, oppConsecutiveProtects: 0, oppLastProtectTurn: -99,
     myTurnsSinceLastProtect: 99,  myConsecutiveProtects: 0,  myLastProtectTurn: -99,
@@ -255,7 +276,18 @@ ST.SetDatabase.DEFAULT                 // SetCandidate[] used for unknown specie
     forceSwitch: false
   },
   history: { turns: [], events: [] },  // bounded ring buffers (MAX_LOG = 200 lines)
-  log: []                              // raw protocol lines, bounded to 200
+  log: [],                             // raw protocol lines, bounded to 200
+  // Counted straight from the log, for the post-match receipt (src/content.js builds the card,
+  // src/ui_overlay.js draws it). damage/kos are keyed by mon id and cover BOTH sides.
+  battleStats: {
+    damage: {},                        // monId -> percent of the opponent's HP it removed
+    kos: {},                           // monId -> bodies it has taken off the board
+    trActiveTurns: 0,                  // |turn| headers with Trick Room up
+    trAttackTurns: 0,                  // ...of those, turns OUR side actually attacked in
+    snowTurns: 0,
+    magicBounce: 0,
+    bestHit: null                      // our hardest single hit: { turn, monId, moveId, percent }
+  }
 }
 ```
 
@@ -339,6 +371,8 @@ frozen event table:
 | `terastallize` | `{ side, slot, species, type }` |
 | `zpower` | `{ side, slot, species, move }` |
 | `speedfloor` | `{ side, value, species, oppMove, myMove, turn, reason }` — synthesized by the parser, see below |
+| `residualorder` | `{ side, slot, species, otherSide, otherSlot, otherSpecies, before:true\|false, turn, reason }` — synthesized by the parser, see below |
+| `pp` | `{ side, slot, species, moves:[{ id, pp, maxpp }] }` — a **`\|stpp\|` snapshot** forwarded from the page's own battle object, see §6 |
 | `crit` | `{ side, slot, species }` — `\|-crit\|`, a critical hit landed |
 | `fail` | `{ side, slot, species, effect, args[] }` — `\|-fail\|`, a move had no effect |
 | `win` / `tie` | `{ side }` / `{}` |
@@ -354,8 +388,15 @@ Synthesized events the parser must produce:
   too and arrived **after** the opponent's — emit
   `speedfloor { side:'p2', value: <player active raw Speed>, reason:'moved first, priority 0, no TR' }`.
   The parser learns the player's raw speed from `state.speedHint`; `BattleStateManager`
-  sets `parser.speedHint = { mySpeed }` before feeding each turn. This is a hint only — the
-  engine never treats it as authoritative.
+  sets `parser.speedHint = { mySpeed }` before feeding each turn. This is a hint only —
+  the engine never treats it as authoritative.
+* **Residual order** (§6.2): end-of-turn residual damage/heal resolves in Speed order, so
+  when one `damage`/`heal` line carrying a **non-`move:`** `[from]` clause for one side is
+  immediately followed by another such line for the *other* side inside the same turn, emit
+  `residualorder { side, slot, species, otherSide, otherSlot, otherSpecies, before:true,
+  turn, reason:'residual resolved first' }` for the first body. Runs of three or more bodies
+  emit a chain of such pairs against the first body only, and the parser never re-emits a pair
+  it has already reported in the same turn.
 
 `ST.BattleStateManager`:
 
@@ -437,6 +478,57 @@ pruner.applySpeedFloor(mon, state)           // drops sets whose max Speed < mon
 pruner.bestSet(mon)                          // -> SetCandidate | null (highest weight survivor)
 pruner.handleSpeedFloorEvent(event, state)   // convenience wrapper used by state_manager
 
+// The damage engine is OPTIONAL (opts.damage). Without it the rule below is a no-op and every
+// other deduction still runs; with it, mon.damageDealt is judged here.
+new ST.ArchetypePruner({ damage: damageEngine })
+pruner.damageVerdicts(mon, state, pristine)  // -> { <setId>: 'reason to drop' } for the observed hits
+   // Memoised per observation signature (mon.damageVerdictCache). An observation is skipped when
+   // it is flagged critical, sits below pruner.damageEvidence.minDamagePct, or names a move whose
+   // damage is not a function of the set (fixed damage, weight/speed/HP ratio). If one observation
+   // would eliminate EVERY tested candidate, the observation is discarded and a reason recorded
+   // ('Damage evidence ignored: ...') instead of emptying the pool.
+
+// sets_db.js — the optional ladder-usage overlay (src/sets_usage.js, ships empty)
+ST.SetDatabase.reweightByUsage(sets, overlay)   // -> SetCandidate[] (NEW array; inputs untouched)
+   // weight *= clamp(overlay.species[toID(species)].items[toID(set.item)] / 100, usage.floor, 1)
+   // ONLY when that species AND item key exist; a missing measurement leaves the curated weight
+   // exactly as it was. Applied once at load to every pool when ST_USAGE.speciesCount > 0, and
+   // reported as ST.SetDatabase.report.usage.
+
+// opponent_clock.js — opponent deliberation telemetry (read-only for the solver)
+new ST.OpponentClock({ now?, enabled?, fastMs?, slowMs?, minSamples?, maxHistory? })
+clock.note(rawLine, kind, ts?)   // kind: 'send' = our /choose, anything else = the battle stream.
+                                 // Feed EVERY line, before the parser; never throws.
+clock.label()                    // 'auto' | 'normal' | 'agonised' | 'unknown'
+clock.switchFactor()             // cfg('clock.switchPrior.<label>') - the ONE number the engine reads
+clock.snapshot()                 // plain copy for state.clock (turn, samples, floorMs, lastMs,
+                                 // meanMs, label, switchFactor, myLastMs)
+clock.describe()                 // one-line HUD string
+clock.reset()                    // a new battle must not inherit the old noise floor
+
+// laplace_core.js — HUD-facing readouts (they run the same calculator the solver does)
+engine.preview(targetMon, state)     // -> { target:{species,id,hpPercent,isActive},
+                                     //      lines:[ {moveId,name,isScreen?,minPercent,maxPercent,
+                                     //               koChancePct,isOHKO,is2HKO,lethal,verdict,desc} ] }
+                                     // one line per legal MOVE; null when there is nothing to say
+engine.previewVsBench(species, state) // the same shape for an opponent BENCH body (null if not there)
+engine.lethalBand(damageResult)      // 'guaranteed' | 'high' | 'mid' | 'none', from hud.lethal.*
+engine.lethalVerdict(damageResult, moveData)
+engine.overlordGauge(state)          // -> { species, fallen, ratio, percentBoost, effectiveAtk }
+                                     // The multiplier is MEASURED by the library (probe move vs probe
+                                     // defender, alliesFainted = fallen then 0) and the Attack figure is
+                                     // the library's own stat scaled by it, so the ability's rule is never
+                                     // written down here (RULE 1). null without the ability.
+
+// content.js — the boot owns the answers, ui_overlay owns the DOM
+boot._renderScreenExtras(state)      // pushes previews, bench targets, badges and the gauge to the HUD
+boot._selectBenchTarget(id)          // tap handler: select, or tap again to return to the active pair
+boot._deductionBadges(state)         // -> [ { id, label, detail, cls } ] cls: unmasked|choice-broken|lockout
+boot._maybeAlertTR(state)            // once per battle, on TR's last turn: gold chip + the haptic pulse
+boot._canVibrate()                   // whether this frame has been touched yet (Chromium's rule)
+boot._vibrate(pattern)               // navigator.vibrate guarded; false when the platform refuses it
+boot._buildReceipt(state) / _copyReceipt(text)
+
 // calc_engine.js
 new ST.DamageEngine({ gen: 9 })
 engine.calculateDamage(attackerMon, defenderMon, moveName, fieldState, opts)
@@ -481,8 +573,11 @@ tempo.predictProtect(state, side)           // -> number 0..1
 // veto_guard.js
 new ST.BlunderVetoGuard()
 veto.evaluateVetoes(action, state, tempoVector)  // action = { kind:'move'|'switch'|'protect', name, moveId?, targetId? }
-   // -> { isVetoed: boolean, reason: string|null, code: 'VETO1'..'VETO4'|null }
-veto.VETO_CODES                             // { VETO1:'PROTECT_RHYTHM', VETO2:'ABILITY_IMMUNITY', VETO3:'LONE_TR_SETTER', VETO4:'SPEED_SUICIDE' }
+   // -> { isVetoed: boolean, reason: string|null, code: 'VETO1'..'VETO7'|null }
+   // Checks run in code order and the FIRST hit wins. VETO5-7 are the contact-suicide,
+   // Sucker-Punch-setup and self-cancelling-Trick-Room guards (tests/upgrades_check.js).
+veto.VETO_CODES                             // { VETO1:'PROTECT_RHYTHM', VETO2:'ABILITY_IMMUNITY', VETO3:'LONE_TR_SETTER', VETO4:'SPEED_SUICIDE',
+                                            //   VETO5:'CONTACT_SUICIDE', VETO6:'SUCKER_PUNCH_SETUP', VETO7:'TR_SELF_CANCEL' }
 
 // world_sampler.js
 new ST.WorldSampler({ K: 6, rng })
@@ -495,10 +590,21 @@ sampler.verifyWorld(world, state)  // -> string[] of violated observed facts ([]
 sampler.seededRandom(seed)         // deterministic RNG (mulberry32) exposed for tests
 
 // laplace_core.js
-new ST.LaplaceEngine({ K:6, temperature:35, worldBlend:{avg:0.6, min:0.4}, sampler, damage, evaluator, tempo, veto, trickRoom })
+new ST.LaplaceEngine({ K:6, temperature:35, worldBlend:{avg:0.6, min:0.4}, sampler, damage, evaluator, tempo, veto, trickRoom,
+                       nash:{ enabled:true, iterations:2000 } })
 engine.evaluateTurn(battleState, opts)   // -> RankedAction[] sorted by confidence desc
    // RankedAction = { name, kind:'move'|'switch'|'protect', moveId, targetId, confidence (0..100),
-   //                  score, isVetoed:boolean, vetoReason:string|null, isOptimal:boolean, damageHint }
+   //                  score, isVetoed:boolean, vetoReason:string|null, isOptimal:boolean, damageHint,
+   //                  nashFrequency? (mixed-strategy path only) }
+   //
+   // SCORING CONTRACT. With laplace.nash.enabled (the default) the world-weighted simultaneous
+   // payoff matrix is solved with fictitious play, `confidence` is the equilibrium FREQUENCY of
+   // the line and `score` its expected payoff against the opponent's equilibrium mix; vetoed
+   // lines are excluded from the solve and get confidence 0. With nash.enabled = false the old
+   // pure risk blend (0.6*avg + 0.4*min over worlds) plus a softmax at `laplace.temperature`
+   // runs instead — that is the only path the temperature governs.
+engine._softmaxConfidence(ranked, live, temperature)  // legacy softmax path, numerically stable
+LaplaceEngine.solveNashFictitiousPlay(matrix, iterations)  // -> { myStrategy, oppStrategy, rowValues }
 engine.lastReadout                          // { worlds, tempo, ranked, elapsedMs } for the HUD/LLM
 engine.simulate(action, world, battleState)  // -> SimResult { state, myPercentDelta, oppPercentDelta, events[] }
 
@@ -577,3 +683,185 @@ document.dispatchEvent(new CustomEvent('ShowdownTactician_ProtocolEvent', {
    as it was, plus a seeded 40-battle fuzz over the real pipeline asserting the solver's
    invariants (finite scores, confidences summing to 100, determinism, legal actions).
    Nothing here is verified in a real browser.
+6. **The monthly chaos sync writes a usage overlay, not a new `sets_db.js`.** A chaos dump
+   publishes marginals (item / ability / move / spread frequencies) and never whole sets, so
+   reconstructing sets from it would fabricate combinations no player ran — exactly what RULE 1
+   forbids. `tools/sync_chaos_sets.js` therefore emits `src/sets_usage.js`, and
+   `ST.SetDatabase.reweightByUsage(sets, overlay)` multiplies the curated `weight` of a set by
+   how often that species was actually seen holding that item (clamped into
+   `[usage.floor, 1]`). A species or item the dump never mentions keeps its weight untouched:
+   a missing measurement is not a zero measurement. The file ships empty.
+7. **The opponent clock may remove the opponent's switch replies, and nothing else.**
+   `clock.switchPrior` is consulted in `laplace_core.getOppActions`, where a factor below
+   `clock.switchKeepThreshold` drops the pivot columns from the simultaneous matrix. The
+   agonised direction cannot add replies the engine already enumerates, so it stays telemetry.
+   The thresholds are priors, not measurements (see README "Known limits").
+
+## 6. The six "sweaty" upgrades (frozen interfaces)
+
+Added on top of §3, and all six obey RULE 1 (no math of our own) and RULE 4 (no heuristic
+literals outside `src/config.js`). Every number below is either measured through the library or
+read off the protocol; nothing is assumed. Each feature is guarded by its own config switch and
+each one degrades to *no output at all* rather than to a guess.
+
+### 6.1 Exact damage: the 16 discrete rolls (`F3`, `src/calc_engine.js`, `src/set_pruner.js`)
+
+Pokémon damage is not a continuous interval — it is one of 16 integer rolls. `DamageResult` gains:
+
+```
+rolls         : number[]|null   the library's own sorted roll list, or null when it gives none
+rollCount     : number          rolls.length, or 0
+koChanceExact : number|null     (# rolls >= defender HP) / rollCount * 100, or null without rolls
+rollPercent(v): number|null     v / defenderMaxHP * 100, rounded to 1 dp — the printed percentage
+                                of one integer roll (the inverse of an observation)
+```
+
+`minDmg`/`maxDmg`/`minPercent`/`maxPercent`/`avgDmg` are unchanged (`range()`), and
+`koChancePct` becomes the **discrete** count when `rolls` is present (the old uniform-span
+approximation is kept as the fallback when it is not). `_resultFrom` must never *invent* a roll
+list: if the library returns a scalar `damage`, `rolls` stays `null`.
+
+`ArchetypePruner`, inside the existing `_damageVerdict`, adds the discrete refinement after the
+range check: with the observation's implied integer window
+`[ (pct - slackPct) * defenderMaxHP / 100 , (pct + slackPct) * defenderMaxHP / 100 ]`, a set
+survives iff at least one of its `rolls` falls inside that window (the mover's roll list, i.e.
+`calculateDamage(set, defender, moveName, ...)`). `pruner.discreteRolls.enabled` gates it and it
+must never empty a pool: when every candidate would be dropped, the pool is kept and a reason is
+logged, exactly like the range check's own guard. Once ≥ `requireObservations` observations agree,
+`prune()` publishes `mon.pinnedEvs` (the shared `evs` vector of the survivors) and sets
+`mon.evPinned = true`; a pool with two different EV vectors is never pinned.
+
+### 6.2 Residual-order speed evidence (`F2`)
+
+`ProtocolParser` emits `residualorder` (§2). `ST.BattleStateManager` stores the pair on the
+*faster* body as `mon.residualOrderBefore = [{ id, species, turn }]` (bounded by
+`pruner.maxEvidence`) and, on the slower body, `mon.residualOrderAfter`, and it is the single
+writer of both fields. It does **not** convert anything to a speed number itself: it routes the
+event to `pruner.handleResidualOrderEvent(event, state)` where it already routes the synthesized
+`speedfloor` event, and that handler calls:
+
+```
+pruner.applyResidualOrder(mon, state)
+  // -> { pruned:bool, dropped:int, floor:int, ceiling:int, survivors:[] }
+```
+
+The conversion is relative, and uses the *other* body's believed speed (`liveSet` speed, or the
+pruner's own `believedSpeedOf`): the faster body gets `speedFloor = max(speedFloor, t - 1)` and
+the slower `speedCeiling = min(speedCeiling, t + 1)`, where `t` is the other body's believed
+speed and `pruner.residualOrder.trust` scales how far the bound is allowed to bite. Like every
+other deduction it fails soft: if no candidate survives, the pristine pool is republished and a
+reason is logged. With `trust: 0` the order is recorded as telemetry and nothing is pruned.
+
+### 6.3 Replay scouting prior (`F1`, `tools/scout_replays.js` → `src/scout_prior.js`)
+
+The tool is offline, house-style (`require`-able pure functions + `parseArgs` + `main`, no
+runtime fetch):
+
+```
+node tools/scout_replays.js --input replays.json [--out src/scout_prior.js] [--min-share 5]
+node tools/scout_replays.js --url https://replay.pokemonshowdown.com/<id>.json [--out ...]
+module.exports = { replaysOf, observationsOf, buildPrior, renderFile, parseArgs, main }
+```
+
+`src/scout_prior.js` is a GENERATED overlay like `src/sets_usage.js`, ships EMPTY, and defines:
+
+```
+window.ST_SCOUT = {
+  generatedAt, source, replays: n, minShare,
+  species: { kingambit: { name:'Kingambit', seen: 3,
+                          items:{ blackglasses: 66.7 }, abilities:{ supremeoverlord: 100 },
+                          moves:{ suckerpunch: 100, ... } } }   // shares in percent
+}
+```
+
+Only what a replay can reveal is recorded: item (`|-item|`/`|-enditem|`/`|-activate| item:`),
+ability (`|-ability|`), moves (`|move|`), and the revealed species. **EVs, natures and IVs are
+never recorded** — a replay does not contain them, and inventing them is exactly what RULE 1
+forbids. `ArchetypePruner` reads the overlay in `_seedPool` and re-weights each pristine set,
+using ONLY dimensions the overlay actually observed for that species:
+
+```
+shares  = [ item share (only if any item was observed for the species),
+            ability share (same),
+            mean share of the set's own four moves (only if any move was observed) ]
+score   = mean(shares) / 100                       // 0..1, or null when nothing was observed
+factor  = score === null ? 1
+        : clamp(1 + maxBend * (2 * score - 1), 1 - maxBend, 1 + maxBend)
+multiply the set's weigth by factor -- on a COPY, never on the database object
+```
+
+So a fully-observed set gains at most `maxBend` and a set the scout never saw loses at most
+`maxBend`; a species (or a dimension) the overlay never saw leaves the curated weight
+**untouched** (a missing measurement is not a zero measurement). The overlay only ever re-weights
+sets the curated database already holds and can never add one.
+
+### 6.4 PP-stall counter and the 3x3 pivot (`F4`)
+
+Max PP is game data, so it is READ, never assumed: `src/injected.js` (MAIN world) additionally
+snapshots the page's own battle object — `battle[p1|p2].pokemon[].moveSlots[]` — and forwards one
+synthetic line per body per move slot:
+
+```
+|stpp|p2a: Kingambit|suckerpunch|5|8
+```
+
+`ProtocolParser` maps `stpp` → the `pp` event (§2); `BattleStateManager` stores it as
+`mon.ppSnapshot = { [moveId]: { pp, maxpp, turn } }` (kept separate from the derived 8-PP
+`mon.movePP` counter) and counts observed uses in `mon.ppUsed[moveId]` from `|move|` lines.
+`LaplaceEngine.ppStall(state)` returns
+
+```
+{ species, move: { id, label, pp, maxpp, remaining, observesOnly:bool },
+  threat: { setupMoves:[names], theirHp, read:string },
+  matrix: { rows:[{label,kind,action}], cols:[{label,kind,action}],
+            payoff:number[][], solution:{myStrategy,oppStrategy,rowValues} }|null,
+  advice: { moveId, frequency, reason }|null }        // or null when nothing to say
+```
+
+The counter is about OUR body — the play it exists to fix is clicking OUR Sucker Punch into a
+stall, so the PP is read off `state.active.my`, in order of authority: `state.legalActions.moves`
+(the server's own numbers from the `|request|`), then `my.ppSnapshot`, then the observed use
+count. The threat is theirs. `observesOnly: true` is the honest fallback when neither the request
+nor a `|stpp|` snapshot gave a number: the gauge then prints "used N times" and never a
+denominator. The 3x3 is built from the
+existing `_payoff` on labelled groups (our watched move / our best other attack / our setup or
+Protect) × (their attack / their setup-or-Protect / their Substitute), solved with the existing
+`LaplaceEngine.solveNashFictitiousPlay`. `MobileHUD.renderPPGauge(gauge)` /
+`clearPPGauge()` render it as `.st-pp-gauge[data-st-pp]`.
+
+### 6.5 Risk-adjusted volatility (`F5`, `src/laplace_core.js`)
+
+A per-row delta on OUR rows, applied in the same pass as the tempo policy mask and before the
+Nash solve (so the mixed equilibrium sees the risk-adjusted payoffs). Formula and knobs are in
+`config.laplace.volatility`; `enabled:false` restores the raw payoff bit-for-bit. Sources:
+the accuracy from `state.moveAccuracy[id]`, which the `|stacc|` snapshot fills from the CLIENT's
+own dex — the vendored damage bundle ships no accuracy data at all, so this is measured at runtime
+rather than hardcoded — and `incomingThreatPercent` from
+`damage.getBestIncomingThreat(oppActive, myActive, field)`. An action whose accuracy is unknown is
+charged nothing. Ranked rows gain `volatilityPenalty` (the number that was subtracted) and
+`volatilityWhy`.
+
+### 6.6 Format sentinel (`F6`, `src/laplace_core.js`, `src/ui_overlay.js`)
+
+`LaplaceEngine.formatSentinel(state)` returns
+
+```
+{ mega: { burned:bool, species, turn, label }, z: { burned:bool, species, turn, label },
+  tactics: [ { kind, label, detail } ],   // "TACTICAL FREEDOM": what their bench can no longer hold
+                                          // kind: 'mega' | 'z' | 'freedom' | 'live'
+  bench: { unrevealed:int, stonesPossible:int } }
+```
+
+`label` is the mechanic's STATE (`sentinel.burnedLabel` / `sentinel.liveLabel`), which is what the
+row prints after the mechanic's name; `MobileHUD.renderFormatSentinel` supplies the name itself and
+must never render `label` in the name slot.
+
+`tactics[].kind` names WHICH tactic a row is; the glyph is the renderer's business, drawn from
+`SENTINEL_TACTIC_ICONS` in `src/ui_overlay.js`, and an engine-supplied `icon` overrides it. The
+engine must never emit a bullet or any other character it had to invent — the ASCII placeholders
+tried first (`X`, `.`, `o`) shipped as visible text inside the bar.
+
+read entirely off `state.formatLocks` + the reported bench size (never off a hardcoded rule).
+`content.js` renders it from `_renderScreenExtras`; `MobileHUD.renderFormatSentinel(sentinel)` /
+`clearFormatSentinel()` draw `.st-format-sentinel[data-st-sentinel]`, and `clear()` tears it down
+with everything else.

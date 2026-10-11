@@ -144,7 +144,10 @@ const MY_MEGA = [
 
 section('1. a tunable temperature must never produce NaN confidence');
 const nanFixture = pipeline(MY_MEGA);
-const nanEngine = newEngine();
+// Nash is the default scorer, so the temperature tunable is only live on the legacy softmax path
+// (`laplace.nash.enabled = false`). It is tested THERE, because that is the code the knob drives;
+// the default path is checked alongside it below so both are covered.
+const nanEngine = newEngine({ nash: { enabled: false } });
 const nanRanked = nanEngine.engine.evaluateTurn(nanFixture.battle, { temperature: 1 });
 check('the solver returned lines at temperature 1', nanRanked.length > 0, String(nanRanked.length));
 check('every confidence is a finite number in 0..100',
@@ -156,6 +159,15 @@ check('the live lines still sum to about 100%',
   String(liveConf.reduce(function (a, r) { return a + r.confidence; }, 0)));
 check('the top line is still the highest confidence one',
   !nanRanked.length || nanRanked.every(function (r, i) { return i === 0 || nanRanked[i - 1].confidence >= r.confidence || r.isVetoed; }));
+// The default (mixed-strategy) scorer must hold the same guarantees at the same sharp setting.
+const nashRanked = newEngine().engine.evaluateTurn(nanFixture.battle, { temperature: 1 });
+const nashLive = nashRanked.filter(function (r) { return !r.isVetoed; });
+check('the mixed-strategy path is also NaN-free at temperature 1',
+  nashRanked.length > 0 && nashRanked.every(function (r) { return finite(r.confidence) && r.confidence >= 0 && r.confidence <= 100; }),
+  JSON.stringify(nashRanked.slice(0, 3).map(function (r) { return r.confidence; })));
+check('the mixed-strategy confidences sum to 100',
+  !nashLive.length || Math.abs(nashLive.reduce(function (a, r) { return a + r.confidence; }, 0) - 100) < 1e-6,
+  String(nashLive.reduce(function (a, r) { return a + r.confidence; }, 0)));
 
 /* ==================================================== 2. sampling determinism */
 

@@ -1,0 +1,60 @@
+# Showdown Tactician - .github/workflows/chaos-sync.yml
+#
+# WHY: src/sets_usage.js is the usage overlay the curated set database is weighted by, and the
+# metagame it describes moves every month. Without this workflow the overlay is a snapshot of
+# whenever someone last ran the tool by hand, and a set that has fallen out of favour keeps the
+# weight the ladder gave it a year ago. Showdown publishes each month's chaos dump in the first
+# days of the following month, so this runs on the 3rd.
+#
+# The job is deliberately narrow: one file is regenerated (src/sets_usage.js) and committed only
+# when it actually changed. It never rewrites src/sets_db.js, because chaos stats are marginals
+# and cannot reconstruct a legal EV spread + 4 moves.
+name: chaos-sync
+
+on:
+  schedule:
+    # 06:00 UTC on the 3rd of every month (the dump for the previous month is published by then).
+    - cron: '0 6 3 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          # Pinned: the tool uses global fetch (Node 18+) and must not drift with the runner.
+          node-version: '20'
+
+      - name: Download the monthly chaos dump and rebuild the usage overlay
+        run: |
+          node tools/sync_chaos_sets.js \
+            --url https://stats.pokemonshowdown.com/chaos/gen9nationaldexou-1760.json \
+            --source gen9nationaldexou-1760 \
+            --min-usage 1.5 \
+            --out src/sets_usage.js \
+            --date "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+      - name: Prove the generated overlay still loads and the sync suite is green
+        run: |
+          node tests/config_check.js
+          node tests/chaos_sync_check.js
+
+      - name: Commit the overlay when the metagame actually moved
+        run: |
+          if git diff --quiet -- src/sets_usage.js; then
+            echo "no metagame drift this month: nothing to commit"
+            exit 0
+          fi
+          git config user.name "chaos-sync"
+          git config user.email "chaos-sync@users.noreply.github.com"
+          git add src/sets_usage.js
+          git commit -m "Sync the usage overlay from the monthly chaos dump"
+          git push

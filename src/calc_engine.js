@@ -24,7 +24,16 @@
  *
  * DamageResult = { minDmg, maxDmg, avgDmg, minPercent, maxPercent, avgPercent,
  *                  isOHKO, is2HKO, koChancePct, desc, moveDesc, moveType, moveCategory,
- *                  priority, basePower, defenderMaxHP, defenderHPPercent, failed, error }
+ *                  priority, basePower, defenderMaxHP, defenderHPPercent, failed, error,
+ *                  rolls, rollCount, koChanceExact, rollPercent(v), maxHpPercent }
+ *
+ * The 16 discrete rolls (ARCHITECTURE §6.1): Pokemon damage is not a continuous interval, it is
+ * one of 16 integer rolls. The library hands them over on `result.damage`, so they are exposed
+ * verbatim as `rolls` — never synthesized, and `null` when the library gave a single number (a
+ * fixed-damage move) or a per-hit array (a multi-hit move). With `rolls` present, `koChancePct`
+ * is the EXACT share of rolls that reach the defender's current HP and `koChanceExact` repeats it;
+ * without them both fall back to the range-based estimate this file has always used, and
+ * `koChanceExact` is null so a caller can tell an exact answer from an estimate.
  *
  * Performance: a memo hit is a Map lookup. The typical turn computes < 120 distinct
  * (attacker, defender, move, field) tuples for K=6 worlds, well inside the 10 ms budget.
@@ -499,7 +508,15 @@
       const minPercent = minDmg / maxHP * 100;
       const maxPercent = maxDmg / maxHP * 100;
       const avgPercent = avgDmg / maxHP * 100;
-      const ko = this._koProfile(minDmg, maxDmg, curHP, maxHP);
+      const rolls = this._rollsFrom(raw);
+      const ko = this._koProfile(minDmg, maxDmg, curHP, maxHP, rolls);
+      // `rollPercent` is the inverse of an observation: the percentage the protocol would print
+      // if this integer roll came up. The pruner uses it to ask whether the number Showdown
+      // printed could have come from THIS set at all.
+      const rollPercent = function (value) {
+        if (typeof value !== 'number' || !isFinite(value)) return null;
+        return U.round1(value / maxHP * 100);
+      };
 
       let desc = '';
       try { desc = (typeof raw.desc === 'function') ? raw.desc() : ''; } catch (e) { desc = ''; }
@@ -525,6 +542,10 @@
         defenderMaxHP: maxHP,
         defenderCurHP: curHP,
         defenderHPPercent: U.round1(curHP / maxHP * 100),
+        rolls: rolls,
+        rollCount: rolls ? rolls.length : 0,
+        koChanceExact: rolls ? ko.koChancePct : null,
+        rollPercent: rollPercent,
         recoil: (function () { try { return raw.recoil ? raw.recoil() : 0; } catch (e) { return 0; } })(),
         failed: false,
         error: null
@@ -532,17 +553,48 @@
     }
 
     /**
+     * The library's own 16 damage rolls, sorted ascending, or null.
+     *
+     * `Result.damage` is a single number for a fixed-damage move, a flat array of integers for an
+     * ordinary move, and an array of per-hit arrays for a multi-hit one. Only the flat shape IS a
+     * roll list — anything else returns null rather than inventing one, and the KO estimate then
+     * falls back to the range arithmetic it has always used.
+     */
+    _rollsFrom(raw) {
+      const dmg = raw ? raw.damage : null;
+      if (!Array.isArray(dmg) || !dmg.length) return null;
+      const out = [];
+      for (let i = 0; i < dmg.length; i++) {
+        const v = dmg[i];
+        if (typeof v !== 'number' || !isFinite(v)) return null;
+        out.push(v);
+      }
+      out.sort(function (a, b) { return a - b; });
+      return out;
+    }
+
+    /**
      * HP-aware KO profile computed from the damage range (no reliance on version-specific
      * kochance() semantics):
      *   - KO this turn when even the minimum roll is lethal,
-     *   - otherwise the fraction of the damage roll distribution (treated as uniform on
-     *     [min,max], which is how PS rolls 85..100%) that reaches `curHP`.
+     *   - with `rolls`, the EXACT share of the 16 rolls that reach `curHP` — the number the
+     *     "KO odds" gauge is really asking for, since a 68% KO chance is 11 of 16 rolls and a
+     *     uniform span can only approximate that,
+     *   - otherwise that uniform-span approximation over [min,max] (the approximation the engine
+     *     shipped with, kept as the fallback for a move whose rolls the library does not expose).
      */
-    _koProfile(minDmg, maxDmg, curHP, maxHP) {
+    _koProfile(minDmg, maxDmg, curHP, maxHP, rolls) {
       const hp = Math.max(1, curHP);
       let koChancePct = 0;
       let isOHKO = false;
-      if (minDmg >= hp) { koChancePct = 100; isOHKO = true; }
+      if (rolls && rolls.length) {
+        let lethal = 0;
+        for (let i = 0; i < rolls.length; i++) if (rolls[i] >= hp) lethal++;
+        // Deliberately NOT rounded: this is a discrete count of rolls, and 7 of 16 IS 43.75%.
+        // Rounding it to 43.8 would destroy the property the number exists for (see §6.1).
+        koChancePct = lethal / rolls.length * 100;
+        isOHKO = lethal === rolls.length;
+      } else if (minDmg >= hp) { koChancePct = 100; isOHKO = true; }
       else if (maxDmg >= hp) {
         const span = Math.max(1, maxDmg - minDmg);
         koChancePct = U.round1(Math.max(0, Math.min(100, (maxDmg - hp + 1) / span * 100)));

@@ -110,8 +110,15 @@ const INVENTORY = [
   'laplace.K', 'laplace.temperature', 'laplace.worldBlend.avg', 'laplace.worldBlend.min',
   'laplace.maxOppActions', 'laplace.vetoScore', 'laplace.lethalBonus', 'laplace.maxSwitchFallback',
   'laplace.struggleChipPercent', 'laplace.switchAteHitBonus',
+  'laplace.nash.enabled', 'laplace.nash.iterations',
   // sampler
   'sampler.K', 'sampler.maxTeam', 'sampler.maxResample', 'sampler.minSetWeight',
+  // usage overlay (the monthly chaos sync writes the DATA; these two are the knobs)
+  'usage.enabled', 'usage.floor',
+  // clock (opponent deliberation telemetry)
+  'clock.enabled', 'clock.fastMs', 'clock.slowMs', 'clock.minSamples', 'clock.maxHistory',
+  'clock.switchKeepThreshold', 'clock.switchPrior.auto', 'clock.switchPrior.normal',
+  'clock.switchPrior.agonised', 'clock.switchPrior.unknown',
   // evaluator
   'evaluator.dim', 'evaluator.team', 'evaluator.scale', 'evaluator.tanhDenominator',
   'evaluator.unknownHpDefault', 'evaluator.threatEffSpan', 'evaluator.offenseBasePowerCap',
@@ -134,19 +141,28 @@ const INVENTORY = [
   'tempo.chip.toxBase', 'tempo.chip.toxicTurnsDivisor', 'tempo.chip.burn', 'tempo.chip.scale',
   // veto
   'veto.protectRhythmThreshold', 'veto.loneTRSetterThreat', 'veto.maxLog',
+  'veto.contactPunishHp', 'veto.suckerPunchSetupHp',
   'veto.codes.VETO1', 'veto.codes.VETO2', 'veto.codes.VETO3', 'veto.codes.VETO4',
+  'veto.codes.VETO5', 'veto.codes.VETO6', 'veto.codes.VETO7',
   // trickRoom
   'trickRoom.turns', 'trickRoom.speedRankBase', 'trickRoom.alertFinal', 'trickRoom.alertTwoLeft',
   'trickRoom.maxHistory',
   // hud
   'hud.high', 'hud.mid', 'hud.low', 'hud.bannerSep',
   'hud.confidenceLabels.high', 'hud.confidenceLabels.mid', 'hud.confidenceLabels.low', 'hud.confidenceLabels.veto',
+  'hud.lethal.guaranteed', 'hud.lethal.high', 'hud.lethal.mid',
+  'hud.vibrate.enabled', 'hud.vibrate.pattern', 'hud.vibrate.trLastTurn',
+  'hud.benchStripMax', 'hud.overlord.probeMove', 'hud.overlord.probeDefender',
+  'hud.receipt.maxDamageRows', 'hud.receipt.copyLabel',
   // llm
   'llm.timeoutMs', 'llm.geminiModel', 'llm.openrouterModel', 'llm.geminiEndpoint',
   'llm.openrouterEndpoint', 'llm.maxPromptWords', 'llm.maxReasonWords', 'llm.systemPrompt',
   // pruner
   'pruner.maxReasons', 'pruner.maxEvidence', 'pruner.speedMaxCeiling',
   'pruner.speedFloorFallbackKeep',
+  'pruner.damageEvidence.enabled', 'pruner.damageEvidence.slackPct',
+  'pruner.damageEvidence.slackRel', 'pruner.damageEvidence.minDamagePct',
+  'pruner.damageEvidence.maxObservations', 'pruner.damageEvidence.maxSetsTested',
   // state
   'state.maxActiveStints', 'state.maxLog'
 ];
@@ -158,7 +174,7 @@ INVENTORY.forEach(function (path) {
 check('all ' + INVENTORY.length + ' inventory keys resolve', missing.length === 0, missing.join(', '));
 
 /* The sections themselves, so a renamed section cannot slip past the path checks above. */
-const SECTIONS = ['laplace', 'sampler', 'evaluator', 'tempo', 'veto', 'trickRoom', 'hud', 'llm', 'pruner', 'state'];
+const SECTIONS = ['laplace', 'sampler', 'usage', 'evaluator', 'tempo', 'clock', 'veto', 'trickRoom', 'hud', 'llm', 'pruner', 'state'];
 const missingSections = SECTIONS.filter(function (s) { return !ST.CONFIG[s] || typeof ST.CONFIG[s] !== 'object'; });
 check('all ' + SECTIONS.length + ' top-level sections exist', missingSections.length === 0, missingSections.join(', '));
 
@@ -166,7 +182,34 @@ check('all ' + SECTIONS.length + ' top-level sections exist', missingSections.le
 check('laplace.K is a positive integer', cfg('laplace.K') > 0 && cfg('laplace.K') % 1 === 0, cfg('laplace.K'));
 check('evaluator.weights.status is a 12-entry array', Array.isArray(cfg('evaluator.weights.status')) && cfg('evaluator.weights.status').length === 12, JSON.stringify(cfg('evaluator.weights.status')));
 check('evaluator.weights.macro is a 16-entry array', Array.isArray(cfg('evaluator.weights.macro')) && cfg('evaluator.weights.macro').length === 16, JSON.stringify(cfg('evaluator.weights.macro')));
-check('veto codes are non-empty strings', ['VETO1', 'VETO2', 'VETO3', 'VETO4'].every(function (k) { return typeof cfg('veto.codes.' + k) === 'string' && cfg('veto.codes.' + k).length > 0; }));
+check('veto codes are non-empty strings', ['VETO1', 'VETO2', 'VETO3', 'VETO4', 'VETO5', 'VETO6', 'VETO7'].every(function (k) { return typeof cfg('veto.codes.' + k) === 'string' && cfg('veto.codes.' + k).length > 0; }));
+check('the clock reads fast BEFORE it reads slow (a swap would invert every label)',
+  cfg('clock.fastMs') > 0 && cfg('clock.fastMs') < cfg('clock.slowMs'), cfg('clock.fastMs') + ' < ' + cfg('clock.slowMs'));
+check('clock.switchKeepThreshold sits inside the range of its own priors',
+  cfg('clock.switchKeepThreshold') > cfg('clock.switchPrior.auto') &&
+  cfg('clock.switchKeepThreshold') <= cfg('clock.switchPrior.normal'),
+  cfg('clock.switchPrior.auto') + ' < ' + cfg('clock.switchKeepThreshold') + ' <= ' + cfg('clock.switchPrior.normal'));
+check('the lethal bands descend (guaranteed >= high >= mid)',
+  cfg('hud.lethal.guaranteed') >= cfg('hud.lethal.high') && cfg('hud.lethal.high') >= cfg('hud.lethal.mid'),
+  cfg('hud.lethal.guaranteed') + ' / ' + cfg('hud.lethal.high') + ' / ' + cfg('hud.lethal.mid'));
+check('the haptic pattern is a non-empty array of positive pulse widths',
+  Array.isArray(cfg('hud.vibrate.pattern')) && cfg('hud.vibrate.pattern').length > 0 &&
+  cfg('hud.vibrate.pattern').every(function (v) { return typeof v === 'number' && v > 0; }),
+  JSON.stringify(cfg('hud.vibrate.pattern')));
+check('the Overlord probe names a move and a defender (the measurement needs both)',
+  typeof cfg('hud.overlord.probeMove') === 'string' && cfg('hud.overlord.probeMove').length > 2 &&
+  typeof cfg('hud.overlord.probeDefender') === 'string' && cfg('hud.overlord.probeDefender').length > 2,
+  cfg('hud.overlord.probeMove') + ' vs ' + cfg('hud.overlord.probeDefender'));
+check('usage.floor is a fraction (a weight multiplier, not a percent)',
+  typeof cfg('usage.floor') === 'number' && cfg('usage.floor') > 0 && cfg('usage.floor') <= 1, cfg('usage.floor'));
+check('the damage-evidence tolerances are positive numbers',
+  [cfg('pruner.damageEvidence.slackPct'), cfg('pruner.damageEvidence.slackRel')]
+    .every(function (v) { return typeof v === 'number' && v > 0; }),
+  cfg('pruner.damageEvidence.slackPct') + ' / ' + cfg('pruner.damageEvidence.slackRel'));
+check('the damage-evidence caps are positive integers',
+  [cfg('pruner.damageEvidence.maxObservations'), cfg('pruner.damageEvidence.maxSetsTested')]
+    .every(function (v) { return typeof v === 'number' && v > 0 && v % 1 === 0; }),
+  cfg('pruner.damageEvidence.maxObservations') + ' / ' + cfg('pruner.damageEvidence.maxSetsTested'));
 check('llm.systemPrompt is a non-empty string', typeof cfg('llm.systemPrompt') === 'string' && cfg('llm.systemPrompt').length > 20);
 
 /* ====================================================== 3. the 128D layout is frozen */
