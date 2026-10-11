@@ -19,11 +19,21 @@
 
   const VETO_SCORE = cfg('laplace.vetoScore', -9999);
 
+  // The codes come from config (`veto.codes`); this literal is the fallback for a build without
+  // config.js and is kept complete so a missing config cannot silently drop a veto's identity.
   const VETO_CODES = cfg('veto.codes', {
     VETO1: 'PROTECT_RHYTHM',
     VETO2: 'ABILITY_IMMUNITY',
     VETO3: 'LONE_TR_SETTER',
-    VETO4: 'SPEED_SUICIDE'
+    VETO4: 'SPEED_SUICIDE',
+    VETO5: 'CONTACT_SUICIDE',
+    VETO6: 'SUCKER_PUNCH_SETUP',
+    VETO7: 'TR_SELF_CANCEL',
+    VETO8: 'WASTED_HAZARD_CLEAR',
+    VETO9: 'CONSECUTIVE_PROTECT',
+    VETO10: 'MAGIC_BOUNCE_REDIRECT',
+    VETO11: 'SATURATED_HAZARD',
+    VETO12: 'REDUNDANT_FIELD'
   });
 
   const PROTECT_IDS = U.PROTECT_MOVES;
@@ -50,7 +60,12 @@
         this.vetoSpeedSuicide(action, battleState),
         this.vetoContactSuicide(action, battleState),
         this.vetoSuckerPunchSetup(action, battleState),
-        this.vetoSelfCancellingTrickRoom(action, battleState)
+        this.vetoSelfCancellingTrickRoom(action, battleState),
+        this.vetoWastedHazardClear(action, battleState),
+        this.vetoConsecutiveProtect(action, battleState),
+        this.vetoMagicBounceRedirect(action, battleState),
+        this.vetoSaturatedHazard(action, battleState),
+        this.vetoRedundantField(action, battleState)
       ];
       for (let i = 0; i < checks.length; i++) {
         if (checks[i] && checks[i].isVetoed) {
@@ -357,6 +372,159 @@
       if (!(state && state.field && state.field.trickRoom)) return null;
       return this._veto(VETO_CODES.VETO7,
         'Trick Room is already active: the move fails and the turn is lost.');
+    }
+
+    /* ------------------------------------------------------------- VETO 8 */
+
+    /**
+     * A clearing move with nothing to clear. Rapid Spin / Mortal Spin / Defog / Tidy Up only
+     * take hazards off OUR side, so with our side already clean the turn buys nothing at all —
+     * not even a chip, since the move's own damage does not make up for a lost turn on a hazard
+     * team's clock.
+     *
+     * Court Change is exempt on purpose (see U.HAZARD_CLEAR_MOVES): it SWAPS the two sides, so
+     * it is live even when our side is spotless.
+     */
+    vetoWastedHazardClear(action, state) {
+      if (!action || action.kind !== 'move') return null;
+      if (!cfg('veto.wastedHazardClear', true)) return null;
+      const id = U.toID(action.moveId || action.name || '');
+      if (!U.HAZARD_CLEAR_MOVES.has(id)) return null;
+      const my = state && state.active ? state.active.my : null;
+      const side = (state && state.mySide) || 'p1';
+      const hazards = state && state.field && state.field.hazards ? state.field.hazards[side] : null;
+      if (!my || !hazards) return null;                     // unknown field: never veto on a guess
+      const layers = U.hazardLayersOf(hazards);
+      if (layers === null || layers > 0) return null;
+      return this._veto(VETO_CODES.VETO8,
+        'Nothing on your side to clear: ' + (action.name || id) + ' spends the turn for nothing.');
+    }
+
+    /* ------------------------------------------------------------- VETO 9 */
+
+    /**
+     * Consecutive Protect. The Protect family cannot succeed twice in a row — the game counts
+     * successful uses and fails the move while the counter is up — so clicking it again is a
+     * guaranteed lost turn rather than a read.
+     *
+     * Two exemptions keep it from firing on a technicality: a stale lastMove from an earlier
+     * stint is not consecutive (the same rule VETO6 uses), and a Protect that could not even be
+     * used last turn (we were Taunted) left the counter at zero, so the next one is legitimate.
+     */
+    vetoConsecutiveProtect(action, state) {
+      if (!action || action.kind !== 'move') return null;
+      if (!cfg('veto.consecutiveProtect', true)) return null;
+      const id = U.toID(action.moveId || action.name || '');
+      if (!PROTECT_IDS.has(id)) return null;
+      const my = state && state.active ? state.active.my : null;
+      if (!my) return null;
+      const lastId = U.toID(my.lastMove || '');
+      if (!PROTECT_IDS.has(lastId)) return null;
+      const lastTurn = typeof my.lastMoveTurn === 'number' ? my.lastMoveTurn : -1;
+      const turn = typeof state.turn === 'number' ? state.turn : 0;
+      if (lastTurn < turn - 1) return null;
+      if (my.taunt || my.encore) return null;               // it never went off, so the counter is clear
+      return this._veto(VETO_CODES.VETO9,
+        'Protect already succeeded last turn: it fails now and the turn is lost.');
+    }
+
+    /* ------------------------------------------------------------ VETO 10 */
+
+    /**
+     * A hazard thrown into Magic Bounce. The hazard does not fail — it lands on OUR side for
+     * free, which is strictly worse than not clicking it, so this is the classic way a hazard
+     * turn is thrown away against a Magic Bounce body.
+     *
+     * Only grounds we can point at count: a revealed or battle-confirmed ability, the believed
+     * set, or the species' possible abilities. A body we know nothing about is left alone.
+     */
+    vetoMagicBounceRedirect(action, state) {
+      if (!action || action.kind !== 'move') return null;
+      if (!cfg('veto.magicBounceRedirect', true)) return null;
+      const moveName = action.name || action.moveId || '';
+      const data = U.getMoveData(moveName);
+      const id = U.toID(moveName);
+      const isHazard = (data && data.isHazard) || U.HAZARD_MOVES.has(id);
+      if (!isHazard) return null;
+      const opp = state && state.active ? state.active.opp : null;
+      if (!opp) return null;
+      const bounce = this._magicBounceBasis(opp);
+      if (!bounce) return null;
+      return this._veto(VETO_CODES.VETO10,
+        (opp.species || opp.id || 'Their active') + ' ' + bounce + ' Magic Bounce: the hazard lands on YOUR side.');
+    }
+
+    /** Where the Magic Bounce belief comes from: an observation, the set, or the species' pool. */
+    _magicBounceBasis(opp) {
+      const observed = U.toID(opp.revealedAbility || opp.confirmedAbility || '');
+      if (observed === 'magicbounce') return 'has revealed';
+      const set = U.toID((opp.liveSet && opp.liveSet.ability) || opp.ability || '');
+      if (set === 'magicbounce') return 'is read as holding';
+      const pool = opp.possibleAbilities;
+      if (Array.isArray(pool)) {
+        for (let i = 0; i < pool.length; i++) {
+          if (U.toID(pool[i]) === 'magicbounce') return 'can hold';
+        }
+      }
+      return null;
+    }
+
+    /* ------------------------------------------------------------ VETO 11 */
+
+    /**
+     * A hazard at its layer cap. Spikes stop at three, Toxic Spikes at two, and the one-layer
+     * hazards stop immediately; pushing past the cap sets nothing, so the turn is spent. The cap
+     * and the state key both come from U.HAZARD_LAYERS, never from a literal here.
+     *
+     * Only the OPPONENT's side is judged: a hazard of ours that is already up on our own side
+     * (a Court Change, in practice) is a different board and not this rule's business.
+     */
+    vetoSaturatedHazard(action, state) {
+      if (!action || action.kind !== 'move') return null;
+      if (!cfg('veto.saturatedHazard', true)) return null;
+      const moveName = action.name || action.moveId || '';
+      const id = U.toID(moveName);
+      const entry = U.HAZARD_LAYERS[id];
+      if (!entry) return null;
+      const field = state && state.field;
+      if (!field || !field.hazards) return null;
+      const oppSide = (state.mySide === 'p2') ? 'p1' : 'p2';
+      const hazards = field.hazards[oppSide];
+      if (!hazards) return null;
+      const current = hazards[entry.key];
+      if (typeof current !== 'number' && current !== true) return null;
+      const layers = current === true ? 1 : current;
+      if (layers < entry.max) return null;
+      return this._veto(VETO_CODES.VETO11,
+        (action.name || id) + ' is already at its maximum (' + entry.max + '/\\u2009' + entry.max +
+        '): the move sets nothing this turn.');
+    }
+
+    /* ------------------------------------------------------------ VETO 12 */
+
+    /**
+     * Re-setting the weather that is already up. A weather move while its own weather has more
+     * than `veto.redundantFieldMinTurns` turns left changes nothing the turn it is clicked; at
+     * one turn left it is a legitimate refresh, which is exactly where the threshold sits.
+     *
+     * Terrains are not judged: their remaining turns are not tracked as reliably as the weather's,
+     * and this layer does not veto on a number it cannot read.
+     */
+    vetoRedundantField(action, state) {
+      if (!action || action.kind !== 'move') return null;
+      if (!cfg('veto.redundantField', true)) return null;
+      const moveName = action.name || action.moveId || '';
+      const sets = U.WEATHER_BY_MOVE[U.toID(moveName)];
+      if (!sets) return null;
+      const field = state && state.field;
+      if (!field || !field.weather) return null;
+      if (U.weatherFamily(field.weather) !== U.weatherFamily(sets)) return null;
+      const left = field.weatherTurnsLeft;
+      if (typeof left !== 'number' || !isFinite(left)) return null;   // unknown duration: no opinion
+      if (left < cfg('veto.redundantFieldMinTurns', 2)) return null;
+      return this._veto(VETO_CODES.VETO12,
+        U.weatherFamily(sets) + ' is already up with ' + Math.round(left) + ' turn(s) left: ' +
+        (action.name || moveName) + ' changes nothing.');
     }
 
     /**

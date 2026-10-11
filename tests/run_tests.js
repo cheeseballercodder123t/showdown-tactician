@@ -516,6 +516,172 @@ function main() {
     eq('veto4: Protect is the sanctioned line', v4protect.isVetoed, false);
     const v4prio = veto.evaluateVetoes({ kind: 'move', name: 'Ice Shard', moveId: 'iceshard' }, suicide, { v4: 0.1 });
     eq('veto4: priority moves are exempt', v4prio.isVetoed, false);
+
+    /* ------------------------------------------- VETO 8..12: the board-state vetoes
+     * These five read the BOARD (our hazards, the Protect counter, their ability, a layer cap,
+     * the weather clock) and never the damage engine, so they are pinned on a guard built WITHOUT
+     * one: that way each case can only be answered by the rule it names, instead of VETO3/VETO4
+     * preempting it into a green assertion about the wrong rule. */
+    const boardVeto = new S.ST.BlunderVetoGuard({});
+    /* Every field `evaluateVetoes` walks on the way to VETO8..12 is present and empty: the earlier
+     * checks run FIRST on this state, and a helper reading a missing team would throw rather than
+     * leave the case to the rule under test. */
+    function boardState() {
+      return {
+        turn: 5,
+        mySide: 'p1',
+        myTeam: [],
+        oppTeam: [],
+        bench: { my: [], opp: [] },
+        field: {
+          trickRoom: false,
+          weather: '',
+          weatherTurnsLeft: null,
+          tailwind: { p1: false, p2: false },
+          screens: { p1: {}, p2: {} },
+          hazards: {
+            p1: { rocks: false, spikes: 0, toxicspikes: 0, stickyweb: false, steelspikes: 0 },
+            p2: { rocks: false, spikes: 0, toxicspikes: 0, stickyweb: false, steelspikes: 0 }
+          }
+        },
+        active: {
+          my: { species: 'Blissey', id: 'blissey', fainted: false, boosts: {}, hp: 100, hpPercent: 100, lastMove: '', lastMoveTurn: -1 },
+          opp: { species: 'Corviknight', id: 'corviknight', fainted: false, boosts: {}, hp: 100, hpPercent: 100 }
+        }
+      };
+    }
+    function boardVerdict(action, state) { return boardVeto.evaluateVetoes(action, state, { v4: 0.1 }); }
+
+    /* VETO 8 — a clearing move with nothing to clear. */
+    const cleanSide = boardState();
+    const v8 = boardVerdict({ kind: 'move', name: 'Rapid Spin', moveId: 'rapidspin' }, cleanSide);
+    eq('veto8: Rapid Spin with our side clean is vetoed', v8.code, 'WASTED_HAZARD_CLEAR');
+    check('veto8: the reason says why the turn is spent for nothing',
+      /nothing on your side to clear/i.test(v8.reason || ''), v8.reason);
+    const rockySide = boardState();
+    rockySide.field.hazards.p1.rocks = true;
+    eq('veto8: the same move with a layer up is allowed',
+      boardVerdict({ kind: 'move', name: 'Rapid Spin', moveId: 'rapidspin' }, rockySide).isVetoed, false);
+    eq('veto8: Court Change is exempt (it swaps the two sides)',
+      boardVerdict({ kind: 'move', name: 'Court Change', moveId: 'courtchange' }, cleanSide).isVetoed, false);
+    const noHazardField = boardState();
+    delete noHazardField.field.hazards;
+    eq('veto8: an unreadable field is never vetoed on',
+      boardVerdict({ kind: 'move', name: 'Defog', moveId: 'defog' }, noHazardField).isVetoed, false);
+
+    /* VETO 9 — the Protect counter cannot succeed twice in a row. */
+    const protectAgain = boardState();
+    protectAgain.active.my.lastMove = 'Protect';
+    protectAgain.active.my.lastMoveTurn = 4;              // state.turn is 5
+    const v9 = boardVerdict({ kind: 'move', name: 'Protect', moveId: 'protect' }, protectAgain);
+    eq('veto9: Protect on consecutive turns is vetoed', v9.code, 'CONSECUTIVE_PROTECT');
+    const staleProtect = boardState();
+    staleProtect.active.my.lastMove = 'Protect';
+    staleProtect.active.my.lastMoveTurn = 2;              // an earlier stint, not "consecutive"
+    eq('veto9: a stale Protect from an earlier stint is allowed',
+      boardVerdict({ kind: 'move', name: 'Protect', moveId: 'protect' }, staleProtect).isVetoed, false);
+    const tauntedProtect = boardState();
+    tauntedProtect.active.my.lastMove = 'Protect';
+    tauntedProtect.active.my.lastMoveTurn = 4;
+    tauntedProtect.active.my.taunt = true;                // it never went off, so the counter is clear
+    eq('veto9: a Protect that was taunted away is allowed',
+      boardVerdict({ kind: 'move', name: 'Spiky Shield', moveId: 'spikyshield' }, tauntedProtect).isVetoed, false);
+    eq('veto9: a non-Protect move is untouched by this rule',
+      boardVerdict({ kind: 'move', name: 'Body Slam', moveId: 'bodyslam' }, protectAgain).isVetoed, false);
+
+    /* VETO 10 — a hazard into Magic Bounce lands on our own side. */
+    const bounceOpp = boardState();
+    bounceOpp.active.opp.possibleAbilities = ['Mirror Armor', 'Magic Bounce'];
+    const v10 = boardVerdict({ kind: 'move', name: 'Spikes', moveId: 'spikes' }, bounceOpp);
+    eq('veto10: a hazard into a possible Magic Bounce is vetoed', v10.code, 'MAGIC_BOUNCE_REDIRECT');
+    check('veto10: the reason names the redirect rather than a block',
+      /magic bounce/i.test(v10.reason || '') && /your side/i.test(v10.reason || ''), v10.reason);
+    const revealedBounce = boardState();
+    revealedBounce.active.opp.revealedAbility = 'Magic Bounce';
+    eq('veto10: a revealed Magic Bounce is the same verdict',
+      boardVerdict({ kind: 'move', name: 'Stealth Rock', moveId: 'stealthrock' }, revealedBounce).code, 'MAGIC_BOUNCE_REDIRECT');
+    const noBounceGround = boardState();
+    eq('veto10: an opponent with no such ability is never vetoed for it',
+      boardVerdict({ kind: 'move', name: 'Spikes', moveId: 'spikes' }, noBounceGround).isVetoed, false);
+    eq('veto10: a non-hazard move is untouched by this rule',
+      boardVerdict({ kind: 'move', name: 'Body Slam', moveId: 'bodyslam' }, bounceOpp).isVetoed, false);
+
+    /* VETO 11 — a hazard already at its layer cap. */
+    const saturated = boardState();
+    saturated.field.hazards.p2.spikes = 3;
+    const v11 = boardVerdict({ kind: 'move', name: 'Spikes', moveId: 'spikes' }, saturated);
+    eq('veto11: Spikes at three layers is vetoed', v11.code, 'SATURATED_HAZARD');
+    const notYetSaturated = boardState();
+    notYetSaturated.field.hazards.p2.spikes = 2;
+    eq('veto11: Spikes below the cap is allowed',
+      boardVerdict({ kind: 'move', name: 'Spikes', moveId: 'spikes' }, notYetSaturated).isVetoed, false);
+    const webUp = boardState();
+    webUp.field.hazards.p2.stickyweb = true;
+    eq('veto11: a one-layer hazard already up is vetoed too',
+      boardVerdict({ kind: 'move', name: 'Sticky Web', moveId: 'stickyweb' }, webUp).code, 'SATURATED_HAZARD');
+    eq('veto11: Ceaseless Edge maps onto the same cap as Spikes',
+      boardVerdict({ kind: 'move', name: 'Ceaseless Edge', moveId: 'ceaselessedge' }, saturated).code, 'SATURATED_HAZARD');
+    const ourSideSaturated = boardState();
+    ourSideSaturated.field.hazards.p1.spikes = 3;         // ours, not theirs
+    eq('veto11: a saturated side of OURS is not this rule',
+      boardVerdict({ kind: 'move', name: 'Spikes', moveId: 'spikes' }, ourSideSaturated).isVetoed, false);
+
+    /* VETO 12 — re-setting the weather that is already up. */
+    const rainy = boardState();
+    rainy.field.weather = 'rain';
+    rainy.field.weatherTurnsLeft = 4;
+    const v12 = boardVerdict({ kind: 'move', name: 'Rain Dance', moveId: 'raindance' }, rainy);
+    eq('veto12: re-setting the live weather is vetoed', v12.code, 'REDUNDANT_FIELD');
+    const expiring = boardState();
+    expiring.field.weather = 'rain';
+    expiring.field.weatherTurnsLeft = 1;                  // the refresh is the CORRECT line here
+    eq('veto12: the refresh with one turn left is allowed',
+      boardVerdict({ kind: 'move', name: 'Rain Dance', moveId: 'raindance' }, expiring).isVetoed, false);
+    const unknownClock = boardState();
+    unknownClock.field.weather = 'rain';                  // weatherTurnsLeft stays null
+    eq('veto12: an unreadable clock is never vetoed on',
+      boardVerdict({ kind: 'move', name: 'Rain Dance', moveId: 'raindance' }, unknownClock).isVetoed, false);
+    const otherWeather = boardState();
+    otherWeather.field.weather = 'sandstorm';
+    otherWeather.field.weatherTurnsLeft = 4;
+    eq('veto12: a different weather is a real turn',
+      boardVerdict({ kind: 'move', name: 'Rain Dance', moveId: 'raindance' }, otherWeather).isVetoed, false);
+    const heavyRain = boardState();
+    heavyRain.field.weather = 'heavyrain';
+    heavyRain.field.weatherTurnsLeft = 3;
+    eq('veto12: heavy rain still counts as rain',
+      boardVerdict({ kind: 'move', name: 'Rain Dance', moveId: 'raindance' }, heavyRain).code, 'REDUNDANT_FIELD');
+    eq('veto12: a terrain is not judged by this rule',
+      boardVerdict({ kind: 'move', name: 'Electric Terrain', moveId: 'electricterrain' }, rainy).isVetoed, false);
+
+    /* The five codes are config identities, and each rule is POLICY rather than a deduction, so
+     * every one of them has to be switchable on its own — asserted with the runtime merge the
+     * modules are documented to honour, and restored immediately.
+     */
+    eq('veto8..12: every code resolves from config', [
+      S.ST.configGet('veto.codes.VETO8', null), S.ST.configGet('veto.codes.VETO9', null),
+      S.ST.configGet('veto.codes.VETO10', null), S.ST.configGet('veto.codes.VETO11', null),
+      S.ST.configGet('veto.codes.VETO12', null)
+    ], ['WASTED_HAZARD_CLEAR', 'CONSECUTIVE_PROTECT', 'MAGIC_BOUNCE_REDIRECT', 'SATURATED_HAZARD', 'REDUNDANT_FIELD']);
+
+    const OFF_CASES = [
+      ['wastedHazardClear', function () { return boardVerdict({ kind: 'move', name: 'Rapid Spin', moveId: 'rapidspin' }, cleanSide); }],
+      ['consecutiveProtect', function () { return boardVerdict({ kind: 'move', name: 'Protect', moveId: 'protect' }, protectAgain); }],
+      ['magicBounceRedirect', function () { return boardVerdict({ kind: 'move', name: 'Spikes', moveId: 'spikes' }, bounceOpp); }],
+      ['saturatedHazard', function () { return boardVerdict({ kind: 'move', name: 'Spikes', moveId: 'spikes' }, saturated); }],
+      ['redundantField', function () { return boardVerdict({ kind: 'move', name: 'Rain Dance', moveId: 'raindance' }, rainy); }]
+    ];
+    OFF_CASES.forEach(function (entry) {
+      const key = entry[0];
+      const on = entry[1]();
+      S.ST.configMerge({ veto: (function () { const patch = {}; patch[key] = false; return patch; })() });
+      const off = entry[1]();
+      S.ST.configMerge({ veto: (function () { const patch = {}; patch[key] = true; return patch; })() });
+      const restored = entry[1]();
+      check('veto.' + key + ': the rule is live by default', on.isVetoed === true, JSON.stringify(on));
+      check('veto.' + key + ': switching it off lets the line through', off.isVetoed === false, JSON.stringify(off));
+      check('veto.' + key + ': switching it back on restores the veto', restored.isVetoed === true, JSON.stringify(restored));
+    });
   } else {
     check('veto: BlunderVetoGuard present', false);
   }

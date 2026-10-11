@@ -144,6 +144,11 @@ const INVENTORY = [
   'veto.contactPunishHp', 'veto.suckerPunchSetupHp',
   'veto.codes.VETO1', 'veto.codes.VETO2', 'veto.codes.VETO3', 'veto.codes.VETO4',
   'veto.codes.VETO5', 'veto.codes.VETO6', 'veto.codes.VETO7',
+  'veto.codes.VETO8', 'veto.codes.VETO9', 'veto.codes.VETO10', 'veto.codes.VETO11',
+  'veto.codes.VETO12',
+  // the five board-state vetoes are policy, so each one is also a switch
+  'veto.wastedHazardClear', 'veto.consecutiveProtect', 'veto.magicBounceRedirect',
+  'veto.saturatedHazard', 'veto.redundantField', 'veto.redundantFieldMinTurns',
   // trickRoom
   'trickRoom.turns', 'trickRoom.speedRankBase', 'trickRoom.alertFinal', 'trickRoom.alertTwoLeft',
   'trickRoom.maxHistory',
@@ -182,7 +187,7 @@ check('all ' + SECTIONS.length + ' top-level sections exist', missingSections.le
 check('laplace.K is a positive integer', cfg('laplace.K') > 0 && cfg('laplace.K') % 1 === 0, cfg('laplace.K'));
 check('evaluator.weights.status is a 12-entry array', Array.isArray(cfg('evaluator.weights.status')) && cfg('evaluator.weights.status').length === 12, JSON.stringify(cfg('evaluator.weights.status')));
 check('evaluator.weights.macro is a 16-entry array', Array.isArray(cfg('evaluator.weights.macro')) && cfg('evaluator.weights.macro').length === 16, JSON.stringify(cfg('evaluator.weights.macro')));
-check('veto codes are non-empty strings', ['VETO1', 'VETO2', 'VETO3', 'VETO4', 'VETO5', 'VETO6', 'VETO7'].every(function (k) { return typeof cfg('veto.codes.' + k) === 'string' && cfg('veto.codes.' + k).length > 0; }));
+check('veto codes are non-empty strings', ['VETO1', 'VETO2', 'VETO3', 'VETO4', 'VETO5', 'VETO6', 'VETO7', 'VETO8', 'VETO9', 'VETO10', 'VETO11', 'VETO12'].every(function (k) { return typeof cfg('veto.codes.' + k) === 'string' && cfg('veto.codes.' + k).length > 0; }));
 check('the clock reads fast BEFORE it reads slow (a swap would invert every label)',
   cfg('clock.fastMs') > 0 && cfg('clock.fastMs') < cfg('clock.slowMs'), cfg('clock.fastMs') + ' < ' + cfg('clock.slowMs'));
 check('clock.switchKeepThreshold sits inside the range of its own priors',

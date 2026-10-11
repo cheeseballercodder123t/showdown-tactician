@@ -8,7 +8,7 @@ Built for Chromium-on-Android (Lemur Browser, Samsung Galaxy S24 FE, 1080×2340)
   **Terastallization is tracked but never simulated** (banned in this format).
 * Architecture: determinized multi-world sampling (K=6), 2-ply simultaneous matrix solver
   solved for a mixed equilibrium (fictitious play), 128D dense-state leaf evaluator +
-  10D momentum vector, seven deterministic blunder vetoes, Trick Room lifecycle manager,
+  10D momentum vector, twelve deterministic blunder vetoes, Trick Room lifecycle manager,
   optional LLM narration.
 * Everything runs **locally**. The LLM layer is opt-in and costs 0 ms when no API key is set.
 
@@ -27,6 +27,28 @@ Chromium for Android has no `chrome://extensions` UI, so use the browser's exten
 2. Lemur Browser → **Extensions** → **Load unpacked / Install from file** → pick the zip.
 3. Set up the team paste through the extension options page or straight from the in-page
    **TAC** drawer button.
+
+## Install (Firefox for Android)
+
+The same folder is a Manifest V3 add-on for Firefox: `about:debugging` → **This Firefox/Android**
+→ **Load Temporary Add-on** → pick `manifest.json` (unsigned, for development); a signed build
+needs the `browser_specific_settings.gecko.id` the manifest already carries, because Mozilla
+requires an id to sign an MV3 add-on.
+
+Firefox runs background *scripts* (an event page) where Chrome runs a service worker, so the
+manifest declares both `background.scripts` and `background.service_worker`, plus
+`browser_specific_settings` with a Gecko floor and an Android one (`gecko_android`):
+
+* Chrome 121 and later **ignores** the `background.scripts` entry and keeps using the service
+  worker. Chrome *before* 121 refuses to load an MV3 manifest that contains it at all, which is
+  why `minimum_chrome_version` is 121 rather than 102 — a manifest claiming 102 while carrying
+  that key would not load on the versions it claims.
+* Firefox before 121 does not start the background page when `service_worker` is present, so
+  `gecko.strict_min_version` is 121.0. (Mozilla's own MV3 floor is 109.0, and Firefox for
+  Android opened up to extensions during the 120 cycle.)
+
+There is no Chromium build older than 121 in the supported set as a result, and the extension has
+only been exercised in Chromium here — see the limitations below.
 
 ## Using the HUD
 
@@ -63,7 +85,8 @@ src/trick_room.js          TR lifecycle + inverted speed priority queue
 src/evaluator_128d.js      128D dense state vector + dot-product score
 src/tempo_vector.js        10D momentum vector + Protect/Bunker policy mask
 src/opponent_clock.js      opponent deliberation telemetry: turn latency minus the learned noise floor
-src/veto_guard.js          the seven hard blunder vetoes (immunity, rhythm, TR, speed, contact, Sucker Punch)
+src/veto_guard.js          the twelve hard blunder vetoes (immunity, rhythm, TR, speed, contact, Sucker Punch,
+                           hazard clearing, consecutive Protect, Magic Bounce, hazard caps, redundant weather)
 src/world_sampler.js       K=6 determinized worlds with observed-fact verification
 src/laplace_core.js        the decision loop (payoff matrix, mixed-strategy solve, legacy softmax)
 src/llm_client.js          optional Gemini/OpenRouter bridge, hard 600 ms abort
@@ -72,7 +95,7 @@ src/injected.js            MAIN-world WebSocket interceptor
 src/background.js          service worker: the only component that calls the LLM API
 src/content.js             pipeline orchestrator
 options/options.html|js    mobile settings page (provider, key, team, Elo scaler)
-tests/run_tests.js         end-to-end verification suite (177 checks)
+tests/run_tests.js         end-to-end verification suite (218 checks)
 tests/rule_checks.js       deduction-rule checks driven through real protocol lines (23 checks)
 tests/util_smoke.js        util.js in isolation: dex access, item naming, type math, Speed maths (43 checks)
 tests/injected_bridge.js   the MAIN-world WebSocket bridge against a fake WebSocket/DOM (12 checks)
@@ -84,12 +107,12 @@ tests/hardening_audit.js   the bug-hunt regression suite: 10 defects reproduced 
 tests/upgrades_check.js    the mixed-strategy solver against matrices with an analytic equilibrium,
                            the newer vetoes, the deliberation clock and the reverse damage rule (118 checks)
 tests/chaos_sync_check.js  the monthly chaos-sync tool + the usage overlay it writes (70 checks)
-tests/weights_check.js     the replay extractor + the IRLS weight fitter, against a planted model (59 checks)
+tests/weights_check.js     the corpus downloader + the extractor + the IRLS fitter, against a planted model (102 checks)
 tests/discrete_check.js    the 16 discrete damage rolls, the exact KO count, EV pinning and the
                            residual-order Speed evidence (110 checks)
 tests/scout_check.js       the replay-scouting tool + the overlay it writes + the pruner's use of it (78 checks)
 tests/pressure_check.js    the PP-stall gauge and its 3-way pivot, the volatility charge, the
-                           Z-Move/Mega format sentinel (139 checks)
+                           Z-Move/Mega format sentinel (151 checks)
 test_engine.js             RULE 2: five canonical ground-truth damage scenarios (57 checks)
 test_log.txt               the 30-turn ExtramePatriot vs LUIZ_LFN battle as a raw protocol stream
 tools/gen_abilities.js     regenerates lib/species-abilities.js from tools/pokedex.json
@@ -97,6 +120,7 @@ tools/gen_aliases.js       regenerates lib/species-aliases.js (needs the vendore
 tools/pokedex.json         Showdown's dex snapshot the two generators read
 tools/sync_chaos_sets.js   a Smogon chaos dump -> src/sets_usage.js (the monthly cron runs this)
 tools/scout_replays.js     an opponent's recent replays -> src/scout_prior.js (what their own games reveal)
+tools/fetch_replays.js    a ladder search -> the replay corpus (the only step of the weight pipeline that downloads)
 tools/extract_training_data.js  a replay corpus -> 128D rows labelled by the eventual winner
 tools/fit_weights.js       IRLS logistic regression over those rows -> weights + train/test AUC
 .github/workflows/chaos-sync.yml  monthly cron: download the dump, resync the overlay, commit it
@@ -107,7 +131,7 @@ ARCHITECTURE.md            frozen interface contract every module binds to
 
 ```
 node test_engine.js           #  57 checks: RULE 2 — five ground-truth damage rolls, frozen
-node tests/run_tests.js       # 177 checks: the whole pipeline in a DOM-less sandbox
+node tests/run_tests.js       # 218 checks: the whole pipeline in a DOM-less sandbox
 node tests/rule_checks.js     #  23 checks: the deductions, replayed from raw protocol lines
 node tests/util_smoke.js      #  43 checks: dex access, item naming, type math, Speed maths
 node tests/injected_bridge.js #  12 checks: the MAIN-world WebSocket bridge (fake WebSocket/DOM)
@@ -117,11 +141,11 @@ node tests/parser_fuzz.js     #  44 checks: RULE 3 — the real log, all its pre
 node tests/hardening_audit.js #  48 checks: the bug-hunt regressions + a 40-battle invariant fuzz
 node tests/upgrades_check.js  # 118 checks: the mixed-strategy solve, the vetoes, the clock, damage evidence
 node tests/chaos_sync_check.js # 70 checks: the chaos sync + the usage overlay (fixtures only, no network)
-node tests/weights_check.js   #  59 checks: the extractor + the fitter against a planted model
-node tests/hud_check.js       # 137 checks: the six HUD extras (stub DOM) + their engine data
+node tests/weights_check.js   # 102 checks: the downloader + the extractor + the fitter, against a planted model
+node tests/hud_check.js       # 175 checks: the seven HUD extras (stub DOM), the bench-tap sandbox end to end + their engine data
 node tests/discrete_check.js  # 110 checks: the 16 discrete rolls, the exact KO count, EV pinning, residual order
 node tests/scout_check.js     #  78 checks: the scouting tool, the overlay, the pruner's re-weighting
-node tests/pressure_check.js  # 139 checks: the PP-stall pivot, the volatility charge, the format sentinel
+node tests/pressure_check.js  # 151 checks: the PP-stall pivot, the volatility charge, the format sentinel
 ```
 
 The first suite loads every script in manifest order inside a DOM-less sandbox (so a load-order
@@ -134,8 +158,9 @@ mixed-strategy solver against matrices whose equilibrium is known analytically, 
 into `evaluateTurn`, the three newer vetoes, the deliberation clock (driven with injected
 timestamps, so it is deterministic), and the reverse-damage deduction. The last two suites cover
 the offline tooling: `tests/chaos_sync_check.js` runs the chaos-sync generator and the usage
-re-weighting against fixtures, and `tests/weights_check.js` proves the fitter recovers a planted
-weight vector from synthetic rows with test AUC ≥ 0.8.
+re-weighting against fixtures, and `tests/weights_check.js` proves the corpus downloader labels a
+replay only from the log's own `|win|` line and that the fitter recovers a planted weight vector
+from synthetic rows with test AUC ≥ 0.8.
 
 The second one bypasses the fixtures and drives the deduction engine itself with battle lines:
 Boots confirmed disproved and never credited to a Flying switch-in, the Choice lock from two
@@ -207,7 +232,7 @@ exploited by a fixed counter-strategy.
   payoffs come from a heuristic evaluator, so the mixture is the equilibrium of the *model*, not
   of the real game. That is the honest limit of any engine without a learned value head.
 
-The blunder layer grew from four hard vetoes to seven. Alongside protect-rhythm, ability
+The blunder layer grew from four hard vetoes to twelve. Alongside protect-rhythm, ability
 immunity, lone-TR-setter and speed-suicide, `src/veto_guard.js` now refuses:
 
 1. **Contact suicide** — a contact move into a known Iron Barbs / Rough Skin / Rocky Helmet target
@@ -218,6 +243,30 @@ immunity, lone-TR-setter and speed-suicide, `src/veto_guard.js` now refuses:
    attacking move. The first one stays a legitimate read.
 3. **Trick Room while Trick Room is up** — in Gen 5+ the move simply *fails* while the room is
    active (it neither cancels nor refreshes it), so re-clicking it can only waste a turn.
+
+Five more followed, each reading one board fact rather than guessing, and each switchable off
+through its own `veto.*` boolean (`veto.wastedHazardClear`, `veto.consecutiveProtect`,
+`veto.magicBounceRedirect`, `veto.saturatedHazard`, `veto.redundantField`):
+
+4. **A clear with nothing to clear** — Rapid Spin, Mortal Spin, Defog or Tidy Up with zero
+   hazards on OUR side of the field. Court Change is exempt on purpose: it *swaps* the two sides,
+   so it is live even when our side is spotless.
+5. **Consecutive Protect** — a Protect-family move when our active used one on the previous turn,
+   because the family cannot succeed twice in a row. A stale last use (two or more turns ago) and
+   a use that never went off (we were taunted or encored) are both exempt: the counter is clear.
+6. **A hazard into Magic Bounce** — the hazard does not fail, it lands on our side for free, which
+   is strictly worse than not clicking it. Only grounds we can point at count: a revealed or
+   battle-confirmed ability, the believed set (`liveSet`), or the species' possible abilities.
+7. **A hazard already at its cap** — Spikes stop at three, Toxic Spikes at two, and Stealth Rock,
+   Sticky Web and the two axe-edge setters at one; past the cap the move sets nothing. The caps
+   and the state keys are `U.HAZARD_LAYERS`, so the guard holds no literal of its own.
+8. **Re-setting the weather that is already up** — a weather move while its own weather has more
+   than `veto.redundantFieldMinTurns` (2) turns left; at one turn left the refresh is the correct
+   line, which is exactly where the threshold sits. Terrains are deliberately not judged, because
+   their remaining turns are not tracked as reliably.
+
+None of the five vetoes a signal it cannot read: an unreadable hazard record, a missing weather
+countdown and an opponent with no ability grounds all fall through to the next check.
 
 ## The six HUD extras
 
@@ -336,12 +385,27 @@ measurement is not a zero measurement. It ships empty, so nothing changes until 
 the cron fills it in. See the deviations section for why it is an overlay and not a regenerated
 `src/sets_db.js`.
 
-The same offline philosophy applies to the weights themselves: `tools/extract_training_data.js`
-turns replay logs into 128D rows labelled by the eventual winner, and `tools/fit_weights.js` fits
-them by IRLS with an L2 ridge, reports train/test AUC-ROC and prints a ready `evaluator.weights`
-snippet. It writes its output as an artifact and never rewrites `src/config.js` on its own —
-adopting fitted weights is a reviewed step, because the corpus needed to make them meaningful is
-not the repo's to ship.
+The same offline philosophy applies to the weights themselves, in three steps that are split so
+that only one of them touches the network: `tools/fetch_replays.js` searches a ladder, downloads
+the replays and writes the corpus (labelling each one from the log's own `|win|` line, through
+the side table the log declares, and skipping rather than guessing when it cannot resolve one);
+`tools/extract_training_data.js` turns that corpus into 128D rows labelled by the eventual
+winner; and `tools/fit_weights.js` fits them by IRLS with an L2 ridge, reports train/test AUC-ROC
+and prints a ready `evaluator.weights` snippet.
+
+The training has been run once, so the pipeline is known to work end to end rather than only in
+fixtures: a search of `[Gen 9] National Dex` at rating >= 1300 yielded **128 replays**, which the
+extractor turned into **2,823 labelled turn rows** (1,434 wins / 1,389 losses), and the fitter
+(λ = 0.5, 25 IRLS iterations — it hits the iteration cap rather than converging, so raising
+`--max-iter` is the first thing to try) scored **AUC 0.9369 train / 0.9360 hold-out** on 2,258
+training and 565 test rows. That number is the honest ceiling of this feature set, not a promise:
+the rows are one format's ladder games and the labels are eventual winners.
+
+What was produced is committed as `lib/trained-weights.json` — the reviewed artifact — and
+neither it nor the fitter rewrites `src/config.js` on its own: the live `evaluator.weights` are
+still the handcrafted defaults, and adopting the fitted vector is a separate, verified step. The
+replay corpus itself is not in the repo (it is 128 third-party logs, and the artifact records the
+search that produced it), so a regenerate means re-running the three commands above.
 
 ## The two dex gaps the generated files fix
 
@@ -462,6 +526,12 @@ the current turn, so it says which line to click now, not how the stall resolves
 * The library-only policy has no fallback: if `lib/calc.min.js` is missing, `U.libraryReady()`
   is false and stat lookups return 0 rather than a fabricated number — the engine reports
   nothing instead of guessing.
+* Firefox for Android is declared but unverified. The manifest carries both background keys and a
+  gecko id, and nothing in this repository has been loaded in a Gecko browser; the Chrome floor
+  moved from 102 to 121 in the same change, so the supported Chromium range is narrower than it
+  was. Chrome ≥ 121 ignores `background.scripts` (it uses the service worker); Chrome < 121 refuses
+  to load an MV3 manifest that has it. A separate Firefox-only manifest would keep the old Chrome
+  floor, at the cost of two manifests to maintain.
 * Nothing here has been verified in a real browser. The parser, state manager, engines and HUD
   are covered by the sixteen Node suites and stub DOMs; no suite can prove how Showdown's live
   control bar renders or how the extension behaves on an actual Android device.

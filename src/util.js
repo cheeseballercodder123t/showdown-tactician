@@ -36,6 +36,49 @@
     'partingshot', 'batonpass', 'shedtail']);
   const HAZARD_MOVES = new Set(['stealthrock', 'spikes', 'toxicspikes', 'stickyweb', 'ceaselessedge', 'stoneaxe']);
   const HAZARD_REMOVAL_MOVES = new Set(['rapidspin', 'defog', 'mortalspin', 'tidyup', 'courtchange']);
+
+  /**
+   * Each hazard-setting move -> the state key it lands on and the most it can stack.
+   * `key` names `state.field.hazards[side]` as state_manager.emptyHazards() defines it, so a
+   * caller can read what is already up without a second vocabulary. Clashing moves share a key
+   * on purpose (Ceaseless Edge sets Spikes); the layer cap is the move's own, not the key's.
+   */
+  const HAZARD_LAYERS = {
+    stealthrock: { key: 'rocks', max: 1 },
+    stoneaxe: { key: 'rocks', max: 1 },
+    spikes: { key: 'spikes', max: 3 },
+    ceaselessedge: { key: 'spikes', max: 3 },
+    toxicspikes: { key: 'toxicspikes', max: 2 },
+    stickyweb: { key: 'stickyweb', max: 1 }
+  };
+
+  /**
+   * The moves that take hazards off OUR side only. Court Change is deliberately absent: it SWAPS
+   * the two sides, so it is worth a turn even when our side is already clean. Everything else
+   * here (Rapid Spin, Mortal Spin, Defog, Tidy Up) removes hazards and nothing more, which is
+   * what makes "there is nothing to clear" a decidable statement.
+   */
+  const HAZARD_CLEAR_MOVES = new Set(['rapidspin', 'mortalspin', 'defog', 'tidyup']);
+
+  /** The weather each setting move puts up, in the protocol's own vocabulary (see the parser's
+   *  WEATHER_IDS), so a comparison never has to translate between two spellings. Chilly
+   *  Reception and Snowscape both bring snow, which is why this is a map and not a set. */
+  const WEATHER_BY_MOVE = {
+    raindance: 'rain',
+    sunnyday: 'sun',
+    sandstorm: 'sandstorm',
+    snowscape: 'snow',
+    chillyreception: 'snow'
+  };
+
+  /** The weather family a field value belongs to: heavy rain still IS rain, and hail is snow. */
+  function weatherFamily(weather) {
+    const id = toID(weather || '');
+    if (id === 'harshsun') return 'sun';
+    if (id === 'heavyrain') return 'rain';
+    if (id === 'hail') return 'snow';
+    return id;
+  }
   const SETUP_MOVES = new Set(['swordsdance', 'nastyplot', 'dragondance', 'calmmind', 'bulkup', 'quiverdance',
     'shellsmash', 'irondefense', 'amnesia', 'agility', 'rockpolish', 'shiftgear', 'clangoroussoul',
     'tidyup', 'victorydance', 'takeheart', 'growth', 'howl', 'workup', 'tailglow', 'bellydrum']);
@@ -364,6 +407,18 @@
   function isPivotMove(name) { return PIVOT_MOVES.has(toID(name)); }
   function isHazardMove(name) { return HAZARD_MOVES.has(toID(name)); }
 
+  /** hazardLayersOf(hazards) -> the total number of layers sitting on one side. */
+  function hazardLayersOf(hazards) {
+    if (!hazards || typeof hazards !== 'object') return null;
+    let total = 0;
+    for (const key in hazards) {
+      const v = hazards[key];
+      if (typeof v === 'number') total += v;
+      else if (v === true) total += 1;
+    }
+    return total;
+  }
+
   /* ---------------------------------------------------------------- type math */
 
   function typeMultiplier(attackType, defTypes) {
@@ -674,6 +729,10 @@
     PIVOT_MOVES: PIVOT_MOVES,
     HAZARD_MOVES: HAZARD_MOVES,
     HAZARD_REMOVAL_MOVES: HAZARD_REMOVAL_MOVES,
+    HAZARD_LAYERS: HAZARD_LAYERS,
+    HAZARD_CLEAR_MOVES: HAZARD_CLEAR_MOVES,
+    WEATHER_BY_MOVE: WEATHER_BY_MOVE,
+    weatherFamily: weatherFamily,
     SETUP_MOVES: SETUP_MOVES,
     CHOICE_ITEMS: CHOICE_ITEMS,
     CHOICE_IDS: CHOICE_IDS,
@@ -732,6 +791,7 @@
     is8PPRecoveryMove: is8PPRecoveryMove,
     isPivotMove: isPivotMove,
     isHazardMove: isHazardMove,
+    hazardLayersOf: hazardLayersOf,
 
     typeMultiplier: typeMultiplier,
     typeEffectiveness: typeEffectiveness,

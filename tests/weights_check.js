@@ -17,18 +17,28 @@
  *      evaluator, so the diagonal is pinned by two vectors that isolate it);
  *   5. the extractor produces one labelled 128-float row per turn header and is deterministic;
  *   6. degenerate corpora (single class, ragged, empty, non-finite) are REFUSED with a clear
- *      error instead of producing NaN.
+ *      error instead of producing NaN;
+ *   7. the downloader labels a replay through the LOG'S OWN seat table rather than by array
+ *      order, and refuses a log it cannot label instead of inventing a winner;
+ *   8. the fitted artifact that ships in the repo is well-formed and reproducible from its own
+ *      coefficients.
  *
  * WHAT IT DOES NOT PROVE
  *   Nothing about win rate on the real ladder. AUC on a synthetic planted model says the fitter
- *   works, not that the fitted weights would beat the hand-tuned ones: that needs a corpus of
- *   real replays this repository does not ship.
+ *   works. The artifact pin in section 8 checks the SHAPE and self-consistency of the committed
+ *   fit and that its held-out AUC is meaningfully above chance, but the corpus it was fitted on
+ *   is not in the repo (the replays are third-party content), so the number itself is not
+ *   reproducible from a checkout — only re-fittable from a fresh download.
  */
 'use strict';
+
+const fs = require('fs');
+const path = require('path');
 
 const H = require('./harness.js');
 const extractor = require('../tools/extract_training_data.js');
 const fitter = require('../tools/fit_weights.js');
+const fetcher = require('../tools/fetch_replays.js');
 
 const ST = H.loadAll().ST;
 
@@ -347,6 +357,173 @@ throwsWith('a non-finite feature is refused', function () {
     isFinite(fitter.fitLogistic([[1], [1], [1], [2], [2], [2]], [0, 0, 1, 1, 0, 1], {}).coef[0]));
 })();
 
+/* ====================================================== 7. the corpus downloader */
+
+section('7. the downloader labels replays from the log, and refuses what it cannot label');
+
+/* The seats are listed p2-first on purpose: an implementation that took the first `|player|` line
+ * to be p1 would answer 'p1' here, and every replay whose players swapped seats would be
+ * mislabelled in a way no downstream check could see. */
+const SWAPPED_SEATS = [
+  '|player|p2|Ash|1|1000',
+  '|player|p1|Zoe|2|1000',
+  '|start',
+  '|win|Ash'
+].join('\n');
+eq('the winner is resolved through the log\'s own seat table, not by order',
+  fetcher.winnerOf({ log: SWAPPED_SEATS }), 'p2');
+eq('...and the same log handed over as an array of lines resolves identically',
+  fetcher.winnerOf({ log: SWAPPED_SEATS.split('\n') }), 'p2');
+eq('...while the first-listed seat can still be the winner',
+  fetcher.winnerOf({ log: ['|player|p1|Zoe|', '|player|p2|Ash|', '|win|Zoe'].join('\n') }), 'p1');
+eq('a log with no |win| line is left unlabelled',
+  fetcher.winnerOf({ log: ['|player|p1|Ash|', '|start'].join('\n') }), null);
+eq('a winner who is in neither seat is refused, never guessed',
+  fetcher.winnerOf({ log: ['|player|p1|Ash|', '|player|p2|Gary|', '|win|Nobody'].join('\n') }), null);
+eq('case and surrounding whitespace do not matter',
+  fetcher.winnerOf({ log: ['|player|p1| Ash |1|1000', '|player|p2|Gary|2|1000', '|win|ash'].join('\n') }), 'p1');
+eq('an empty replay is unlabelled rather than a crash', fetcher.winnerOf({}), null);
+
+eq('a |win| with no player table at all is refused',
+  fetcher.winnerOf({ log: '|win|Ash' }), null);
+
+const SEARCH_HITS = [
+  { id: 'a', rating: 1500 },
+  { id: 'b', rating: 1200 },
+  { id: '', rating: 1600 },        // no id: cannot be downloaded
+  { rating: 1900 },                // no id: cannot be downloaded
+  { id: 'c', rating: 1300 }
+];
+eq('the floor keeps the hits at or above it, in search order',
+  fetcher.filterByRating(SEARCH_HITS, 1300).map(function (h) { return h.id; }), ['a', 'c']);
+eq('...and the floor itself is inclusive',
+  fetcher.filterByRating([{ id: 'x', rating: 1300 }], 1300).length, 1);
+eq('a hit with no id is dropped (there is nothing to fetch)',
+  fetcher.filterByRating(SEARCH_HITS, 0).length, 3);
+eq('a missing or unusable floor means 0, not "drop everything"',
+  fetcher.filterByRating([{ id: 'a', rating: 0 }, { id: 'b' }], undefined).map(function (h) { return h.id; }),
+  ['a', 'b']);
+eq('...and a NaN floor behaves the same way',
+  fetcher.filterByRating([{ id: 'a' }], NaN).length, 1);
+eq('a non-array candidate list is an empty list, not a crash', fetcher.filterByRating(null, 1000), []);
+
+const LABELLED_LOG = ['|player|p1|Ash|', '|player|p2|Gary|', '|start', '|win|Gary'].join('\n');
+eq('an unlabelled replay produces no corpus entry at all',
+  fetcher.corpusOf('id-1', 1500, { log: ['|player|p1|Ash|', '|start'].join('\n') }), null);
+const corpusEntry = fetcher.corpusOf('gen9nationaldex-1', 1520, {
+  id: 'gen9nationaldex-1', rating: 1510, players: ['Ash', 'Gary', 'third'], log: LABELLED_LOG
+});
+eq('the entry carries exactly the corpus fields, and nothing else',
+  Object.keys(corpusEntry).sort(), ['id', 'log', 'players', 'rating', 'winner'].sort());
+eq('...the search hit\'s rating wins over the payload\'s', corpusEntry.rating, 1520);
+eq('...the winner is the seat that actually won', corpusEntry.winner, 'p2');
+eq('...the player list is capped at the two seats', corpusEntry.players, ['Ash', 'Gary']);
+eq('...and the log is the newline-joined protocol text', corpusEntry.log, LABELLED_LOG);
+
+const fromPayload = fetcher.corpusOf('', undefined, { id: 'gen9nationaldex-2', rating: 1401, log: LABELLED_LOG });
+eq('without a hit rating the payload\'s rating is used', fromPayload.rating, 1401);
+eq('...and the payload id fills in for a missing hit id', fromPayload.id, 'gen9nationaldex-2');
+const crlfEntry = fetcher.corpusOf('c', 1, { log: ['|player|p1|A|', '|player|p2|B|', '|win|A\r'] });
+eq('a CRLF line array normalises to the same joined text as a string',
+  crlfEntry.log, ['|player|p1|A|', '|player|p2|B|', '|win|A'].join('\n'));
+
+const corpusPayload = fetcher.corpusPayload({ format: 'gen9nationaldex', minRating: 1300 }, [
+  { id: 'a', rating: 1500, winner: 'p1', log: 'l' },
+  { id: 'b', rating: 1201, winner: 'p2', log: 'l' },
+  { id: 'c', rating: 0, winner: 'p1', log: 'l' }
+]);
+/* The exact key set, not just "the numbers are there": determinism is the reason a re-download is
+ * diffable, and a timestamp is exactly the kind of field that would quietly break that. */
+eq('the payload reports its exact key set',
+  Object.keys(corpusPayload).sort(),
+  ['count', 'format', 'minRating', 'ratingHighest', 'ratingLowest', 'ratingMean', 'replays', 'source'].sort());
+check('...and carries no date- or time-shaped key of any kind',
+  !Object.keys(corpusPayload).some(function (k) { return /time|date|stamp|fetched|^at$/i.test(k); }),
+  Object.keys(corpusPayload).join(','));
+eq('the count includes entries that carry no rating', corpusPayload.count, 3);
+eq('the rating statistics skip the unrated entry',
+  [corpusPayload.ratingLowest, corpusPayload.ratingHighest], [1201, 1500]);
+eq('the mean is rounded to a whole rating', corpusPayload.ratingMean, 1351);
+eq('the format and the floor are echoed, so a corpus describes itself',
+  [corpusPayload.format, corpusPayload.minRating], ['gen9nationaldex', 1300]);
+eq('the replays themselves are carried through untouched', corpusPayload.replays.length, 3);
+const emptyPayload = fetcher.corpusPayload({ format: 'x', minRating: 1400 }, []);
+eq('an empty corpus reports null statistics rather than Infinity',
+  [emptyPayload.count, emptyPayload.ratingMean, emptyPayload.ratingLowest, emptyPayload.ratingHighest],
+  [0, null, null, null]);
+
+/* `search()` and `download()` are deliberately NOT called: both go through a module-level fetch,
+ * and this suite must stay offline (that boundary is the reason the extractor exists separately).
+ * The pure halves above are the parts a network stub could not test any better. */
+
+/* ========================================================= 8. the fitted artifact */
+
+section('8. the fitted artifact is well-formed, and reproducible from its own coefficients');
+
+function readJson(rel) {
+  try {
+    return { ok: true, value: JSON.parse(fs.readFileSync(path.join(__dirname, rel), 'utf8')) };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+}
+
+/* A missing artifact must be a NAMED failure, not a crash at import time. */
+const artifactAttempt = readJson('../lib/trained-weights.json');
+check('the fitted artifact is on disk', artifactAttempt.ok, artifactAttempt.error);
+if (artifactAttempt.ok) {
+  const artifact = artifactAttempt.value;
+  check('it carries 128 finite coefficients',
+    Array.isArray(artifact.weights128) && artifact.weights128.length === 128 &&
+    artifact.weights128.every(function (v) { return typeof v === 'number' && isFinite(v); }),
+    String(artifact.weights128 && artifact.weights128.length));
+  check('...and declares 128 features to match', artifact.features === 128, String(artifact.features));
+  check('weightsFull is the intercept followed by exactly those 128 coefficients',
+    Array.isArray(artifact.weightsFull) && artifact.weightsFull.length === 129 &&
+    artifact.weightsFull[0] === artifact.intercept &&
+    artifact.weightsFull.slice(1).every(function (v, i) { return v === artifact.weights128[i]; }));
+  check('the sample counts add up',
+    artifact.samples === artifact.trainSamples + artifact.testSamples, JSON.stringify({
+      samples: artifact.samples, train: artifact.trainSamples, test: artifact.testSamples }));
+  check('...and the positive count is inside the sample count',
+    artifact.positives > 0 && artifact.positives < artifact.samples, String(artifact.positives));
+  check('both AUCs are finite and inside (0, 1]',
+    [artifact.aucTrain, artifact.aucTest].every(function (v) {
+      return typeof v === 'number' && isFinite(v) && v > 0 && v <= 1;
+    }), JSON.stringify([artifact.aucTrain, artifact.aucTest]));
+  /* 0.936 held out on the committed corpus. A re-fit far below this means the corpus is too small
+   * or mislabelled, which is worth failing a build over rather than shipping quietly. */
+  check('the held-out AUC is meaningfully above chance (>= 0.7)',
+    artifact.aucTest >= 0.7, 'test AUC ' + artifact.aucTest);
+  check('a fit that reports itself unconverged also records how far it had to go',
+    artifact.converged === true || (typeof artifact.lastStep === 'number' && isFinite(artifact.lastStep)),
+    JSON.stringify({ converged: artifact.converged, lastStep: artifact.lastStep }));
+
+  const configWeights = ST.configGet ? ST.configGet('evaluator.weights', null) : null;
+  check('the artifact carries a spec shaped like evaluator.weights',
+    !!artifact.spec && !!configWeights &&
+    JSON.stringify(Object.keys(artifact.spec).sort()) === JSON.stringify(Object.keys(configWeights).sort()),
+    JSON.stringify(artifact.spec && Object.keys(artifact.spec).sort()) + ' vs ' +
+    JSON.stringify(configWeights && Object.keys(configWeights).sort()));
+  check('...with the group widths the config check also pins',
+    !!artifact.spec && artifact.spec.status.length === 12 && artifact.spec.boosts.length === 12 &&
+    artifact.spec.hazards.length === 8 && artifact.spec.trickRoom.length === 8 &&
+    artifact.spec.items.length === 12 && artifact.spec.macro.length === 16 &&
+    [artifact.spec.hp, artifact.spec.fainted, artifact.spec.threat, artifact.spec.threatActive]
+      .every(function (v) { return typeof v === 'number' && isFinite(v); }),
+    JSON.stringify(artifact.spec));
+  /* The spec is derived, so it must equal its own derivation: a hand-edited spec would drift from
+   * the coefficients it claims to summarise. */
+  const derived = fitter.mapToSpec(artifact.weights128);
+  eq('the stored spec is exactly what mapToSpec computes from the stored coefficients',
+    artifact.spec, derived);
+  /* NOT asserted: that these equal the live evaluator.weights. Adopting a fitted vector is a
+   * reviewed step (the fitter writes an artifact and never edits src/config.js), so a check that
+   * forbade the adoption would fight the feature it exists to enable. */
+} else {
+  check('the artifact is required for the shape checks', false, 'lib/trained-weights.json is missing');
+}
+
 /* ================================================================== summary */
 
 console.log('\n=== summary ===');
@@ -354,6 +531,8 @@ console.log('checks passed: ' + passed);
 console.log('checks failed: ' + failed);
 console.log('128-dim planted fit: test AUC ' + (report && report.aucTest) +
   ', iterations ' + (report && report.iterations));
+console.log('shipped artifact:  test AUC ' +
+  (artifactAttempt.ok ? artifactAttempt.value.aucTest : 'missing (lib/trained-weights.json)'));
 if (failed) {
   console.log('\nFAILURES:');
   failures.forEach(function (f) { console.log('  x ' + f); });

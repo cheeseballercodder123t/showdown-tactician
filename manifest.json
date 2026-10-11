@@ -3,7 +3,16 @@
   "name": "Showdown Tactician - Laplace NatDex Engine",
   "version": "1.0.0",
   "description": "Client-side Laplace engine for [Gen 9] National Dex OU: determinized world sampling, blunder vetoes, Trick Room lifecycle and a 128D/10D evaluation stack rendered as a touch HUD.",
-  "minimum_chrome_version": "102",
+  "minimum_chrome_version": "121",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "showdown-tactician@local",
+      "strict_min_version": "121.0"
+    },
+    "gecko_android": {
+      "strict_min_version": "121.0"
+    }
+  },
   "permissions": ["storage", "activeTab"],
   "host_permissions": [
     "*://play.pokemonshowdown.com/*",
@@ -11,6 +20,7 @@
     "https://openrouter.ai/*"
   ],
   "background": {
+    "scripts": ["src/background.js"],
     "service_worker": "src/background.js"
   },
   "options_ui": {

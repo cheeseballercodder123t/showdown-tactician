@@ -261,13 +261,28 @@
         VETO4: 'SPEED_SUICIDE',
         VETO5: 'CONTACT_SUICIDE',
         VETO6: 'SUCKER_PUNCH_SETUP',
-        VETO7: 'TR_SELF_CANCEL'
+        VETO7: 'TR_SELF_CANCEL',
+        VETO8: 'WASTED_HAZARD_CLEAR',
+        VETO9: 'CONSECUTIVE_PROTECT',
+        VETO10: 'MAGIC_BOUNCE_REDIRECT',
+        VETO11: 'SATURATED_HAZARD',
+        VETO12: 'REDUNDANT_FIELD'
       },
       protectRhythmThreshold: 0.75,   // v4 above which attacking into the bunker is a blunder
       loneTRSetterThreat: 70,         // incoming % above which sacking the last setter is a blunder
       contactPunishHp: 29,            // hard ceiling: never refuse contact above this % HP
       suckerPunchSetupHp: 80,         // their % HP above which a setup/recovery click is likely
-      maxLog: 40                      // veto history kept for the HUD
+      maxLog: 40,                     // veto history kept for the HUD
+      // The five board-state vetoes. Each one is off-able on its own, because they are policy
+      // (what this trainer refuses to click) rather than deductions about the opponent.
+      wastedHazardClear: true,        // Defog/Rapid Spin with nothing on our side to clear
+      consecutiveProtect: true,       // the Protect counter cannot succeed twice in a row
+      magicBounceRedirect: true,      // a hazard into Magic Bounce lands on our side instead
+      saturatedHazard: true,          // a hazard past its layer cap sets nothing
+      redundantField: true,           // re-setting the weather that is already up
+      // Only a re-set with MORE than this many turns left is redundant: at 1 turn the refresh is
+      // the correct line, which is the whole reason the threshold exists.
+      redundantFieldMinTurns: 2
     },
 
     /* --------------------------------------------------------------- trickRoom */

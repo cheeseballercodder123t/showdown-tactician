@@ -573,11 +573,35 @@ tempo.predictProtect(state, side)           // -> number 0..1
 // veto_guard.js
 new ST.BlunderVetoGuard()
 veto.evaluateVetoes(action, state, tempoVector)  // action = { kind:'move'|'switch'|'protect', name, moveId?, targetId? }
-   // -> { isVetoed: boolean, reason: string|null, code: 'VETO1'..'VETO7'|null }
+   // -> { isVetoed: boolean, reason: string|null, code: 'VETO1'..'VETO12'|null }
    // Checks run in code order and the FIRST hit wins. VETO5-7 are the contact-suicide,
-   // Sucker-Punch-setup and self-cancelling-Trick-Room guards (tests/upgrades_check.js).
+   // Sucker-Punch-setup and self-cancelling-Trick-Room guards (tests/upgrades_check.js);
+   // VETO8-12 are the board-state guards (tests/run_tests.js):
+   //   VETO8  WASTED_HAZARD_CLEAR   a U.HAZARD_CLEAR_MOVES move with zero layers on OUR side.
+   //                                Court Change is exempt: it SWAPS the two sides, so it is live
+   //                                even when our side is clean.
+   //   VETO9  CONSECUTIVE_PROTECT  a protect move when our active used one on the previous turn
+   //                                (the family cannot succeed twice in a row). Exempt when the
+   //                                last use is stale (>= 2 turns ago) or we were taunted/encored,
+   //                                because then the move never went off and the counter is clear.
+   //   VETO10 MAGIC_BOUNCE_REDIRECT a hazard into a body whose Magic Bounce comes from a
+   //                                revealed/confirmed ability, its believed set, or its possible
+   //                                abilities — it lands on OUR side instead.
+   //   VETO11 SATURATED_HAZARD      a hazard already at its cap on the OPPONENT's side (Spikes 3,
+   //                                Toxic Spikes 2, Stealth Rock / Sticky Web 1; Ceaseless Edge and
+   //                                Stone Axe map onto Spikes and Stealth Rock).
+   //   VETO12 REDUNDANT_FIELD       re-setting the weather that is already up, while it has more
+   //                                than veto.redundantFieldMinTurns (2) turns left — at 1 turn the
+   //                                refresh is the correct line. Terrains are not judged.
+   // Each of the five is switchable off through its own veto.* boolean, and none of them vetoes on
+   // a signal it cannot read: an unreadable hazard record, an unknown weather duration or an
+   // opponent with no ability grounds all fall through to the next check. The hazard caps and the
+   // move → weather map are DATA in src/util.js (HAZARD_LAYERS, HAZARD_CLEAR_MOVES, WEATHER_BY_MOVE,
+   // weatherFamily, hazardLayersOf), never literals in the guard.
 veto.VETO_CODES                             // { VETO1:'PROTECT_RHYTHM', VETO2:'ABILITY_IMMUNITY', VETO3:'LONE_TR_SETTER', VETO4:'SPEED_SUICIDE',
-                                            //   VETO5:'CONTACT_SUICIDE', VETO6:'SUCKER_PUNCH_SETUP', VETO7:'TR_SELF_CANCEL' }
+                                            //   VETO5:'CONTACT_SUICIDE', VETO6:'SUCKER_PUNCH_SETUP', VETO7:'TR_SELF_CANCEL',
+                                            //   VETO8:'WASTED_HAZARD_CLEAR', VETO9:'CONSECUTIVE_PROTECT', VETO10:'MAGIC_BOUNCE_REDIRECT',
+                                            //   VETO11:'SATURATED_HAZARD', VETO12:'REDUNDANT_FIELD' }
 
 // world_sampler.js
 new ST.WorldSampler({ K: 6, rng })
