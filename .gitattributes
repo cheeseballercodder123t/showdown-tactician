@@ -1,0 +1,3 @@
+# Keep the tree byte-stable across Windows and Linux: store LF and check out LF, so the
+# suites' `split('\n')` readers, the diff view and the regenerated lib/ artifacts all agree.
+* text=auto eol=lf

@@ -1,0 +1,344 @@
+/* Showdown Tactician — styles/overlay.css
+ * Portrait-first touch HUD: 1080x2340 (Galaxy S24 FE, Lemur Browser, Android).
+ * Dark translucent theme, 48px minimum touch targets, no reliance on hover.
+ *
+ * Design tokens:
+ *   panel      rgba(15, 23, 42, 0.94)
+ *   border     1px solid rgba(255, 255, 255, 0.12)
+ *   text       #f8fafc
+ *   high       #22c55e   mid #eab308   low #64748b   veto #ef4444
+ */
+
+:root {
+  --st-panel: rgba(15, 23, 42, 0.94);
+  --st-panel-solid: #0f172a;
+  --st-border: 1px solid rgba(255, 255, 255, 0.12);
+  --st-text: #f8fafc;
+  --st-muted: #94a3b8;
+  --st-high: #22c55e;
+  --st-mid: #eab308;
+  --st-low: #64748b;
+  --st-veto: #ef4444;
+  --st-radius: 8px;
+  --st-touch: 48px;
+  --st-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+}
+
+/* ------------------------------------------------------------------ buttons */
+
+/* Anchors the absolutely positioned confidence badge inside Showdown's own button. */
+button[data-move],
+.movebutton {
+  position: relative;
+  overflow: visible;
+}
+
+button[data-move].conf-high { border-color: var(--st-high) !important; }
+button[data-move].conf-mid { border-color: var(--st-mid) !important; }
+button[data-move].conf-low { border-color: var(--st-low) !important; }
+button[data-move].conf-veto {
+  border-color: var(--st-veto) !important;
+  opacity: 0.5 !important;
+}
+button[data-move].conf-veto .move-name,
+button[data-move].conf-veto .movebutton-name {
+  text-decoration: line-through;
+}
+button[data-move].st-optimal {
+  box-shadow: 0 0 0 2px var(--st-high) inset, 0 0 12px rgba(34, 197, 94, 0.35);
+}
+
+/* ------------------------------------------------------------- move badges */
+
+.elo-helper-badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  z-index: 5;
+  display: inline-block;
+  min-width: 30px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.25;
+  letter-spacing: 0.02em;
+  text-align: center;
+  color: #0b1220;
+  background: var(--st-low);
+  pointer-events: none;        /* never steal the tap from the real button */
+  text-decoration: none;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+
+.elo-helper-badge.conf-high { background: var(--st-high); color: #052e16; }
+.elo-helper-badge.conf-mid { background: var(--st-mid); color: #3f2d00; }
+.elo-helper-badge.conf-low { background: var(--st-low); color: #f8fafc; }
+.elo-helper-badge.conf-veto {
+  background: transparent;
+  color: var(--st-veto);
+  border: 1px solid var(--st-veto);
+  text-decoration: line-through;
+}
+.elo-helper-badge.st-optimal::after {
+  content: "★";
+  margin-left: 3px;
+  font-size: 10px;
+  color: #052e16;
+}
+
+/* The LLM's one-line justification, injected under the move name. */
+.elo-helper-reason {
+  display: block;
+  margin-top: 2px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--st-muted);
+  white-space: normal;
+}
+
+/* ----------------------------------------------------------------- banner */
+
+.tactician-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 2147483000;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  background: var(--st-panel);
+  border: var(--st-border);
+  border-top: none;
+  border-radius: 0 0 var(--st-radius) var(--st-radius);
+  color: var(--st-text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: 0.01em;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+  box-shadow: var(--st-shadow);
+  pointer-events: none;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  padding-top: max(6px, env(safe-area-inset-top));
+}
+
+/* ----------------------------------------------------------------- TR chip */
+
+.tactician-tr-chip {
+  position: fixed;
+  left: 8px;
+  right: 8px;
+  bottom: calc(var(--st-touch) + 18px);
+  z-index: 2147483001;
+  box-sizing: border-box;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: var(--st-panel);
+  border: var(--st-border);
+  color: var(--st-text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.3;
+  text-align: center;
+  box-shadow: var(--st-shadow);
+  pointer-events: none;
+}
+
+.tactician-tr-chip.tr-info { border-color: rgba(148, 163, 184, 0.5); }
+.tactician-tr-chip.tr-warn {
+  border-color: var(--st-mid);
+  color: #fde68a;
+}
+.tactician-tr-chip.tr-danger {
+  border-color: var(--st-veto);
+  color: #fecaca;
+  animation: st-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes st-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.0); }
+  50% { box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.25); }
+}
+
+/* ----------------------------------------------------------------- drawer */
+
+.team-drawer-toggle {
+  position: fixed;
+  left: 10px;
+  bottom: calc(10px + env(safe-area-inset-bottom));
+  z-index: 2147483002;
+  width: var(--st-touch);
+  height: var(--st-touch);
+  min-width: var(--st-touch);
+  min-height: var(--st-touch);
+  padding: 0;
+  border-radius: 50%;
+  border: var(--st-border);
+  background: var(--st-panel);
+  color: var(--st-text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  box-shadow: var(--st-shadow);
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+.team-drawer-toggle.active {
+  border-color: var(--st-high);
+  color: var(--st-high);
+}
+
+.team-drawer {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2147483003;
+  box-sizing: border-box;
+  max-height: 68vh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 14px 14px calc(14px + env(safe-area-inset-bottom));
+  background: var(--st-panel);
+  border: var(--st-border);
+  border-radius: 16px 16px 0 0;
+  color: var(--st-text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 13px;
+  line-height: 1.45;
+  box-shadow: var(--st-shadow);
+  transform: translateY(0);
+  transition: transform 180ms ease-out;
+}
+
+.team-drawer.tactician-hidden {
+  transform: translateY(105%);
+  pointer-events: none;
+  visibility: hidden;
+}
+
+.drawer-header {
+  margin-bottom: 10px;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: var(--st-high);
+}
+
+.drawer-team-status {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border: var(--st-border);
+  border-radius: var(--st-radius);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--st-muted);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: pre-wrap;
+}
+
+.drawer-team-input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 132px;
+  padding: 10px;
+  border: var(--st-border);
+  border-radius: var(--st-radius);
+  background: rgba(2, 6, 23, 0.85);
+  color: var(--st-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  resize: vertical;
+}
+
+.drawer-team-input:focus {
+  outline: none;
+  border-color: var(--st-high);
+}
+
+.drawer-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.drawer-save,
+.drawer-close {
+  flex: 1 1 auto;
+  min-height: var(--st-touch);
+  padding: 0 14px;
+  border-radius: var(--st-radius);
+  border: var(--st-border);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--st-text);
+  font-size: 14px;
+  font-weight: 700;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+.drawer-save {
+  background: var(--st-high);
+  border-color: var(--st-high);
+  color: #052e16;
+}
+
+.drawer-candidates {
+  margin-top: 12px;
+  padding: 10px;
+  border: var(--st-border);
+  border-radius: var(--st-radius);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--st-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ----------------------------------------------------------------- utility */
+
+.tactician-hidden {
+  display: none !important;
+}
+
+/* Portrait phone: keep the banner to one readable line and the chip above the move bar. */
+@media (orientation: portrait) {
+  .tactician-banner { font-size: 10.5px; padding: 5px 8px; }
+  .tactician-tr-chip { font-size: 11.5px; }
+  .elo-helper-badge { font-size: 11px; padding: 2px 5px; }
+}
+
+/* Very tall screens (2340px class): give the drawer more room. */
+@media (min-height: 2000px) {
+  .team-drawer { max-height: 58vh; }
+  .drawer-team-input { min-height: 168px; }
+}
+
+/* Landscape / desktop debugging: dock the drawer to the left instead of full width. */
+@media (orientation: landscape) and (min-width: 900px) {
+  .team-drawer {
+    left: 12px;
+    right: auto;
+    bottom: 12px;
+    width: 420px;
+    border-radius: 16px;
+  }
+  .team-drawer.tactician-hidden { transform: translateY(105%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .team-drawer { transition: none; }
+  .tactician-tr-chip.tr-danger { animation: none; }
+}

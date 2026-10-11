@@ -1,0 +1,25 @@
+# Agent / tooling metadata — local to this machine, not part of the extension
+.freebuff/
+
+# Local secrets — an API key belongs in the extension's options page, never in the tree
+.env
+.env.*
+*.key
+*.pem
+secrets.json
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*~
+.idea/
+.vscode/
+
+# Build output / packaging
+node_modules/
+dist/
+build/
+*.zip
+*.crx

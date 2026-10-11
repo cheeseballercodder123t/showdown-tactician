@@ -1,0 +1,758 @@
+/* Showdown Tactician — src/util.js
+ * The project's DEX BOUNDARY: the only module that reads the vendored @smogon/calc dex
+ * (species, moves, items, abilities, the type chart, natures) and the only one that asks it
+ * for a stat number (`calc.Stats.calcStat`). Damage itself is not computed here —
+ * src/calc_engine.js is the one place allowed to call `calc.calculate(...)`.
+ * Everything else consumes ST.util. Never throws: unknown data degrades gracefully.
+ */
+(function () {
+  'use strict';
+  const ST = (window.ST = window.ST || {});
+  if (ST.util) return;
+
+  const CALC = window.calc || null;
+  const GEN_NUM = 9;
+  const gen = CALC && CALC.Generations ? CALC.Generations.get(GEN_NUM) : null;
+  const RAW_SPECIES = (CALC && CALC.SPECIES && CALC.SPECIES[GEN_NUM]) || {};
+  const RAW_MOVES = (CALC && CALC.MOVES && CALC.MOVES[GEN_NUM]) || {};
+  const ITEM_LIST = (CALC && CALC.ITEMS && CALC.ITEMS[GEN_NUM]) || [];
+  const ABILITY_LIST = (CALC && CALC.ABILITIES && CALC.ABILITIES[GEN_NUM]) || [];
+  const TYPE_CHART = (CALC && CALC.TYPE_CHART && CALC.TYPE_CHART[GEN_NUM]) || {};
+  const NATURES = (CALC && CALC.NATURES) || {};
+  const MEGA_STONES = (CALC && CALC.MEGA_STONES) || {};
+
+  const STATS = ['hp', 'atk', 'def', 'spa', 'spd', 'spe'];
+  const TYPES = ['Normal', 'Fighting', 'Flying', 'Poison', 'Ground', 'Rock', 'Bug', 'Ghost', 'Steel',
+    'Fire', 'Water', 'Grass', 'Electric', 'Psychic', 'Ice', 'Dragon', 'Dark', 'Fairy', 'Stellar'];
+  const DEFAULT_IVS = { hp: 31, atk: 31, def: 31, spa: 31, spd: 31, spe: 31 };
+  const ZERO_EVS = { hp: 0, atk: 0, def: 0, spa: 0, spd: 0, spe: 0 };
+
+  const PROTECT_MOVES = new Set(['protect', 'detect', 'kingsshield', 'banefulbunker', 'spikyshield',
+    'silktrap', 'burningbulwark', 'obstruct', 'shelter', 'maxguard']);
+  const RECOVERY_MOVES = new Set(['recover', 'roost', 'slackoff', 'softboiled', 'milkdrink', 'shoreup',
+    'healorder', 'synthesis', 'moonlight', 'morningsun', 'strengthsap', 'wish', 'rest']);
+  const RECOVERY_8PP = new Set(['recover', 'roost', 'slackoff', 'softboiled', 'milkdrink', 'shoreup', 'healorder']);
+  const PIVOT_MOVES = new Set(['uturn', 'voltswitch', 'flipturn', 'teleport', 'chillyreception',
+    'partingshot', 'batonpass', 'shedtail']);
+  const HAZARD_MOVES = new Set(['stealthrock', 'spikes', 'toxicspikes', 'stickyweb', 'ceaselessedge', 'stoneaxe']);
+  const HAZARD_REMOVAL_MOVES = new Set(['rapidspin', 'defog', 'mortalspin', 'tidyup', 'courtchange']);
+  const SETUP_MOVES = new Set(['swordsdance', 'nastyplot', 'dragondance', 'calmmind', 'bulkup', 'quiverdance',
+    'shellsmash', 'irondefense', 'amnesia', 'agility', 'rockpolish', 'shiftgear', 'clangoroussoul',
+    'tidyup', 'victorydance', 'takeheart', 'growth', 'howl', 'workup', 'tailglow', 'bellydrum']);
+  const CHOICE_ITEMS = ['Choice Band', 'Choice Specs', 'Choice Scarf'];
+  const CHOICE_IDS = new Set(['choiceband', 'choicespecs', 'choicescarf']);
+  const TYPE_Z_CRYSTALS = ['Normalium Z', 'Fightinium Z', 'Flyinium Z', 'Poisonium Z', 'Groundium Z',
+    'Rockium Z', 'Buginium Z', 'Ghostium Z', 'Steelium Z', 'Firium Z', 'Waterium Z', 'Grassium Z',
+    'Electrium Z', 'Psychium Z', 'Icium Z', 'Dragonium Z', 'Darkinium Z', 'Fairium Z'];
+  const SIGNATURE_Z_CRYSTALS = ['Aloraichium Z', 'Decidium Z', 'Eevium Z', 'Incinium Z', 'Kommonium Z',
+    'Lunalium Z', 'Lycanium Z', 'Marshadium Z', 'Mewnium Z', 'Mimikium Z', 'Pikanium Z', 'Pikashunium Z',
+    'Primarium Z', 'Snorlium Z', 'Solganium Z', 'Tapunium Z', 'Ultranecrozium Z'];
+  const Z_CRYSTALS = TYPE_Z_CRYSTALS.concat(SIGNATURE_Z_CRYSTALS);
+  const Z_CRYSTAL_IDS = new Set(Z_CRYSTALS.map(function (z) { return z.toLowerCase().replace(/[^a-z0-9]+/g, ''); }));
+
+  const PARADOX_ABILITIES = new Set(['protosynthesis', 'quarkdrive']);
+  const LEVITATE_LIKE = new Set(['levitate', 'earthEater', 'eartheater']);
+  const WATER_ABSORB = new Set(['waterabsorb', 'stormdrain', 'dryskin']);
+  const ELECTRIC_ABSORB = new Set(['voltabsorb', 'lightningrod', 'motordrive']);
+  const FIRE_ABSORB = new Set(['flashfire', 'wellbakedbody']);
+  const GRASS_ABSORB = new Set(['sapsipper']);
+  const UNBLOCKABLE_STATUS_ABILITY = new Set(['goodasgold']);
+
+  // TR setters that actually see play in NatDex OU (species ids)
+  const TR_SETTERS = new Set(['porygon2', 'cresselia', 'slowking', 'slowkinggalar', 'hatterene', 'indeedee',
+    'indeedeef', 'dusclops', 'dusknoir', 'mimikyu', 'oranguru', 'farigiraf', 'armarouge', 'bronzong',
+    'reuniclus', 'jirachi', 'meloetta', 'magearna', 'uxie', 'mesprit', 'azelf', 'carbink', 'diancie',
+    'gothitelle', 'cofagrigus', 'runerigus', 'spiritomb', 'sableye', 'banette', 'gardevoir', 'chandelure',
+    'xatu', 'claydol', 'glastrier', 'mew', 'celebi', 'victini', 'hoopa', 'hoopaunbound', 'necrozma',
+    'silvally', 'smeargle', 'starmie', 'wigglytuff', 'audino', 'audinomega', 'beheeyem', 'dusclops']);
+
+  /* ---------------------------------------------------------------- primitives */
+
+  function toID(str) {
+    if (str === null || str === undefined) return '';
+    const s = String(str).toLowerCase();
+    return s === 'flabébé' ? 'flabebe' : s.replace(/[^a-z0-9]+/g, '');
+  }
+
+  function clamp(v, lo, hi) {
+    if (typeof v !== 'number' || v !== v) return lo;
+    return v < lo ? lo : v > hi ? hi : v;
+  }
+  function clampStat(v) { return clamp(v, -6, 6); }
+  function round2(n) { return Math.round((n + Number.EPSILON) * 100) / 100; }
+  function round1(n) { return Math.round((n + Number.EPSILON) * 10) / 10; }
+  function formatPercent(n) { return (n === null || n === undefined || n !== n) ? '—' : round1(n) + '%'; }
+  function mean(arr) { if (!arr || !arr.length) return 0; let s = 0; for (let i = 0; i < arr.length; i++) s += arr[i]; return s / arr.length; }
+  function median(arr) {
+    if (!arr || !arr.length) return 0;
+    const a = arr.slice().sort(function (x, y) { return x - y; });
+    const mid = a.length >> 1;
+    return a.length % 2 ? a[mid] : (a[mid - 1] + a[mid]) / 2;
+  }
+  function deepClone(obj) {
+    if (obj === null || typeof obj !== 'object') return obj;
+    if (typeof structuredClone === 'function') { try { return structuredClone(obj); } catch (e) { /* fall through */ } }
+    return JSON.parse(JSON.stringify(obj));
+  }
+  function escapeHtml(str) {
+    return String(str === null || str === undefined ? '' : str)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+  let DEBUG = false;
+  function debug() {
+    if (!DEBUG) return;
+    try { console.log.apply(console, ['[ST]'].concat(Array.prototype.slice.call(arguments))); } catch (e) { /* noop */ }
+  }
+
+  /* ---------------------------------------------------------------- species */
+
+  const speciesCache = {};
+  let speciesNameList = null;
+  let idIndex = null;
+
+  function speciesNames() {
+    if (speciesNameList) return speciesNameList;
+    speciesNameList = Object.keys(RAW_SPECIES || {});
+    return speciesNameList;
+  }
+
+  /** toID -> display name, so raw data (which keys by display name) is reachable by id. */
+  function displayNameFor(id) {
+    if (!idIndex) {
+      idIndex = {};
+      const keys = speciesNames();
+      for (let i = 0; i < keys.length; i++) {
+        const k = toID(keys[i]);
+        if (k && !idIndex[k]) idIndex[k] = keys[i];
+      }
+    }
+    return idIndex[id] || null;
+  }
+
+  function normalizeAbilityList(abilities) {
+    if (!abilities) return [];
+    if (Array.isArray(abilities)) return abilities.filter(Boolean).map(String);
+    const out = [];
+    Object.keys(abilities).forEach(function (k) { if (abilities[k]) out.push(String(abilities[k])); });
+    return out;
+  }
+
+  // base species id -> { stone, megaSpecies, stones:[...], megaSpeciesAll:[...] }
+  // Note: Charizard legally holds either Charizardite X or Y, so both are kept.
+  const STONE_BY_BASE = (function () {
+    const map = {};
+    Object.keys(MEGA_STONES || {}).forEach(function (stone) {
+      const entry = MEGA_STONES[stone];
+      if (!entry) return;
+      Object.keys(entry).forEach(function (base) {
+        const key = toID(base);
+        if (!map[key]) map[key] = { stone: stone, megaSpecies: entry[base], stones: [], megaSpeciesAll: [] };
+        map[key].stones.push(stone);
+        map[key].megaSpeciesAll.push(entry[base]);
+      });
+    });
+    return map;
+  })();
+
+  /** The raw dex entry for an id (short keys: bs, types, abilities, baseSpecies). */
+  function rawEntry(id) {
+    const display = displayNameFor(id);
+    if (display && RAW_SPECIES[display]) return { name: display, data: RAW_SPECIES[display] };
+    return null;
+  }
+
+  /** Resolve through the vendored dex, then the generated alias table, then the raw table. */
+  function resolveCalcSpecies(id) {
+    if (!gen || !gen.species || typeof gen.species.get !== 'function') return null;
+    let found = gen.species.get(id);
+    if (found) return found;
+    const alias = (window.ST_SPECIES_ALIASES || {})[id];
+    if (alias) {
+      found = gen.species.get(toID(alias));
+      if (found) return found;
+    }
+    return null;
+  }
+
+  function rawSpecies(name) {
+    if (!name) return null;
+    const id = toID(name);
+    if (!id) return null;
+    const found = resolveCalcSpecies(id);
+    if (found) {
+      // NOTE: the vendored calc normalisation keeps only the FIRST ability of a species
+      // and drops its hidden ability (Dragonite would lose Multiscale); the supplement
+      // and raw table restore the full list in getSpecies().
+      return found;
+    }
+    const synthesized = (window.ST_SPECIES_FALLBACK || {})[id];
+    if (synthesized) return buildFallbackSpecies(synthesized.name || name, synthesized);
+    const raw = rawEntry(id);
+    if (raw) return buildFallbackSpecies(raw.name, raw.data);
+    return null;
+  }
+
+  function buildFallbackSpecies(name, data) {
+    const bs = data.bs || data.baseStats || {};
+    const normalized = !data.bs && !!data.baseStats;
+    return {
+      kind: 'Species', id: toID(name), name: name,
+      baseStats: normalized
+        ? { hp: bs.hp | 0, atk: bs.atk | 0, def: bs.def | 0, spa: bs.spa | 0, spd: bs.spd | 0, spe: bs.spe | 0 }
+        : { hp: bs.hp || 0, atk: bs.at || bs.atk || 0, def: bs.df || bs.def || 0, spa: bs.sa || bs.spa || 0, spd: bs.sd || bs.spd || 0, spe: bs.sp || bs.spe || 0 },
+      types: data.types || ['Normal'],
+      abilities: normalizeAbilityList(data.abilities),
+      weightkg: data.weightkg || 0,
+      gender: data.gender || '',
+      baseSpecies: data.baseSpecies || name,
+      nfe: !!data.nfe
+    };
+  }
+
+  function getSpecies(name) {
+    const id = toID(name);
+    if (!id) return null;
+    if (speciesCache[id]) return speciesCache[id];
+    const s = rawSpecies(name);
+    if (!s) return null;
+    const canonicalId = toID(s.name || name);
+    const types = (s.types || ['Normal']).slice();
+    // The vendored bundle carries only ability slot 0, so hidden abilities come from the
+    // generated supplement (lib/species-abilities.js); the raw table is the fallback.
+    const raw = rawEntry(id);
+    const supplement = (window.ST_ABILITY_SUPPLEMENT || {})[canonicalId];
+    const abilities = (supplement && supplement.length)
+      ? supplement.slice()
+      : normalizeAbilityList((raw && raw.data && raw.data.abilities) || s.abilities);
+    const out = {
+      kind: 'Species', id: canonicalId, name: s.name,
+      baseStats: {
+        hp: s.baseStats.hp, atk: s.baseStats.atk, def: s.baseStats.def,
+        spa: s.baseStats.spa, spd: s.baseStats.spd, spe: s.baseStats.spe
+      },
+      types: types,
+      abilities: abilities,
+      weightkg: s.weightkg || 0,
+      gender: s.gender || '',
+      baseSpecies: s.baseSpecies || s.name,
+      nfe: !!s.nfe,
+      isMega: types.length > 0 && /-Mega/.test(s.name || ''),
+      isParadox: abilities.some(function (a) { return PARADOX_ABILITIES.has(toID(a)); }),
+      isUltraBeast: /^(naganadel|nihilego|xurkitree|celesteela|kartana|guzzlord|poipole|stakataka|blacephalon|buzzwole|pheromosa)$/.test(canonicalId),
+      isLegendary: !!s.legendary,
+      isMythical: !!s.mythical
+    };
+    const stone = STONE_BY_BASE[toID(out.baseSpecies)] || null;
+    out.megaStone = stone ? stone.stone : null;
+    out.megaStones = stone ? stone.stones.slice() : [];
+    out.megaSpecies = stone ? stone.megaSpecies : null;
+    out.megaSpeciesAll = stone ? stone.megaSpeciesAll.slice() : [];
+    out.canMegaEvolve = !!stone;
+    speciesCache[id] = out;
+    return out;
+  }
+
+  function baseStats(name) {
+    const s = getSpecies(name);
+    return s ? s.baseStats : { hp: 0, atk: 0, def: 0, spa: 0, spd: 0, spe: 0 };
+  }
+  function baseSpeed(name) { return baseStats(name).spe; }
+  function getTypes(name) { const s = getSpecies(name); return s ? s.types : ['Normal']; }
+  function getAbilities(name) { const s = getSpecies(name); return s ? s.abilities : []; }
+  function canMegaEvolve(name) { const s = getSpecies(name); return !!(s && s.canMegaEvolve); }
+  function isParadox(name) { const s = getSpecies(name); return !!(s && s.isParadox); }
+  function megaStoneFor(name) { const s = getSpecies(name); return s ? s.megaStone : null; }
+  function megaStonesFor(name) { const s = getSpecies(name); return s ? (s.megaStones || []).slice() : []; }
+  function megaSpeciesFromStone(stone) {
+    const entry = MEGA_STONES[stone] || null;
+    if (!entry) return null;
+    const keys = Object.keys(entry);
+    if (!keys.length) return null;
+    return { base: keys[0], mega: entry[keys[0]] };
+  }
+  function isMegaStone(item) { return !!item && Object.prototype.hasOwnProperty.call(MEGA_STONES, item); }
+  function isZCrystal(item) { return !!item && Z_CRYSTAL_IDS.has(toID(item)); }
+  function isChoiceItem(item) { return !!item && CHOICE_IDS.has(toID(item)); }
+  function isBoosterEnergy(item) { return toID(item) === 'boosterenergy'; }
+  function isItemKnown(item) { return !!item && (ITEM_LIST.indexOf(item) !== -1 || isMegaStone(item) || isZCrystal(item)); }
+  function isAbilityKnown(ability) { return !!ability && ABILITY_LIST.indexOf(ability) !== -1; }
+
+  /**
+   * Item id -> canonical display name ('choicescarf' -> 'Choice Scarf'). Built once from the
+   * dex plus the Mega Stone / Z-Crystal tables, so an id coming out of the packed team format
+   * or a protocol line can always be normalised. Unknown ids come back trimmed and untouched
+   * (never invented).
+   */
+  const ITEM_BY_ID = (function () {
+    const map = Object.create(null);
+    for (let i = 0; i < ITEM_LIST.length; i++) {
+      if (ITEM_LIST[i]) map[toID(ITEM_LIST[i])] = ITEM_LIST[i];
+    }
+    const stoneKeys = Object.keys(MEGA_STONES || {});
+    for (let i = 0; i < stoneKeys.length; i++) {
+      if (!map[toID(stoneKeys[i])]) map[toID(stoneKeys[i])] = stoneKeys[i];
+    }
+    for (let i = 0; i < Z_CRYSTALS.length; i++) {
+      if (!map[toID(Z_CRYSTALS[i])]) map[toID(Z_CRYSTALS[i])] = Z_CRYSTALS[i];
+    }
+    return map;
+  })();
+
+  function itemName(item) {
+    if (!item) return null;
+    const needle = toID(item);
+    if (!needle) return null;
+    if (ITEM_BY_ID[needle]) return ITEM_BY_ID[needle];
+    const trimmed = String(item).trim();
+    return trimmed || null;
+  }
+
+  /* ---------------------------------------------------------------- moves */
+
+  const moveCache = {};
+  const Z_MOVE_SUFFIX = /^(10,000,000 Volt Thunderbolt|All-Out Pummeling|Supersonic Skystrike|Acid Downpour|Tectonic Rage|Continental Crush|Savage Spin-Out|Never-Ending Nightmare|Corkscrew Crash|Inferno Overdrive|Hydro Vortex|Bloom Doom|Gigavolt Havoc|Shattered Psyche|Subzero Slammer|Devastating Drake|Black Hole Eclipse|Twinkle Tackle)$/;
+
+  function getMoveData(name) {
+    if (!name) return null;
+    const id = toID(name);
+    if (moveCache[id]) return moveCache[id];
+    const raw = RAW_MOVES && RAW_MOVES[name] ? RAW_MOVES[name] : (RAW_MOVES && RAW_MOVES[id] ? RAW_MOVES[id] : null);
+    let base = raw;
+    if (!base) {
+      const keys = Object.keys(RAW_MOVES || {});
+      for (let i = 0; i < keys.length; i++) {
+        if (toID(keys[i]) === id) { base = RAW_MOVES[keys[i]]; name = keys[i]; break; }
+      }
+    }
+    if (!base) { moveCache[id] = null; return null; }
+    const category = base.category || (base.bp ? 'Physical' : 'Status');
+    const out = {
+      name: name, id: id,
+      basePower: base.bp || 0,
+      type: base.type || 'Normal',
+      category: category,
+      priority: typeof base.priority === 'number' ? base.priority : 0,
+      isStatus: category === 'Status',
+      isPhysical: category === 'Physical',
+      isSpecial: category === 'Special',
+      zp: base.zp || 0,
+      maxPower: base.maxPower || 0,
+      makesContact: !!base.makesContact,
+      isProtect: PROTECT_MOVES.has(id),
+      isRecovery: RECOVERY_MOVES.has(id),
+      isPivot: PIVOT_MOVES.has(id),
+      isHazard: HAZARD_MOVES.has(id),
+      isHazardRemoval: HAZARD_REMOVAL_MOVES.has(id),
+      isSetup: SETUP_MOVES.has(id),
+      isZMove: Z_MOVE_SUFFIX.test(name) || / Z$/.test(name) || id.indexOf('max') === 0,
+      isMaxMove: id.indexOf('max') === 0,
+      isMultihit: !!base.multiHit || !!base.hits,
+      isSpread: base.target === 'allAdjacent' || base.target === 'allAdjacentFoes'
+    };
+    moveCache[id] = out;
+    return out;
+  }
+  function movePriority(name) { const m = getMoveData(name); return m ? m.priority : 0; }
+  function moveBasePower(name) { const m = getMoveData(name); return m ? m.basePower : 0; }
+  function moveType(name) { const m = getMoveData(name); return m ? m.type : 'Normal'; }
+  function isStatusMove(name) { const m = getMoveData(name); return !m || m.isStatus; }
+  function isDamagingMove(name) { const m = getMoveData(name); return !!m && !m.isStatus && m.basePower > 0; }
+  function isProtectMove(name) { return PROTECT_MOVES.has(toID(name)); }
+  function isRecoveryMove(name) { return RECOVERY_MOVES.has(toID(name)); }
+  function is8PPRecoveryMove(name) { return RECOVERY_8PP.has(toID(name)); }
+  function isPivotMove(name) { return PIVOT_MOVES.has(toID(name)); }
+  function isHazardMove(name) { return HAZARD_MOVES.has(toID(name)); }
+
+  /* ---------------------------------------------------------------- type math */
+
+  function typeMultiplier(attackType, defTypes) {
+    if (!attackType) return 1;
+    const row = TYPE_CHART[attackType];
+    if (!row) return 1;
+    let mult = 1;
+    const list = Array.isArray(defTypes) ? defTypes : [defTypes];
+    for (let i = 0; i < list.length; i++) {
+      const t = list[i];
+      const m = row[t];
+      mult *= (typeof m === 'number' ? m : 1);
+    }
+    return mult;
+  }
+  function typeEffectiveness(attackType, speciesName) {
+    return typeMultiplier(attackType, getTypes(speciesName));
+  }
+  function hasType(speciesName, type) { return getTypes(speciesName).indexOf(type) !== -1; }
+  function isFlyingType(speciesName) { return hasType(speciesName, 'Flying'); }
+
+  const IMMUNITY_MAP = {
+    Ground: { abilities: ['levitate'], items: ['Air Balloon'], flying: true },
+    Water: { abilities: ['waterabsorb', 'stormdrain', 'dryskin'], items: [] },
+    Electric: { abilities: ['voltabsorb', 'lightningrod', 'motordrive'], items: [] },
+    Fire: { abilities: ['flashfire', 'wellbakedbody'], items: [] },
+    Grass: { abilities: ['sapsipper'], items: [] }
+  };
+
+  /** Would `moveType` be nullified by the defender's ability/item/typing? */
+  function immunityReason(moveType, opts) {
+    opts = opts || {};
+    const abilityId = toID(opts.ability);
+    const itemId = toID(opts.item);
+    const abilityList = opts.abilities ? opts.abilities.map(toID) : (abilityId ? [abilityId] : []);
+    const species = opts.species || '';
+    const entry = IMMUNITY_MAP[moveType];
+    const reasons = [];
+    if (entry) {
+      if (entry.flying && isFlyingType(species) && moveType === 'Ground') reasons.push('Flying type');
+      for (let i = 0; i < abilityList.length; i++) {
+        if (entry.abilities.indexOf(abilityList[i]) !== -1) reasons.push(abilityName(abilityList[i]));
+      }
+      if (entry.items.indexOf(itemId === 'airballoon' ? 'Air Balloon' : opts.item) !== -1 && moveType === 'Ground') reasons.push('Air Balloon');
+      if (moveType === 'Ground' && itemId === 'airballoon') reasons.push('Air Balloon');
+    }
+    if (opts.itemless && toID(moveType) === '') { /* noop */ }
+    return reasons.length ? reasons.join(' / ') : null;
+  }
+
+  function abilityName(id) {
+    const needle = toID(id);
+    for (let i = 0; i < ABILITY_LIST.length; i++) if (toID(ABILITY_LIST[i]) === needle) return ABILITY_LIST[i];
+    const known = { waterabsorb: 'Water Absorb', stormdrain: 'Storm Drain', dryskin: 'Dry Skin', voltabsorb: 'Volt Absorb', lightningrod: 'Lightning Rod', motordrive: 'Motor Drive', levitate: 'Levitate', flashfire: 'Flash Fire', wellbakedbody: 'Well-Baked Body', sapsipper: 'Sap Sipper', goodasgold: 'Good as Gold', protosynthesis: 'Protosynthesis', quarkdrive: 'Quark Drive' };
+    return known[needle] || String(id);
+  }
+
+  function isGrounded(speciesName, item, ability, opts) {
+    opts = opts || {};
+    if (opts.gravity) return true;
+    if (toID(item) === 'ironball') return true;
+    if (opts.ingrain) return true;
+    if (isFlyingType(speciesName)) return false;
+    if (toID(ability) === 'levitate') return false;
+    if (toID(item) === 'airballoon') return false;
+    return true;
+  }
+
+  /**
+   * Stealth Rock deals (1/8 * type effectiveness) of max HP to a target with 6 full
+   * HP bars: 0.25x -> 3.125%, 0.5x -> 6.25%, 1x -> 12.5%, 2x -> 25%, 4x -> 50%.
+   */
+  const SR_PER_MULT = 12.5;
+  function emRockPercent(mult) {
+    if (!mult) return 0;
+    return Math.round(mult * SR_PER_MULT * 1000) / 1000;
+  }
+
+  /**
+   * Damage (percent of max HP) this Pokémon takes when switching into `side`'s hazards.
+   * Used to prove Heavy-Duty Boots (0% with hazards up while not immune).
+   */
+  function hazardPercent(speciesName, item, ability, hazards, opts) {
+    opts = opts || {};
+    const h = hazards || { rocks: false, spikes: 0, toxicspikes: 0, stickyweb: false };
+    if (toID(item) === 'heavydutyboots') return 0;
+    const grounded = isGrounded(speciesName, item, ability, opts);
+    let total = 0;
+    if (h.rocks) total += emRockPercent(typeEffectiveness('Rock', speciesName));
+    if (grounded) {
+      const spikes = clamp(h.spikes | 0, 0, 3);
+      total += spikes === 1 ? 12.5 : spikes === 2 ? 16.67 : spikes === 3 ? 25 : 0;
+      const tsp = clamp(h.toxicspikes | 0, 0, 2);
+      if (tsp > 0 && !hasType(speciesName, 'Poison') && !hasType(speciesName, 'Steel')) total += tsp === 1 ? 12.5 : 16.67;
+      if (h.steelspikes) total += (h.steelspikes | 0) === 1 ? 12.5 : 16.67;
+    }
+    if (toID(item) === 'heavydutyboots') total = 0;
+    return round1(total);
+  }
+
+  /* ---------------------------------------------------------------- stats */
+
+  /* RULE 1 — ZERO IN-HOUSE MATH. There is no stat formula in this project. Every number below
+   * is produced by @smogon/calc's own arithmetic, `calc.Stats.calcStat(gen, stat, base, iv, ev,
+   * level, nature)` — the exact routine its damage calculator uses to build a Pokemon's stats
+   * (natures, IVs, EVs, level and Shedinja's 1 HP included). This module only decides WHICH
+   * base stats / IVs / EVs / nature to hand it, never how to turn them into a number.
+   * tests/blackbox_guard.js diffs our output against the library for every species and stat.
+   */
+  function libraryStat(stat, base, iv, ev, level, nature) {
+    if (!CALC || !CALC.Stats || typeof CALC.Stats.calcStat !== 'function' || !gen) return 0;
+    return CALC.Stats.calcStat(gen, stat, typeof base === 'number' ? base : 0,
+      typeof iv === 'number' ? iv : 31, typeof ev === 'number' ? ev : 0,
+      level || 100, nature || '');
+  }
+
+  /** True when the vendored @smogon/calc bundle is present (the engine's only source of math). */
+  function libraryReady() { return !!(CALC && CALC.Stats && typeof CALC.Stats.calcStat === 'function' && gen); }
+
+  function natureMultiplier(nature, stat) {
+    const n = NATURES[nature];
+    if (!n) return 1;
+    const plus = n[0], minus = n[1];
+    if (plus === stat) return 1.1;
+    if (minus === stat) return 0.9;
+    return 1;
+  }
+
+  /** calcStat('spe', { base, iv, ev, level, nature }) -> number. Fully library-computed. */
+  function calcStat(stat, opts) {
+    opts = opts || {};
+    return libraryStat(stat, opts.base, opts.iv, opts.ev, opts.level, opts.nature);
+  }
+
+  /** calcHP(base, iv, ev, level) — HP is @smogon/calc's `hp` stat (so Shedinja is 1, not 112). */
+  function calcHP(base, iv, ev, level) { return libraryStat('hp', base, iv, ev, level, ''); }
+
+  /** statTable(species, { ivs, evs, level, nature }) -> all six stats, from the library. */
+  function statTable(speciesName, opts) {
+    opts = opts || {};
+    const info = getSpecies(speciesName);
+    if (!info) return null;
+    const bs = info.baseStats;
+    const out = {};
+    for (let i = 0; i < STATS.length; i++) {
+      const s = STATS[i];
+      out[s] = libraryStat(s, bs[s], opts.ivs && opts.ivs[s], opts.evs && opts.evs[s],
+        opts.level, opts.nature);
+    }
+    return out;
+  }
+  function boostMultiplier(stage) {
+    const s = clampStat(stage || 0);
+    return s >= 0 ? (2 + s) / 2 : 2 / (2 - s);
+  }
+  function paralysisMultiplier(spread) {
+    // Gen 7+: paralysis is 50% for every generation available here.
+    return spread ? 0.5 : 0.5;
+  }
+
+  /**
+   * computeSpeed(species|MonState, opts) -> { raw, effective, base, boost }
+   * `raw` is the plain level-100 Speed stat (items/abilities NOT applied).
+   * `effective` applies item, ability, field and boost multipliers.
+   */
+  function computeSpeed(speciesOrMon, opts) {
+    opts = opts || {};
+    const mon = speciesOrMon || {};
+    const speciesName = mon.species || mon.name || '';
+    const sp = getSpecies(speciesName);
+    const bs = sp ? sp.baseStats.spe : 0;
+    const evs = Object.assign({}, DEFAULT_IVS, ZERO_EVS, opts.evs || mon.evs || {});
+    const ivs = Object.assign({}, DEFAULT_IVS, opts.ivs || mon.ivs || {});
+    const nature = opts.nature || mon.nature || '';
+    const level = opts.level || mon.level || 100;
+    const boostStage = opts.boostStage !== undefined ? opts.boostStage
+      : (mon.boosts && mon.boosts.spe) || 0;
+    const raw = calcStat('spe', { base: bs, iv: ivs.spe, ev: evs.spe, level: level, nature: nature });
+    const item = opts.item !== undefined ? opts.item : mon.item;
+    const ability = toID(opts.ability !== undefined ? opts.ability : mon.ability);
+    const weather = opts.weather || '';
+    const terrain = opts.terrain || '';
+    let mult = boostMultiplier(boostStage);
+    if (toID(item) === 'choicescarf') mult *= 1.5;
+    if (toID(item) === 'ironball') mult *= 0.5;
+    if (toID(item) === 'machobrace' || toID(item) === 'poweranklet' || toID(item) === 'powerweight' ||
+        toID(item) === 'powerbracer' || toID(item) === 'powerbelt' || toID(item) === 'powerlens' ||
+        toID(item) === 'powerband') mult *= 0.5;
+    if (opts.tailwind) mult *= 2;
+    if (ability === 'swiftswim' && weather === 'rain') mult *= 2;
+    if (ability === 'chlorophyll' && (weather === 'sun' || weather === 'harshsun')) mult *= 2;
+    if (ability === 'sandrush' && weather === 'sandstorm') mult *= 2;
+    if (ability === 'slushrush' && weather === 'snow') mult *= 2;
+    if (ability === 'surgesurfer' && terrain === 'electric') mult *= 2;
+    if (opts.paradoxSpeedBoost) mult *= 1.5;
+    if (opts.unburden) mult *= 2;
+    if (opts.slowStart) mult *= 0.5;
+    return {
+      base: bs,
+      raw: raw,
+      boost: boostMultiplier(boostStage),
+      effective: Math.max(1, Math.floor(raw * mult + Number.EPSILON)),
+      multiplier: mult
+    };
+  }
+
+  /** Max possible level-100 Speed for a set: +nature, 252 EV, 31 IV, no item/field. */
+  function maxSpeedForSet(set) {
+    if (!set) return 0;
+    const mon = {
+      species: set.species, evs: set.evs, ivs: set.ivs, nature: set.nature, level: 100,
+      item: set.item, ability: set.ability
+    };
+    const abilityId = toID(set.ability);
+    return computeSpeed(mon, {
+      item: set.item,
+      ability: set.ability,
+      paradoxSpeedBoost: PARADOX_ABILITIES.has(abilityId) && toID(set.item) === 'boosterenergy'
+    }).effective;
+  }
+
+  /* ---------------------------------------------------------------- fuzzy */
+
+  function levenshtein(a, b) {
+    if (a === b) return 0;
+    const al = a.length, bl = b.length;
+    if (!al) return bl;
+    if (!bl) return al;
+    let prev = new Array(bl + 1);
+    let cur = new Array(bl + 1);
+    for (let j = 0; j <= bl; j++) prev[j] = j;
+    for (let i = 1; i <= al; i++) {
+      cur[0] = i;
+      const ca = a.charCodeAt(i - 1);
+      for (let j = 1; j <= bl; j++) {
+        const cost = ca === b.charCodeAt(j - 1) ? 0 : 1;
+        cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+      }
+      const t = prev; prev = cur; cur = t;
+    }
+    return prev[bl];
+  }
+
+  /**
+   * closestSpeciesName('greattok') -> 'Great Tusk'
+   * Returns null when nothing is within a safe distance, so callers never invent species.
+   */
+  function closestSpeciesName(input) {
+    const id = toID(input);
+    if (!id) return null;
+    if (RAW_SPECIES[id]) return RAW_SPECIES[id];
+    if (getSpecies(id)) return getSpecies(id).name;
+    // strip form suffixes and retry ('roaringmoonmega' etc.)
+    const stripped = id.replace(/mega[xyz]?$/, '').replace(/primal$/, '');
+    if (stripped !== id && getSpecies(stripped)) return getSpecies(stripped).name;
+    const names = speciesNames();
+    let best = null, bestDist = Infinity, bestLen = 0;
+    for (let i = 0; i < names.length; i++) {
+      const nid = toID(names[i]);
+      if (nid === id) return names[i];
+      if (Math.abs(nid.length - id.length) > 3) continue;
+      if (nid.indexOf(id) === 0 || id.indexOf(nid) === 0) {
+        const d0 = Math.abs(nid.length - id.length);
+        if (d0 < bestDist) { bestDist = d0; best = names[i]; bestLen = nid.length; }
+        continue;
+      }
+      const d = levenshtein(nid, id);
+      if (d < bestDist) { bestDist = d; best = names[i]; bestLen = nid.length; }
+    }
+    const threshold = Math.max(1, Math.floor(Math.min(id.length, bestLen) / 3));
+    if (best && bestDist <= threshold) return best;
+    return null;
+  }
+
+  function tokenizeDetails(details) {
+    const parts = String(details || '').split(',').map(function (p) { return p.trim(); });
+    const species = parts[0] || '';
+    let level = 100, gender = '', shiny = false;
+    for (let i = 1; i < parts.length; i++) {
+      const p = parts[i];
+      if (/^L\d+$/.test(p)) level = parseInt(p.slice(1), 10);
+      else if (/^[MF]$/.test(p)) gender = p;
+      else if (/^[MF]$/.test(p.replace(/^N$/, '')) && p !== 'N') gender = p;
+      else if (p === 'N') gender = 'N';
+      else if (/shiny/i.test(p)) shiny = true;
+    }
+    return { species: species, level: level, gender: gender, shiny: shiny };
+  }
+
+  /* ---------------------------------------------------------------- exports */
+
+  ST.util = {
+    VERSION: '1.0.0',
+    GEN: GEN_NUM,
+    FORMAT: '[Gen 9] National Dex OU',
+    DEBUG: DEBUG,
+    debug: debug,
+    CALC: CALC,
+    GEN_OBJ: gen,
+    RAW_MOVES: RAW_MOVES,
+    STATS: STATS,
+    TYPES: TYPES,
+    DEFAULT_IVS: DEFAULT_IVS,
+    ZERO_EVS: ZERO_EVS,
+    PROTECT_MOVES: PROTECT_MOVES,
+    RECOVERY_MOVES: RECOVERY_MOVES,
+    RECOVERY_8PP: RECOVERY_8PP,
+    PIVOT_MOVES: PIVOT_MOVES,
+    HAZARD_MOVES: HAZARD_MOVES,
+    HAZARD_REMOVAL_MOVES: HAZARD_REMOVAL_MOVES,
+    SETUP_MOVES: SETUP_MOVES,
+    CHOICE_ITEMS: CHOICE_ITEMS,
+    CHOICE_IDS: CHOICE_IDS,
+    Z_CRYSTALS: Z_CRYSTALS,
+    PARADOX_ABILITIES: PARADOX_ABILITIES,
+    WATER_ABSORB_ABILITIES: WATER_ABSORB,
+    ELECTRIC_ABSORB_ABILITIES: ELECTRIC_ABSORB,
+    FIRE_ABSORB_ABILITIES: FIRE_ABSORB,
+    GRASS_ABSORB_ABILITIES: GRASS_ABSORB,
+    UNBLOCKABLE_STATUS_ABILITY: UNBLOCKABLE_STATUS_ABILITY,
+    TR_SETTERS: TR_SETTERS,
+    MEGA_STONES: MEGA_STONES,
+    STONE_BY_BASE: STONE_BY_BASE,
+
+    toID: toID,
+    clamp: clamp,
+    clampStat: clampStat,
+    round1: round1,
+    round2: round2,
+    formatPercent: formatPercent,
+    mean: mean,
+    median: median,
+    deepClone: deepClone,
+    escapeHtml: escapeHtml,
+
+    getSpecies: getSpecies,
+    speciesNames: speciesNames,
+    baseStats: baseStats,
+    baseSpeed: baseSpeed,
+    getTypes: getTypes,
+    getAbilities: getAbilities,
+    hasType: hasType,
+    isFlyingType: isFlyingType,
+    isParadox: isParadox,
+    canMegaEvolve: canMegaEvolve,
+    megaStoneFor: megaStoneFor,
+    megaStonesFor: megaStonesFor,
+    megaSpeciesFromStone: megaSpeciesFromStone,
+    isMegaStone: isMegaStone,
+    isZCrystal: isZCrystal,
+    isChoiceItem: isChoiceItem,
+    isBoosterEnergy: isBoosterEnergy,
+    isItemKnown: isItemKnown,
+    isAbilityKnown: isAbilityKnown,
+    abilityName: abilityName,
+    itemName: itemName,
+
+    getMoveData: getMoveData,
+    movePriority: movePriority,
+    moveBasePower: moveBasePower,
+    moveType: moveType,
+    isStatusMove: isStatusMove,
+    isDamagingMove: isDamagingMove,
+    isProtectMove: isProtectMove,
+    isRecoveryMove: isRecoveryMove,
+    is8PPRecoveryMove: is8PPRecoveryMove,
+    isPivotMove: isPivotMove,
+    isHazardMove: isHazardMove,
+
+    typeMultiplier: typeMultiplier,
+    typeEffectiveness: typeEffectiveness,
+    immunityReason: immunityReason,
+    isGrounded: isGrounded,
+    hazardPercent: hazardPercent,
+    emRockPercent: emRockPercent,
+
+    natureMultiplier: natureMultiplier,
+    libraryStat: libraryStat,
+    libraryReady: libraryReady,
+    calcStat: calcStat,
+    calcHP: calcHP,
+    statTable: statTable,
+    boostMultiplier: boostMultiplier,
+    paralysisMultiplier: paralysisMultiplier,
+    computeSpeed: computeSpeed,
+    maxSpeedForSet: maxSpeedForSet,
+
+    levenshtein: levenshtein,
+    closestSpeciesName: closestSpeciesName,
+    tokenizeDetails: tokenizeDetails
+  };
+})();
