@@ -99,7 +99,7 @@ tests/run_tests.js         end-to-end verification suite (218 checks)
 tests/rule_checks.js       deduction-rule checks driven through real protocol lines (23 checks)
 tests/util_smoke.js        util.js in isolation: dex access, item naming, type math, Speed maths (43 checks)
 tests/injected_bridge.js   the MAIN-world WebSocket bridge against a fake WebSocket/DOM (12 checks)
-tests/config_check.js      RULE 4: the config inventory, the frozen 128D layout, live mutation (68 checks)
+tests/config_check.js      RULE 4: the config inventory, the frozen 128D layout, live mutation (71 checks)
 tests/blackbox_guard.js    RULE 1: 50,616 stat values diffed against @smogon/calc + a scan for handwritten math (28 checks)
 tests/parser_fuzz.js       RULE 3: the real 30-turn log replayed, every prefix, and junk lines (44 checks)
 tests/hardening_audit.js   the bug-hunt regression suite: 10 defects reproduced first, then fixed,
@@ -107,7 +107,8 @@ tests/hardening_audit.js   the bug-hunt regression suite: 10 defects reproduced 
 tests/upgrades_check.js    the mixed-strategy solver against matrices with an analytic equilibrium,
                            the newer vetoes, the deliberation clock and the reverse damage rule (118 checks)
 tests/chaos_sync_check.js  the monthly chaos-sync tool + the usage overlay it writes (70 checks)
-tests/weights_check.js     the corpus downloader + the extractor + the IRLS fitter, against a planted model (189 checks)
+tests/weights_check.js     the corpus downloader + the extractor + the IRLS fitter + the adopted config
+                           vector, against a planted model (233 checks)
 tests/discrete_check.js    the 16 discrete damage rolls, the exact KO count, EV pinning and the
                            residual-order Speed evidence (110 checks)
 tests/scout_check.js       the replay-scouting tool + the overlay it writes + the pruner's use of it (78 checks)
@@ -147,7 +148,7 @@ node tests/parser_fuzz.js     #  44 checks: RULE 3 — the real log, all its pre
 node tests/hardening_audit.js #  48 checks: the bug-hunt regressions + a 40-battle invariant fuzz
 node tests/upgrades_check.js  # 118 checks: the mixed-strategy solve, the vetoes, the clock, damage evidence
 node tests/chaos_sync_check.js # 70 checks: the chaos sync + the usage overlay (fixtures only, no network)
-node tests/weights_check.js   # 189 checks: the downloader + the extractor + the fitter, against a planted model
+node tests/weights_check.js   # 233 checks: the downloader + the extractor + the fitter + the config adoption
 node tests/hud_check.js       # 175 checks: the seven HUD extras (stub DOM), the bench-tap sandbox end to end + their engine data
 node tests/discrete_check.js  # 110 checks: the 16 discrete rolls, the exact KO count, EV pinning, residual order
 node tests/scout_check.js     #  78 checks: the scouting tool, the overlay, the pruner's re-weighting
@@ -397,7 +398,8 @@ the replays and writes the corpus (labelling each one from the log's own `|win|`
 the side table the log declares, and skipping rather than guessing when it cannot resolve one);
 `tools/extract_training_data.js` turns that corpus into 128D rows labelled by the eventual
 winner; and `tools/fit_weights.js` fits them by IRLS with an L2 ridge, reports a train AUC-ROC and
-a hold-out AUC-ROC taken over whole battles, and prints a ready `evaluator.weights` snippet.
+a hold-out AUC-ROC taken over whole battles, prints a ready `evaluator.weights` snippet, and lists
+every dim the corpus barely observed (`lowSupport`) so an adoption has to decide about each by name.
 
 One property of the replay search is worth knowing before pointing the fetcher at it: the rating
 sort on the replay browser is a **server-side** query, not a re-sort of what came back.
@@ -487,15 +489,40 @@ map whose row counts do not add up to the rows being fitted is refused rather th
 split falls back to rows and reports `provenanceIgnored` — and a battle that contributed no rows no
 longer consumes a hold-out slot.
 
-Neither the artifact nor the fitter rewrites `src/config.js` on its own: the live
-`evaluator.weights` are still the handcrafted defaults, and adopting the fitted vector is a
-separate, verified step. The artifact stores the **fit**, not the search behind it: `lambda`,
-`samples`, the split, `aucTrain`/`aucTest`, `weights128`/`weightsFull` and the `spec` are what it
-records. The corpus itself is not in the repo — it is 3,712 third-party logs — so the format, sort,
-rating floor and band a corpus was drawn from live in the corpus payload (which is not shipped),
-never in the artifact. Regenerating therefore means re-running the pipeline: fetch the elite window,
-fetch the two lower bands, merge the corpora through `--input a.json,b.json`, extract, then fit. The
-exact invocations are the examples in the header comment of `tools/fetch_replays.js`.
+Neither the artifact nor the fitter rewrites `src/config.js` on its own; adopting `spec` into the
+live `evaluator.weights` is a separate, verified step, and it has now been taken. The artifact
+stores the **fit**, not the search behind it: `lambda`, `samples`, the split, `aucTrain`/`aucTest`,
+`weights128`/`weightsFull`, the `spec`, and `lowSupport` — every dim the corpus observed in fewer
+than 20 rows, with those counts. The corpus itself is not in the repo — it is 3,712 third-party
+logs — so the format, sort, rating floor and band a corpus was drawn from live in the corpus
+payload (which is not shipped), never in the artifact. Regenerating therefore means re-running the
+pipeline: fetch the elite window, fetch the two lower bands, merge the corpora through
+`--input a.json,b.json`, extract, then fit. The exact invocations are the examples in the header
+comment of `tools/fetch_replays.js`.
+
+The adoption itself needed three measurements, because `spec` is not the raw fit and the engine
+does not consume the vector in isolation.
+
+* **The projection is free.** `spec` is what a fitted vector becomes once it has to be expressed
+  in config's readable groups: the 36 threat cells collapse to two means, and the twelve-dim HP
+  and fainted blocks each to the single +/- value the builder can produce. On the artifact's own
+  battle-level hold-out the projected vector scores AUC **0.7049** against **0.7011** for the raw
+  128 coefficients, and both beat the hand vector's **0.6703** on the same rows; a paired
+  bootstrap over battles puts the projected-versus-hand gap at **+0.028 [+0.017, +0.047]**.
+* **The scale is a policy choice.** A logistic regression's overall scale is arbitrary — AUC is
+  scale-invariant — but `_payoff` adds `evaluate()` to *fixed* bonuses (`laplace.lethalBonus` 260,
+  `switchAteHitBonus` 25, the volatility charge), so a fitted vector pasted at its native scale
+  would shrink the evaluator's influence about 52x and let those fixed terms decide alone.
+  `evaluator.fitScale: 52.2` restores the spread the hand vector had — raw-score sd 93.3 versus
+  1.788 over the corpus's 111,820 rows — so the adoption changes *which* states rank higher
+  without changing *how much* the evaluator matters.
+* **Two dims are not measurements.** The fit put +54.7/-50.3 on the two accuracy-boost dims from
+  **5 and 17 non-zero rows** out of 111,820; five lucky rows can pin a coefficient of any size.
+  The fitter reports such dims under `lowSupport`, the artifact records their counts, and the
+  adopted config zeroes exactly those two. They fire in 0 and 2 of the hold-out's 21,838 rows, so
+  the zeroing does not move the AUC above. `tests/weights_check.js` pins the chain end to end: the
+  live weights are the artifact spec at four decimals with those dims zeroed, and `fitScale` is
+  applied by the evaluator.
 
 ## The two dex gaps the generated files fix
 
@@ -570,10 +597,11 @@ https://play.pokemonshowdown.com/data/pokedex.json` before regenerating.
   evaluator's chip-damage terms instead.
 * The LLM feature sends a compact board summary to the configured provider. Without a key
   nothing leaves the browser.
-* The 128D weights and every tempo/veto/clock threshold are tuned defaults, not a learned model;
-  they all live in `src/config.js`, and `tests/config_check.js` freezes the layout. The weight
-  fitter exists precisely so that can change, but the fitted numbers are only as good as the
-  corpus, which is not shipped.
+* The 128D weights are an adopted fit from real battle logs (see the weight-pipeline section),
+  while every tempo/veto/clock threshold is still a hand-tuned default; they all live in
+  `src/config.js`, and `tests/config_check.js` freezes the vector while `tests/weights_check.js`
+  pins it to the artifact it came from. The fit is only as good as the corpus, which is not
+  shipped.
 * The clock's thresholds and switch priors are priors about human behaviour, and
   `tests/upgrades_check.js` proves only the arithmetic and the wiring — never that a human
   agonising over a timer plays the safe line. A player who has already clicked and is watching an
@@ -626,10 +654,11 @@ the current turn, so it says which line to click now, not how the stall resolves
   third-party logs that are not shipped, and the pipeline's own network step is what produced it.
   The artifact records only the fit — the format, rating band and search that produced the corpus
   are re-created by the fetcher's documented flags, not stored in the file.
-* The artifact's test AUC (0.7011) is a battle-level hold-out, which is the honest number and a
-  modest one: it ranks the eventual winner correctly in roughly 70 of 100 held-out pairs of battle
-  states, and its probabilities are not calibrated odds (Brier 0.2178). Treat the vector as a
-  ranking aid for comparing candidate lines, not as a win-probability model.
+* The shipped vector's test AUC (0.7049; the raw fit scores 0.7011) is a battle-level hold-out,
+  which is the honest number and a modest one: it ranks the eventual winner correctly in roughly
+  70 of 100 held-out pairs of battle states, and the fit's probabilities are not calibrated odds
+  (Brier 0.2178 — and the leaf evaluator returns scores, not probabilities, anyway). Treat the
+  vector as a ranking aid for comparing candidate lines, not as a win-probability model.
 * The old 128-replay, 1300-rated corpus was deleted, so the 0.9360 figure cannot be recomputed;
   like the 0.7975 that briefly replaced it, it came from the row-level split and is not comparable
   to the battle-level 0.7011 the artifact now reports. The rating-diversity bands are in the

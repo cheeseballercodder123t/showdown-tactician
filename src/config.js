@@ -104,6 +104,14 @@
     /* -------------------------------------------------------------- evaluator */
     // The 128D leaf evaluator. `weights` is the human-readable spec; the exact index layout is
     // documented in evaluator_128d.js and built by DenseStateEvaluator.defaultWeights().
+    //
+    // The weights below are the ADOPTED FIT from lib/trained-weights.json (`spec`): a logistic
+    // regression over 111,820 labelled turn rows from 3,712 real ladder battles. On the fit's own
+    // battle-level hold-out (21,838 rows / 3,703 battles) the projected vector scores AUC 0.7049
+    // against 0.6703 for the hand vector it replaces, and a paired bootstrap over battles puts
+    // that gap at +0.028 [+0.017, +0.047]. The artifact holds the fit; adopting it is this
+    // deliberate edit. tests/weights_check.js pins that this block still equals the artifact's
+    // `spec` modulo the two zeroed accuracy dims and the 4-decimal rounding below.
     evaluator: {
       dim: 128,
       team: 6,
@@ -129,26 +137,45 @@
         consecutiveProtects: 0.5
       },
       weights: {
-        // 0..23 — HP and fainting dominate every evaluation.
-        hp: 26,
-        fainted: 55,
-        // 24..35 — status is chip damage; toxic scales with time, paralysis is tempo.
-        //   hp/atk/def/spa/spd/spe then the same six for the opponent.
-        status: [-9, -16, -11, -8, 9, 16, 11, 8, -14, -22, -18, -12],
-        // 36..47 — boosts on the active mons (ours, then theirs).
-        boosts: [18, 12, 18, 12, 24, 10, -18, -12, -18, -12, -24, -10],
+        // 0..23 — HP and fainting dominate every evaluation. The per-slot spread the fit saw is
+        // folded into the single +/- value config.js can express (see mapToSpec, tools/fit_weights.js).
+        hp: 0.9195,
+        fainted: 0.5496,
+        // 24..35 — my team's burn/toxic/paralysis/sleep counts (/6), the opponent's four counts,
+        // then my ACTIVE mon's four status flags. Copied verbatim from the fit.
+        status: [1.7295, 0.903, -1.9572, 6.1933, 0.3425, -0.3128, -1.6153, -1.8806, -0.3911, -0.1914, -0.232, -0.6362],
+        // 36..47 — boosts on the active mons (ours, then theirs): atk/def/spa/spd/spe/accuracy.
+        // boosts[5] and boosts[11] (the accuracy dims) are ZERO here, not fitted: the fit saw them
+        // in 5 and 17 rows out of 111,820 and produced +54.7/-50.3 from those alone. The artifact
+        // names both under `lowSupport`, and zeroing them is this adoption's decision.
+        boosts: [-4.8376, -5.6088, -5.4306, -5.6211, -4.8935, 0, -0.8748, -0.4079, -0.2069, 0.3381, 0.1238, 0],
         // 48..55 — our hazards hurt them, theirs hurt us.
-        hazards: [-7, -10, -12, -9, 7, 10, 12, 9],
+        hazards: [-3.5172, -6.8244, -6.5996, -2.6565, 3.3565, 6.567, 6.3636, 3.1761],
         // 56..63 — Trick Room is only good when we are the slower team.
-        trickRoom: [14, 22, 4, 3, 4, 4, 4, 4],
+        trickRoom: [0.014, 0.0265, 0.0645, -0.0685, -0.0425, 0.0384, 0.1264, -0.0795],
         // 64..75 — item knowledge is informational, not terminal.
-        items: [5, -4, -6, 2, 6, 9, -5, 4, 6, -2, -6, -9],
-        // 76..111 — threat matrix against each defender, stronger for the active pair.
-        threat: 6,
-        threatActive: 16,
+        items: [-0.482, 0.0676, 0, 0, -0.001, 0.0029, -0.1507, 0.1644, 0, 0, -0.0881, -0.0832],
+        // 76..111 — threat matrix against each defender, stronger for the active pair. The 36
+        // fitted cells collapse to two means: `threat` averages the 30 off-diagonal cells,
+        // `threatActive` the six i==j cells the builder overrides.
+        threat: -0.0248,
+        threatActive: 0.1811,
         // 112..127 — macro aggregates.
-        macro: [30, -30, 18, -18, 9, -9, 12, -12, 10, -10, 6, -6, 8, -8, 7, -7]
-      }
+        macro: [0.6917, -1.0183, 1.3815, -1.1125, -9.2872, 1.0659, 18.372, -0.8555, 0, 0, -0.1029, 0.1519, 0.0738, -0.0738, 0.7961, -0.5051]
+      },
+      // The fitted coefficients are a logistic regression, whose overall scale is arbitrary: any
+      // positive multiple ranks states identically (AUC is scale-invariant). But the engine does
+      // not consume the vector in isolation — laplace_core._payoff adds evaluate() to FIXED
+      // bonuses (laplace.lethalBonus 260, switchAteHitBonus 25, the volatility charge, the bunker
+      // mask) — so the vector's MAGNITUDE is a policy choice. At its native scale the fit would
+      // shrink the evaluator's influence roughly 52x and let those fixed terms decide alone.
+      // 52.2 restores the spread of the hand vector this replaced, measured over the fit corpus's
+      // 111,820 rows: raw-score sd 93.3 (hand) versus 1.788 (fitted spec) = 52.2, which puts the
+      // delivered evaluate() on the same scale it had (sd ~219 either way). With it, the adoption
+      // changes WHICH states rank higher (hold-out AUC 0.670 -> 0.705) without changing how much
+      // the evaluator matters. Set to 1 to inspect the raw fit; re-measure this factor if the
+      // laplace bonuses above are ever re-tuned.
+      fitScale: 52.2
     },
 
     /* ------------------------------------------------------------------- tempo */

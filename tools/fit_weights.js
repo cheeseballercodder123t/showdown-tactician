@@ -19,7 +19,11 @@
  *   - train AUC and hold-out TEST AUC (rank-sum / Mann-Whitney, ties handled),
  *   - the fitted 128 coefficients and the intercept,
  *   - `spec`: the coefficients mapped back onto config.js's evaluator.weights groups, so the
- *     numbers can be pasted in directly (see mapToSpec for the mapping and its sign traps).
+ *     numbers can be pasted in directly (see mapToSpec for the mapping and its sign traps),
+ *   - `lowSupport`: every dim observed in fewer than LOW_SUPPORT_ROWS rows, with those counts.
+ *     A coefficient on such a column is a separation artifact, not a measurement — five lucky
+ *     rows can pin a coefficient of any size — so an adoption has to decide what to do with
+ *     these dims by name instead of inheriting them silently.
  *   It refuses a single-class dataset or a ragged/mismatched matrix instead of returning NaN.
  *
  * THE MAPPING (the part that silently reshapes the evaluator if it is wrong)
@@ -55,6 +59,14 @@ const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
 const DIM = 128;
+
+/* Rows a dim must be non-zero in before its coefficient is treated as identified. A fitted
+ * coefficient is only meaningful when the column moved; below this the fit is extrapolating from
+ * a handful of cases, and IRLS happily returns a huge coefficient with an immeasurable standard
+ * error (the corpus that produced the shipped artifact had accuracy-boost dims with 5 and 17
+ * non-zero rows out of 111,820, and coefficients of +54.7 / -50.3). The report names those dims;
+ * whether to prune them is the adoption's decision, not the fitter's. */
+const LOW_SUPPORT_ROWS = 20;
 
 /* ============================================================== numeric core */
 
@@ -442,6 +454,18 @@ function run(payload, options) {
   const aucTest = auc(score(testX), testY);
   const spec = dim === DIM ? mapToSpec(model.coef) : null;
 
+  // Per-dim support: how many rows carried a non-zero value, and how many of those were
+  // positives. The counts are what makes a huge coefficient reviewable — a dim with five
+  // non-zero rows cannot identify anything, however small its p-value looks.
+  const lowSupport = [];
+  for (let j = 0; j < data.X[0].length; j++) {
+    let nonzero = 0, positives = 0;
+    for (let i = 0; i < data.X.length; i++) {
+      if (data.X[i][j] !== 0) { nonzero++; if (data.y[i]) positives++; }
+    }
+    if (nonzero < LOW_SUPPORT_ROWS) lowSupport.push({ dim: j, nonzero: nonzero, positives: positives });
+  }
+
   return {
     lambda: lambda,
     iterations: model.iterations,
@@ -455,6 +479,8 @@ function run(payload, options) {
     holdoutBattles: split.grouped ? split.battles : 0,
     groupedHoldout: split.grouped,
     provenanceIgnored: !!groups && !usableGroups,
+    lowSupportThreshold: LOW_SUPPORT_ROWS,
+    lowSupport: lowSupport,
     positives: data.y.reduce(function (s, v) { return s + v; }, 0),
     features: dim,
     aucTrain: aucTrain,
@@ -502,6 +528,10 @@ function main(argv) {
       report.testSamples + ' test), positives ' + report.positives + ', lambda ' + report.lambda +
       ', iterations ' + report.iterations + (report.converged ? ' (converged)' : ' (hit the cap)'));
     console.log('  AUC train ' + fmt(report.aucTrain) + ' | AUC test ' + fmt(report.aucTest));
+    console.log('  low-support dims (<' + LOW_SUPPORT_ROWS + ' non-zero rows): ' +
+      (report.lowSupport.length
+        ? report.lowSupport.map(function (e) { return e.dim + '(' + e.nonzero + ')'; }).join(' ')
+        : 'none'));
     console.log('wrote ' + path.relative(ROOT, target));
     console.log('\n' + specSnippet(report.spec));
   }

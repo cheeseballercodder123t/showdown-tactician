@@ -11,6 +11,49 @@
   "holdoutBattles": 3703,
   "groupedHoldout": true,
   "provenanceIgnored": false,
+  "lowSupportThreshold": 20,
+  "lowSupport": [
+    {
+      "dim": 41,
+      "nonzero": 5,
+      "positives": 5
+    },
+    {
+      "dim": 47,
+      "nonzero": 17,
+      "positives": 2
+    },
+    {
+      "dim": 66,
+      "nonzero": 0,
+      "positives": 0
+    },
+    {
+      "dim": 67,
+      "nonzero": 0,
+      "positives": 0
+    },
+    {
+      "dim": 72,
+      "nonzero": 0,
+      "positives": 0
+    },
+    {
+      "dim": 73,
+      "nonzero": 0,
+      "positives": 0
+    },
+    {
+      "dim": 120,
+      "nonzero": 0,
+      "positives": 0
+    },
+    {
+      "dim": 121,
+      "nonzero": 0,
+      "positives": 0
+    }
+  ],
   "positives": 61711,
   "features": 128,
   "aucTrain": 0.751324527841246,

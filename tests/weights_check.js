@@ -21,7 +21,9 @@
  *   7. the downloader labels a replay through the LOG'S OWN seat table rather than by array
  *      order, and refuses a log it cannot label instead of inventing a winner;
  *   8. the fitted artifact that ships in the repo is well-formed and reproducible from its own
- *      coefficients;
+ *      coefficients, AND that the live src/config.js vector is that artifact's reviewed
+ *      adoption: the artifact spec at 4 decimals, the unidentifiable low-support dims zeroed,
+ *      and the measured fitScale calibration applied;
  *   9. the balanced corpus builder measures a move the SAME way in both directions (a corpus of
  *      battles that used it, and a corpus of battles that did not), merges its halves without
  *      trusting a stored label, and never re-downloads a replay it already has;
@@ -553,9 +555,60 @@ if (artifactAttempt.ok) {
   const derived = fitter.mapToSpec(artifact.weights128);
   eq('the stored spec is exactly what mapToSpec computes from the stored coefficients',
     artifact.spec, derived);
-  /* NOT asserted: that these equal the live evaluator.weights. Adopting a fitted vector is a
-   * reviewed step (the fitter writes an artifact and never edits src/config.js), so a check that
-   * forbade the adoption would fight the feature it exists to enable. */
+
+  /* The dims the corpus could not identify: a coefficient fitted from a handful of non-zero rows
+   * is an extrapolation, not a measurement. The artifact names them so an adoption has to make a
+   * decision about each one by name. */
+  check('it reports the dims the corpus could not identify',
+    Array.isArray(artifact.lowSupport) && artifact.lowSupport.length > 0 &&
+    artifact.lowSupport.every(function (e) {
+      return e && typeof e.dim === 'number' && e.dim >= 0 && e.dim < 128 &&
+        typeof e.nonzero === 'number' && typeof e.positives === 'number' && e.positives <= e.nonzero;
+    }), JSON.stringify(artifact.lowSupport));
+  check('...including the two accuracy dims the adoption had to decide about',
+    JSON.stringify(artifact.lowSupport.filter(function (e) { return e.dim === 41 || e.dim === 47; })
+      .map(function (e) { return [e.dim, e.nonzero]; })) === JSON.stringify([[41, 5], [47, 17]]),
+    JSON.stringify(artifact.lowSupport));
+  check('...under the threshold the fitter declares', artifact.lowSupportThreshold === 20,
+    String(artifact.lowSupportThreshold));
+
+  /* THE ADOPTION PIN. src/config.js now carries the artifact's `spec` at the 4-decimal precision
+   * the config file holds, with the unidentifiable dims zeroed: the accuracy dims 41/47, whose
+   * +54.7/-50.3 came from 5 and 17 non-zero rows out of 111,820 and are separation artifacts.
+   * `fitScale` is the measured calibration that keeps the evaluator's influence over the fixed
+   * laplace bonuses where the hand vector had it (the fit's native scale would shrink it ~52x).
+   * Refitting without re-adopting, or re-adopting without refitting, fails HERE — the review
+   * gate the fitter's artifact-only contract asks for. */
+  const liveSpec = ST.configGet ? ST.configGet('evaluator.weights', null) : null;
+  const fitScale = ST.configGet ? ST.configGet('evaluator.fitScale', null) : null;
+  /* Where a dim's coefficient lives in the spec, for the dims that need a spec edit. The six
+   * zero-support dims already carry a zero coefficient, so they require no edit. */
+  const SPEC_SLOT_OF_DIM = { 41: ['boosts', 5], 47: ['boosts', 11] };
+  const adoptedSpec = {
+    hp: fitter.round([artifact.spec.hp])[0], fainted: fitter.round([artifact.spec.fainted])[0],
+    status: fitter.round(artifact.spec.status), boosts: fitter.round(artifact.spec.boosts),
+    hazards: fitter.round(artifact.spec.hazards), trickRoom: fitter.round(artifact.spec.trickRoom),
+    items: fitter.round(artifact.spec.items), threat: fitter.round([artifact.spec.threat])[0],
+    threatActive: fitter.round([artifact.spec.threatActive])[0], macro: fitter.round(artifact.spec.macro)
+  };
+  artifact.lowSupport.forEach(function (e) {
+    if (!e.nonzero && artifact.weights128[e.dim] === 0) return;
+    const slot = SPEC_SLOT_OF_DIM[e.dim];
+    check('low-support dim ' + e.dim + ' has a known spec slot to zero', !!slot, JSON.stringify(e));
+    if (slot) adoptedSpec[slot[0]][slot[1]] = 0;
+  });
+  eq('the live evaluator.weights are the artifact spec (4dp) with the low-support dims zeroed',
+    liveSpec, adoptedSpec);
+  check('evaluator.fitScale is a positive finite calibration constant',
+    typeof fitScale === 'number' && isFinite(fitScale) && fitScale > 0, String(fitScale));
+  const liveVec = Array.from(ST.DenseStateEvaluator.defaultWeights());
+  artifact.lowSupport.forEach(function (e) {
+    check('low-support dim ' + e.dim + ' is zeroed in the live vector', liveVec[e.dim] === 0,
+      String(liveVec[e.dim]));
+  });
+  check('the calibration is applied, not decorative',
+    Math.abs(liveVec[0] - Math.fround(Math.fround(liveSpec.hp) * fitScale)) < 1e-4,
+    liveVec[0] + ' vs ' + liveSpec.hp + ' * ' + fitScale);
 } else {
   check('the artifact is required for the shape checks', false, 'lib/trained-weights.json is missing');
 }

@@ -62,10 +62,16 @@
       return spec;
     }
 
-    /** Pre-tuned weight vector: living mons, TR tempo, hazard differential, burned attackers. */
+    /**
+     * The pre-tuned weight vector, from src/config.js: `evaluator.weights` supplies the layout
+     * spec and `evaluator.fitScale` the calibration multiplier that puts the (scale-free) fitted
+     * coefficients on the payoff scale the fixed laplace bonuses were tuned against — see the
+     * comment on that field. Living mons, TR tempo, hazard differential, burned attackers.
+     */
     static defaultWeights() {
       const w = new Float32Array(DIM);
       const W = DenseStateEvaluator.weightSpec();
+      const k = cfg('evaluator.fitScale', 1);
       // 0..23 — HP and fainting dominate every evaluation (sign flips for the opponent).
       for (let i = 0; i < TEAM; i++) { w[i] = W.hp; w[TEAM + i] = -W.hp; }
       for (let i = 0; i < TEAM; i++) { w[12 + i] = -W.fainted; w[18 + i] = W.fainted; }
@@ -84,6 +90,11 @@
       for (let i = 0; i < TEAM; i++) w[76 + i * (TEAM + 1)] = W.threatActive;  // active vs active
       // 112..127 — macro aggregates.
       for (let i = 0; i < 16; i++) w[112 + i] = W.macro[i];
+      // The spec is the fitted direction; `fitScale` is the measured calibration, applied once
+      // here so `this.weights` IS what scores a state. k === 1 skips the pass (raw fit).
+      if (k !== 1) {
+        for (let i = 0; i < DIM; i++) w[i] = w[i] * k;
+      }
       return w;
     }
 
