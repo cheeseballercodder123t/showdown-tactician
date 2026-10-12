@@ -12,6 +12,58 @@ Built for Chromium-on-Android (Lemur Browser, Samsung Galaxy S24 FE, 1080×2340)
   optional LLM narration.
 * Everything runs **locally**. The LLM layer is opt-in and costs 0 ms when no API key is set.
 
+## Start here
+
+Five minutes to a working mental model:
+
+1. **It is an extension, not a library.** `manifest.json` loads `lib/` (a vendored `@smogon/calc`)
+   then every file in `src/` as a *classic script* in dependency order; each publishes exactly one
+   class onto `window.ST`. `src/content.js` boots the pipeline. The full interface contract is
+   [`ARCHITECTURE.md`](ARCHITECTURE.md) — read that before editing any module.
+2. **Three rules hold the whole thing together**, and each has a test that enforces it rather than
+   a comment that asks nicely:
+   * **Rule 1 — no in-house math.** Damage, stats and type charts come from the vendored library;
+     `tests/blackbox_guard.js` diffs 50,616 stat values and greps `src/` for handwritten formulas.
+   * **Rule 2 — frozen ground truth.** `test_engine.js` pins five canonical damage rolls.
+   * **Rule 4 — one config.** Every tunable lives in [`src/config.js`](src/config.js);
+     `tests/config_check.js` inventories all of them and proves live mutation flows through.
+3. **Run everything:** `npm test` (18 suites, ~2,000 checks, no dependencies). Individual suites
+   are plain `node tests/<name>.js`. CI runs the same command on every push.
+4. **Measure it:** `npm run bench` replays the real 30-turn log and reports the per-turn decision
+   cost; `npm run bench:serve` then open the printed URL on the phone for ground-truth numbers
+   (see [Performance](#performance)).
+5. **History lives in [`CHANGELOG.md`](CHANGELOG.md).** This README is declarative — what is true
+   now; the changelog and the commit log carry how it got that way.
+
+## Performance
+
+The decision path is one synchronous burst per turn. `tests/perf_bench.js` replays
+`test_log.txt` through the real pipeline and times `evaluateTurn` on every turn, plus a synthetic
+worst case (6 bodies alive both sides, 4 moves + a full bench, hazards, Trick Room).
+
+The cost is `K worlds x our actions x their replies`, and every cell of that product is one
+`_payoff` (two damage rolls + one 128D evaluator pass) — up to **432 `_payoff` calls in a turn**.
+
+Measured on an Intel i7-9750H (2019 laptop), main realm, 2026-10:
+
+| board | p50 | p95 |
+| --- | --- | --- |
+| real turns of `test_log.txt` | ~28 ms | ~40 ms |
+| synthetic worst case | ~36 ms | ~40 ms |
+
+`bench/bench.html` in a real Chromium under a Galaxy S24 device profile reports **~32 ms** for the
+worst case (`bench/bench-result.png` is that run). The projected S24 FE figure (Geekbench-6
+single-core scaling plus a thermal/browser penalty) is **~40–45 ms p95**.
+
+**This is ~3–4x the 10 ms target, and the benchmark is the instrument that says so.** The dominant
+cost is the 128D evaluator: `extractVector` rebuilds all 128 dims — including a 6x6 threat matrix —
+on every one of the 432 leaves of a turn, although the leaves differ only in HP. See the "known
+limits" section for what is not yet fixed.
+
+> Methodology note: do **not** benchmark through `tests/harness.js`. Its `vm` sandbox is a separate
+> V8 context and inflates the same board from ~40 ms to ~119 ms. `tests/perf_bench.js` loads into
+> the main realm for exactly this reason.
+
 ## Install (desktop Chromium, for development)
 
 1. `chrome://extensions` → enable **Developer mode** → **Load unpacked** → select this folder.
@@ -114,8 +166,19 @@ tests/discrete_check.js    the 16 discrete damage rolls, the exact KO count, EV 
 tests/scout_check.js       the replay-scouting tool + the overlay it writes + the pruner's use of it (78 checks)
 tests/pressure_check.js    the PP-stall gauge and its 3-way pivot, the volatility charge, the
                            Z-Move/Mega format sentinel (151 checks)
+tests/invariants_check.js  the Object.create leaf clones (no write-through), evaluateTurn purity,
+                           and the simulate()/_mutableSim contract (17 checks)
+tests/perf_bench.js        the per-turn decision-cost benchmark: real log replay + worst case,
+                           calibration and a Geekbench-scaled device projection
+tests/run_all.js           runs every suite in sequence; `npm test` calls this
 test_engine.js             RULE 2: five canonical ground-truth damage scenarios (57 checks)
 test_log.txt               the 30-turn ExtramePatriot vs LUIZ_LFN battle as a raw protocol stream
+bench/bench.html           standalone on-device benchmark page (loads the engine, times a turn,
+                           prints the device's own numbers) — the ground truth for Performance
+package.json               npm scripts: `test`, `test:fast`, `bench`, `bench:json`, `bench:serve`
+.github/workflows/ci.yml   runs `npm test` + the benchmark on every push and PR
+.github/workflows/chaos-sync.yml  the monthly usage-overlay cron
+CHANGELOG.md               how the engine got here, newest first
 tools/gen_abilities.js     regenerates lib/species-abilities.js from tools/pokedex.json
 tools/gen_aliases.js       regenerates lib/species-aliases.js (needs the vendored calc bundle)
 tools/pokedex.json         Showdown's dex snapshot the two generators read
@@ -616,6 +679,16 @@ https://play.pokemonshowdown.com/data/pokedex.json` before regenerating.
 
 ## Known limits
 
+* **The turn misses its performance target by ~3–4x.** `tests/perf_bench.js` measures ~28–40 ms per
+  turn against a 10 ms goal; the dominant cost is `extractVector` rebuilding all 128 dims (and a
+  6x6 threat matrix) on each of the 432 `_payoff` leaves, when those leaves differ only in HP. The
+  fix is an incremental vector — compute the invariant dims once per world, patch HP per leaf — and
+  it is not done yet. One leaf of the matrix (the offence multiplier) is already memoised, which is
+  score-exact but only worth ~15%.
+* `_speedOf`'s cache key is `slot|id|species`, which **collides for a same-species mirror** (two
+  Slowking-Galar share one entry, and which body wins depends on iteration order). That is a latent
+  correctness bug as well as a perf ceiling: enriching the key fixes it but changes scores, so it
+  needs a re-fit before it can land.
 * `@smogon/calc` has no Toxic Spikes / Sticky Web damage model; those are handled by the
   evaluator's chip-damage terms instead.
 * The LLM feature sends a compact board summary to the configured provider. Without a key

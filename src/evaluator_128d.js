@@ -46,8 +46,28 @@
       this.weights = options.weights || DenseStateEvaluator.defaultWeights();
       this._vec = new Float32Array(DIM);
       this._speedCache = {};
+      // Exact memoisation of `_bestOffenseMultiplier`, the hottest pure leaf of the 6x6 threat
+      // matrix. `extractVector` runs once per `_payoff` leaf — up to 432 times for one turn — and
+      // the threat matrix (dims 76..111) is invariant across those leaves (they differ only in
+      // HP/faint dims), yet was rebuilt each time. The function is a pure function of
+      // (attacker species, its resolved move list, defender species), so caching it on exactly
+      // those inputs cannot change a result: the key IS the full input. Verified bit-identical to
+      // the pre-change evaluator over all 30 turns of test_log.txt plus 400 randomised boards
+      // (score and all 128 dims), and the whole suite is green — see CHANGELOG.md.
+      // NOTE: `_speedOf` is deliberately NOT memoised here. Its existing key is
+      // `slot|id|species`, which collides for a same-species mirror (both Slowking-Galar share
+      // one entry, and which body wins depends on iteration order). Enriching that key changes
+      // scores, so it is left exactly as-is.
+      this._offMemo = new Map();
       this.lastRaw = 0;
       this.lastScore = 0;
+    }
+
+    /** Bound a memo so a pathological corpus cannot grow it without limit. */
+    static _memoPut(memo, key, value) {
+      if (memo.size > 8192) memo.clear();
+      memo.set(key, value);
+      return value;
     }
 
     /**
@@ -262,23 +282,34 @@
     _bestOffenseMultiplier(attacker, defender) {
       const moves = (attacker.revealedMoves && attacker.revealedMoves.length ? attacker.revealedMoves :
         ((attacker.liveSet && attacker.liveSet.moves) || []));
+      const aId = attacker.species || attacker.id;
+      const dId = defender.species || defender.id;
+      // Pure in (attacker species, its move list, defender species) — the exact inputs below.
+      const key = aId + '|' + moves.join('+') + '>' + dId;
+      const hit = this._offMemo.get(key);
+      if (hit !== undefined) return hit;
       let best = 0;
+      let result;
       if (moves && moves.length) {
         for (let i = 0; i < moves.length; i++) {
           const data = U.getMoveData(moves[i]);
           if (!data || data.isStatus || !data.basePower) continue;
-          const eff = U.typeEffectiveness(data.type, defender.species || defender.id);
+          const eff = U.typeEffectiveness(data.type, dId);
           const score = eff * data.basePower;
           if (score > best) best = score;
         }
-        if (best > 0) return best / cfg('evaluator.offenseBasePowerCap', 120);
+        if (best > 0) result = best / cfg('evaluator.offenseBasePowerCap', 120);
       }
-      const types = U.getTypes(attacker.species || attacker.id);
-      for (let i = 0; i < types.length; i++) {
-        const eff = U.typeEffectiveness(types[i], defender.species || defender.id);
-        if (eff > best) best = eff;
+      if (result === undefined) {
+        best = 0;
+        const types = U.getTypes(aId);
+        for (let i = 0; i < types.length; i++) {
+          const eff = U.typeEffectiveness(types[i], dId);
+          if (eff > best) best = eff;
+        }
+        result = best;
       }
-      return best;
+      return DenseStateEvaluator._memoPut(this._offMemo, key, result);
     }
 
     _teamHp(team) {

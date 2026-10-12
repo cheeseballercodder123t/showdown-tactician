@@ -1,0 +1,39 @@
+# Showdown Tactician - .github/workflows/ci.yml
+#
+# WHY: seventeen suites and ~2,000 assertions existed with nothing running them on a push, so a
+# regression could land silently (the tree's own audit report is the reason to care: it found ten
+# real defects, each of which a suite now pins). This runs every suite, then the performance
+# benchmark for the record.
+#
+# Zero dependencies: every suite is a plain `node` script, so there is no install step.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # The suites are the gate: any non-zero exit fails the job.
+      - name: Run every suite
+        run: npm test
+
+      # The benchmark is informational (it always exits 0 without --assert), so a slow or noisy
+      # runner never fails the build — but the number lands in the log for the record.
+      - name: Performance benchmark
+        run: npm run bench
