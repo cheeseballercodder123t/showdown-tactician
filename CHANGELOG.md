@@ -67,6 +67,25 @@ provenance — why a number is what it is, and what was tried and rejected. Entr
 - **`npm run e2e` / `npm run e2e:headed`**, and `test-results/`, `playwright-report/`, `blob-report/`
   in `.gitignore`.
 
+### Changed
+
+- **The move-dex lookup was 52% of a turn; it is now a cache.** A CPU profile of one real turn put
+  `getMoveData`, `toID` and `toID`'s own RegExp at **52% of the whole decision**, and the cause was a
+  combination rather than one bug. `moveCache[id] = null` recorded a miss that the `if
+  (moveCache[id])` hit test then read as "not cached", so any name the vendored table does not have
+  re-ran the fallback — every key of `RAW_MOVES`, with a `toID` per key. Measured: **~240 us** for a
+  missing name against **0.28 us** for a present one, and `_payoff` was handing it a species, because
+  a switch action's `name` IS a species: 216 such calls in a single real turn. Three changes, all
+  behaviour-preserving: `toID` is memoised (a `Map`, capped, cleared rather than growing), `getMoveData`
+  remembers misses and answers from an id→raw index instead of scanning, and `_payoff` no longer
+  asks the move dex about a switch. Verified bit-identical — every ranking, every score at 17
+  significant digits, every veto flag — across 30 real turns plus 360 seeded perturbations of them
+  (390 boards, 432 `_payoff` cells each, matrix untouched), and A/B'd alternately on one machine so
+  thermal drift could not land on one side: real boards **96.3 → 30.7 ms mean, 132.7 → 47.5 ms p95**,
+  worst case **112.6 → 41.9 ms mean**, and the projected Galaxy S24 FE figure **141.6 → 50.7 ms**.
+  The profile, the call counts and the A/B are all reproducible with `node tests/perf_bench.js` and
+  `node --cpu-prof`; nothing here was adopted on the strength of a claim.
+
 ### Fixed
 
 Seven defects the arena found while it was being built (not an audit sweep, but each is a real bug
@@ -107,6 +126,14 @@ with a suite pinning it now):
   while an absent key means the default 31 — so Ting-Lu became "must have at least three perfect IVs
   because it's a legendary in Gen 6 or later", reported as an illegal *input*, and no mutation ran at
   all on two shipped samples. The table is now carried only when it actually says something.
+- **Two fabricated-move bugs in the same lookup path**, both pinned now in `tests/util_smoke.js`. The
+  move cache was a plain `{}` with a truthiness hit test, so `getMoveData('constructor')` returned the
+  **Object constructor itself**, and `toString`, `valueOf`, `hasOwnProperty` and `__proto__` returned
+  invented zero-power Status moves — `isStatus: true`, `basePower: 0` — which every status-aware rule
+  downstream (the quiescence setup/protect pricing, the volatility screen) treats as a real, legal
+  move. Making the cache a `Map` was not enough: the vendored `RAW_MOVES` table is a plain object
+  too, so `RAW_MOVES[key]` kept answering from `Object.prototype` and kept fabricating the move. The
+  raw lookup is own-key only now, and all five names answer `null` like any other non-move.
 
 Seven defects found by the browser suite that no sandbox could have seen — full write-ups in
 [`BUGS_AUDIT_REPORT.md`](BUGS_AUDIT_REPORT.md), sweep 2:

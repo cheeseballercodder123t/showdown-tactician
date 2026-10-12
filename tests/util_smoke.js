@@ -1,7 +1,8 @@
 /* Showdown Tactician — tests/util_smoke.js
- * Focused unit checks (41) for src/util.js, the only module allowed to touch window.calc:
+ * Focused unit checks (55) for src/util.js, the only module allowed to touch window.calc:
  * dex resolution + the two generated supplements, item/ability id normalisation, type math,
- * hazard percentages, Speed computation and the fuzzy species matcher.
+ * hazard percentages, Speed computation, the fuzzy species matcher, and the lookup caches that
+ * keep the hottest path in the engine (move data by name/id) from re-scanning the dex per call.
  *
  * Usage:  node tests/util_smoke.js     (exit 0 = every check passed)
  */
@@ -58,5 +59,32 @@ t('isZ', U.isZCrystal('Ghostium Z'), true);
 t('isMegaStone', U.isMegaStone('Venusaurite'), true);
 t('booster', U.isBoosterEnergy('Booster Energy'), true);
 t('speciesNames len>1000', Object.keys(s.calc.SPECIES[9]).length > 1000, true);
+
+/* ------------------------------------------------------------ the move-lookup cache */
+/* WHY THESE EXIST: getMoveData is the hottest lookup in the engine, and it used to re-scan the whole
+ * dex (with a toID per key) on EVERY call for a name it does not have — which is exactly what a
+ * switch action's species is when it reaches the move dex through LaplaceEngine._payoff. Measured on
+ * a real board: ~240 us for such a call against 0.28 us for a present one, 216 such calls in one
+ * real turn, and 52% of that turn's whole CPU profile between getMoveData, toID and its RegExp.
+ *
+ * Three behaviours keep it fixed, and all three are pinned here: a miss is REMEMBERED, a lookup by
+ * display name and by id agree, and no inherited Object.prototype member is ever mistaken for a
+ * move (the old cache was a plain `{}` with a truthiness hit test, so `getMoveData('constructor')`
+ * returned the Object constructor itself). */
+t('lookup: a present move, by display name', U.getMoveData('Headlong Rush').id, 'headlongrush');
+t('lookup: by id returns the same object', U.getMoveData('headlongrush'), U.getMoveData('Headlong Rush'));
+t('lookup: a name the dex does not have answers null', U.getMoveData('Totally Not A Move'), null);
+t('lookup: a repeated miss adds no cache entry (it was remembered)',
+  (function () { const a = (U.getMoveData('Totally Not A Move'), U.moveLookupStats().entries); U.getMoveData('Totally Not A Move'); return U.moveLookupStats().entries === a; })(), true);
+t('lookup: 500 repeats of one new miss add exactly one entry',
+  (function () { const a = U.moveLookupStats().entries; for (let i = 0; i < 500; i++) U.getMoveData('Another Non Move'); return U.moveLookupStats().entries - a; })(), 1);
+t('lookup: a species handed to the move dex is null', U.getMoveData('Hatterene'), null);
+t('lookup: a repeated species miss adds no cache entry',
+  (function () { const a = U.moveLookupStats().entries; U.getMoveData('Hatterene'); return U.moveLookupStats().entries === a; })(), true);
+t('lookup: Object.prototype is not a move dex (constructor)', U.getMoveData('constructor'), null);
+t('lookup: toString is not a move', U.getMoveData('toString'), null);
+t('lookup: __proto__ is not a move', U.getMoveData('__proto__'), null);
+t('lookup: the id index answers for a name RAW_MOVES keys differently', U.getMoveData('rapidspin').isHazardRemoval, true);
+t('lookup: a Z-move still resolves with its flags', U.getMoveData('Inferno Overdrive').isZMove, true);
 console.log('\n' + (fails? fails+' FAILURES' : 'ALL UTIL CHECKS PASSED'));
 process.exit(fails ? 1 : 0);

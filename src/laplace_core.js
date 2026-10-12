@@ -928,7 +928,11 @@
 
       const q = this.quiescence;
       const qOn = !!(q && q.enabled !== false);
-      const oppData = U.getMoveData(oppAction.name);
+      /* A switch action's `name` is a SPECIES, not a move. Asking the move dex for one is not just
+       * meaningless, it was the engine's single hottest line: 216 calls in one real turn, each one
+       * a full scan of the dex (see the cache note in src/util.js). Only a move has move data, and
+       * both consumers below are already kind-guarded. */
+      const oppData = oppAction.kind === 'switch' ? null : U.getMoveData(oppAction.name);
       const oppUsesSetup = !!(qOn && q.extendSetup !== false && oppAction.kind === 'move' &&
         oppData && oppData.isSetup);
       // Their shield is a game rule, not a payoff term: a Protect that is up blocks our move.

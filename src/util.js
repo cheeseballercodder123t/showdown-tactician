@@ -170,10 +170,29 @@
 
   /* ---------------------------------------------------------------- primitives */
 
+  /* toID is the hottest function in the engine: every move, item and species lookup starts here, a
+   * single real turn reaches it thousands of times, and its cost is `toLowerCase()` plus a regex
+   * replace (~0.2 us). A CPU profile of one real turn put toID at 21% of the whole decision with a
+   * further 9% inside its own RegExp — which was mostly NOT the callers: it was the move-lookup
+   * fallback below asking it once per dex key, per call (see getMoveData).
+   *
+   * The memo is a Map rather than an object on purpose: a plain `{}` answers for `constructor`,
+   * `toString` and `__proto__` out of Object.prototype, and a truthiness test on such a hit is how
+   * the move cache below once returned the Object constructor as if it were a move. The cap clears
+   * instead of growing without bound, because a hostile log can invent names forever.
+   */
+  const toIDCache = new Map();
+
   function toID(str) {
     if (str === null || str === undefined) return '';
-    const s = String(str).toLowerCase();
-    return s === 'flabébé' ? 'flabebe' : s.replace(/[^a-z0-9]+/g, '');
+    const key = String(str);
+    const hit = toIDCache.get(key);
+    if (hit !== undefined) return hit;
+    const s = key.toLowerCase();
+    const out = s === 'flabébé' ? 'flabebe' : s.replace(/[^a-z0-9]+/g, '');
+    if (toIDCache.size > 8192) toIDCache.clear();
+    toIDCache.set(key, out);
+    return out;
   }
 
   function clamp(v, lo, hi) {
@@ -412,22 +431,60 @@
 
   /* ---------------------------------------------------------------- moves */
 
-  const moveCache = {};
+  /* id -> the built move object. A Map, and a MISS is a stored value: `null` is a real answer that
+   * the old `if (moveCache[id])` hit test read as "not cached", so every lookup of a name the dex
+   * does not have re-ran the fallback scan below — which is O(every move in the dex) with a toID
+   * per key. Measured on a real board: a missing name cost ~240 us per call against 0.28 us for a
+   * present one, and `_payoff` was making 216 such calls in a single turn. */
+  const moveCache = new Map();
   const Z_MOVE_SUFFIX = /^(10,000,000 Volt Thunderbolt|All-Out Pummeling|Supersonic Skystrike|Acid Downpour|Tectonic Rage|Continental Crush|Savage Spin-Out|Never-Ending Nightmare|Corkscrew Crash|Inferno Overdrive|Hydro Vortex|Bloom Doom|Gigavolt Havoc|Shattered Psyche|Subzero Slammer|Devastating Drake|Black Hole Eclipse|Twinkle Tackle)$/;
+
+  /* The dex indexed by id, built once on the first name that needs it. Same answer the linear scan
+   * used to compute on every call — its `break` on the first matching key IS this first-wins `has`
+   * guard — so building it cannot change a lookup, only what a miss costs. */
+  let MOVE_BY_ID = null;
+  function moveIdIndex() {
+    if (MOVE_BY_ID) return MOVE_BY_ID;
+    MOVE_BY_ID = new Map();
+    const keys = Object.keys(RAW_MOVES || {});
+    for (let i = 0; i < keys.length; i++) {
+      const id = toID(keys[i]);
+      if (id && !MOVE_BY_ID.has(id)) MOVE_BY_ID.set(id, { raw: RAW_MOVES[keys[i]], name: keys[i] });
+    }
+    return MOVE_BY_ID;
+  }
+
+  /**
+   * One raw dex entry, own-key only. `RAW_MOVES` is the vendored library's plain object, so
+   * `RAW_MOVES['constructor']` (and `toString`, `valueOf`, `hasOwnProperty`, ...) answers from
+   * Object.prototype. Without this guard the lookup below built a MOVE out of that inherited value —
+   * `getMoveData('toString')` returned a fabricated zero-power Status move, and `'constructor'`
+   * returned the Object constructor wearing the same costume. `tests/util_smoke.js` pins all of it.
+   */
+  function rawMoveEntry(key) {
+    return (RAW_MOVES && Object.prototype.hasOwnProperty.call(RAW_MOVES, key)) ? RAW_MOVES[key] : null;
+  }
+
+  /** Diagnostics for the suites: what the lookup has remembered, and how big its index is. */
+  function moveLookupStats() {
+    return { entries: moveCache.size, idIndex: MOVE_BY_ID ? MOVE_BY_ID.size : 0, toIDEntries: toIDCache.size };
+  }
 
   function getMoveData(name) {
     if (!name) return null;
     const id = toID(name);
-    if (moveCache[id]) return moveCache[id];
-    const raw = RAW_MOVES && RAW_MOVES[name] ? RAW_MOVES[name] : (RAW_MOVES && RAW_MOVES[id] ? RAW_MOVES[id] : null);
-    let base = raw;
+    const cached = moveCache.get(id);
+    if (cached !== undefined) return cached;          // a remembered miss is a hit
+    let base = rawMoveEntry(name) || rawMoveEntry(id);
     if (!base) {
-      const keys = Object.keys(RAW_MOVES || {});
-      for (let i = 0; i < keys.length; i++) {
-        if (toID(keys[i]) === id) { base = RAW_MOVES[keys[i]]; name = keys[i]; break; }
-      }
+      const hit = moveIdIndex().get(id);
+      if (hit) { base = hit.raw; name = hit.name; }
     }
-    if (!base) { moveCache[id] = null; return null; }
+    if (!base) {
+      if (moveCache.size > 8192) moveCache.clear();
+      moveCache.set(id, null);
+      return null;
+    }
     const category = base.category || (base.bp ? 'Physical' : 'Status');
     const out = {
       name: name, id: id,
@@ -452,7 +509,8 @@
       isMultihit: !!base.multiHit || !!base.hits,
       isSpread: base.target === 'allAdjacent' || base.target === 'allAdjacentFoes'
     };
-    moveCache[id] = out;
+    if (moveCache.size > 8192) moveCache.clear();
+    moveCache.set(id, out);
     return out;
   }
   function movePriority(name) { const m = getMoveData(name); return m ? m.priority : 0; }
@@ -847,6 +905,7 @@
     itemName: itemName,
 
     getMoveData: getMoveData,
+    moveLookupStats: moveLookupStats,
     movePriority: movePriority,
     moveBasePower: moveBasePower,
     moveType: moveType,

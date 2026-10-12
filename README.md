@@ -27,7 +27,7 @@ Five minutes to a working mental model:
    * **Rule 2 — frozen ground truth.** `test_engine.js` pins five canonical damage rolls.
    * **Rule 4 — one config.** Every tunable lives in [`src/config.js`](src/config.js);
      `tests/config_check.js` inventories all of them and proves live mutation flows through.
-3. **Run everything:** `npm test` (26 suites, 2,039 checks, no runtime dependencies). Individual
+3. **Run everything:** `npm test` (26 suites, 2,051 checks, no runtime dependencies). Individual
    suites are plain `node tests/<name>.js`. CI runs the same command on every push. Two of the
    suites belong to the headless arena: `tests/tactical_puzzles.js` needs no install at all, and
    `tests/arena_check.js` prints an honest skip when `@pkmn/sim` is absent (`npm install` adds it —
@@ -54,21 +54,35 @@ worst case (6 bodies alive both sides, 4 moves + a full bench, hazards, Trick Ro
 The cost is `K worlds x our actions x their replies`, and every cell of that product is one
 `_payoff` (two damage rolls + one 128D evaluator pass) — up to **432 `_payoff` calls in a turn**.
 
-Measured on an Intel i7-9750H (2019 laptop), main realm, 2026-10:
+Measured on an Intel i7-9750H (2019 laptop), main realm, 2026-10-12 (calibration score ~403k ops/ms;
+the engine's own baselines on this machine span ~370–430k, so compare the score before comparing two
+runs):
 
 | board | p50 | p95 |
 | --- | --- | --- |
-| real turns of `test_log.txt` | ~28 ms | ~40 ms |
-| synthetic worst case | ~36 ms | ~40 ms |
+| real turns of `test_log.txt` | ~28 ms | ~47 ms |
+| synthetic worst case | ~42 ms | ~47 ms |
 
 `bench/bench.html` in a real Chromium under a Galaxy S24 device profile reports **~32 ms** for the
 worst case (`bench/bench-result.png` is that run). The projected S24 FE figure (Geekbench-6
-single-core scaling plus a thermal/browser penalty) is **~40–45 ms p95**.
+single-core scaling plus a thermal/browser penalty) is **~51 ms p95**.
 
-**This is ~3–4x the 10 ms target, and the benchmark is the instrument that says so.** The dominant
-cost is the 128D evaluator: `extractVector` rebuilds all 128 dims — including a 6x6 threat matrix —
-on every one of the 432 leaves of a turn, although the leaves differ only in HP. See the "known
-limits" section for what is not yet fixed.
+**Getting here was a profile, not a guess.** The same instrument reported a mean of **96.3 ms and a
+p95 of 132.7 ms** on the real boards before the move-lookup change, and a CPU profile of one turn put
+**52% of the entire decision** in the move dex: `getMoveData` re-scanned every key of the vendored
+table (with a `toID` per key) whenever it was asked for a name the table does not have — and
+`_payoff` was asking it about a switch action's SPECIES, 216 times in a single turn, at ~240 us a
+call against 0.28 us for a present name. Caching the misses, indexing the table by id and memoising
+`toID` took the mean to **30.7 ms** and the p95 to **47.5 ms**, bit-identically: the same 432
+`_payoff` cells, the same vector, the same rankings to 17 significant digits over 390 boards.
+See `CHANGELOG.md` for the A/B and the verification.
+
+**This is still ~5x the 10 ms target, and the benchmark is the instrument that says so.** The
+largest remaining cost is the 128D evaluator, now roughly a third of a turn and spread across
+`_bestOffenseMultiplier`'s 6x6 threat matrix, `computeSpeed` and `extractVector` — most of which
+rebuilds all 128 dims, including the threat matrix, on every one of the 432 leaves although the
+leaves differ only in HP. That is the next measured target; see the "known limits" section for what
+is not yet fixed.
 
 > Methodology note: do **not** benchmark through `tests/harness.js`. Its `vm` sandbox is a separate
 > V8 context and inflates the same board from ~40 ms to ~119 ms. `tests/perf_bench.js` loads into
@@ -171,7 +185,8 @@ src/content.js             pipeline orchestrator
 options/options.html|js    mobile settings page (provider, key, team, Elo scaler)
 tests/run_tests.js         end-to-end verification suite (218 checks)
 tests/rule_checks.js       deduction-rule checks driven through real protocol lines (23 checks)
-tests/util_smoke.js        util.js in isolation: dex access, item naming, type math, Speed maths (43 checks)
+tests/util_smoke.js        util.js in isolation: dex access, item naming, type math, Speed maths,
+                           the move-lookup cache (55 checks)
 tests/injected_bridge.js   the MAIN-world WebSocket bridge against a fake WebSocket/DOM, including
                            the poll dedupe and one-frame-one-forward capture (23 checks)
 tests/config_check.js      RULE 4: the config inventory, the frozen 128D layout, live mutation (71 checks)
@@ -274,8 +289,7 @@ ARCHITECTURE.md            frozen interface contract every module binds to
 ```
 node test_engine.js           #  57 checks: RULE 2 — five ground-truth damage rolls, frozen
 node tests/run_tests.js       # 218 checks: the whole pipeline in a DOM-less sandbox
-node tests/rule_checks.js     #  23 checks: the deductions, replayed from raw protocol lines
-node tests/util_smoke.js      #  43 checks: dex access, item naming, type math, Speed maths
+node tests/rule_checks.js     #  23 checks: the deductions, replayed from raw protocol linesnode tests/util_smoke.js       #  55 checks: dex access, item naming, type math, Speed maths, the lookup caches
 node tests/injected_bridge.js #  23 checks: the MAIN-world WebSocket bridge (fake WebSocket/DOM)
 node tests/config_check.js    #  71 checks: RULE 4 — the config is the only home for a heuristic
 node tests/blackbox_guard.js  #  28 checks: RULE 1 — no handwritten math, 50,616 stats diffed

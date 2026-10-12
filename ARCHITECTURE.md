@@ -87,9 +87,22 @@ ST.util.isChoiceItem(item) / ST.util.isZCrystal(item) / ST.util.isMegaStone(item
 ST.util.closestSpeciesName(input)  // fuzzy match for nicknames; null if nothing is close
 ST.util.tokenizeDetails('Great Tusk, L50, M') // {species, level, gender, shiny}
 ST.util.clamp/clampStat/toID/round2/formatPercent/deepClone/escapeHtml/mean/median
+ST.util.moveLookupStats()  // {entries, idIndex, toIDEntries} — diagnostics only; nothing in src/ reads it
 ST.util.CHOICE_ITEMS, ST.util.Z_CRYSTALS, ST.util.PROTECT_MOVES, ST.util.RECOVERY_MOVES,
 ST.util.PIVOT_MOVES, ST.util.HAZARD_MOVES, ST.util.TR_SETTERS, ST.util.STATS, ST.util.TYPES
 ```
+
+Three lookup rules a caller can rely on (each was a bug once, and each is pinned in
+`tests/util_smoke.js`):
+
+* **A miss is an answer.** `getMoveData` remembers "not a move" for a species, a typo, a Z-move the
+  table lacks — it answers `null` in O(1) every time, rather than re-scanning the table. The same is
+  true of `toID`, which is memoised behind the function (a caller cannot tell whether it hit).
+* **Own keys only.** `RAW_MOVES['constructor']` answers from `Object.prototype` in the vendored
+  bundle, so the raw lookup is guarded by `hasOwnProperty`: none of `constructor`, `toString`,
+  `valueOf`, `hasOwnProperty`, `__proto__` is a move, and none may be turned into one.
+* **A move name may arrive as a display name, an id, or neither.** Display name and id resolve to the
+  same cached object; only a real move ever produces one.
 
 ## 1. Canonical shapes
 
