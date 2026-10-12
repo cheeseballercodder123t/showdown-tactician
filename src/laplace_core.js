@@ -106,6 +106,12 @@
         accuracyFloor: cfgGet('laplace.volatility.accuracyFloor', 100),
         lethalChargeMaxAccuracy: cfgGet('laplace.volatility.lethalChargeMaxAccuracy', 90)
       }, options.volatility || {});
+      // Quiescence (ARCHITECTURE §6.7): price the turn the matrix itself does not see.
+      this.quiescence = Object.assign({
+        enabled: cfgGet('laplace.quiescence.enabled', true),
+        extendSetup: cfgGet('laplace.quiescence.extendSetup', true),
+        blockProtect: cfgGet('laplace.quiescence.blockProtect', true)
+      }, options.quiescence || {});
       // PP-stall gauge + format sentinel knobs (ARCHITECTURE §6.4 / §6.6).
       this.ppStallCfg = Object.assign({
         enabled: cfgGet('ppStall.enabled', true),
@@ -128,6 +134,19 @@
       this.tempo = options.tempo || (ST.TempoEngine ? new ST.TempoEngine({ damage: this.damage, trickRoom: this.trickRoom }) : null);
       this.veto = options.veto || (ST.BlunderVetoGuard ? new ST.BlunderVetoGuard({ damage: this.damage, trickRoom: this.trickRoom }) : null);
       this.sampler = options.sampler || (ST.WorldSampler ? new ST.WorldSampler({ K: this.K }) : null);
+      // The optional tiers. Each one ships `enabled: false` in config, so what actually runs by
+      // default is these constructors and nothing else: turning a tier ON is a config edit rather
+      // than a code change, and no tier is a file nobody consumes.
+      this.profiler = options.profiler || (ST.OpponentProfiler ? new ST.OpponentProfiler() : null);
+      this.scouting = options.scouting || (ST.InformationGain ? new ST.InformationGain({ damage: this.damage }) : null);
+      this.wincon = options.wincon || (ST.WinConditionBounty ? new ST.WinConditionBounty({ damage: this.damage }) : null);
+      this.endgame = options.endgameSolver || (ST.EndgameSolver
+        ? new ST.EndgameSolver({ damage: this.damage, evaluator: this.evaluator })
+        : null);
+      this._oppSeen = null;        // the opponent snapshot the profiler's observation feed compares to
+      this._lastOppMix = null;     // the equilibrium mix published for the turn just resolved
+      this._oppSwitchFactor = 1;   // this turn's column factor from the profiler (1 = inert)
+      this._winconPlan = null;     // this turn's win-condition plan (null = no bounty)
       this.lastReadout = null;
       this.turnCache = {};
     }
@@ -850,23 +869,33 @@
       return sim;
     }
 
-    _damageOf(attacker, defender, moveName, field, outgoing) {
+    _damageOf(attacker, defender, moveName, field, outgoing, opts) {
       if (!this.damage || !moveName) return null;
       try {
-        const res = this.damage.calculateDamage(attacker, defender, moveName, field);
+        const res = this.damage.calculateDamage(attacker, defender, moveName, field, opts);
         if (!res || res.failed) return null;
         return { move: moveName, minPercent: res.minPercent || 0, maxPercent: res.maxPercent || 0, avgPercent: res.avgPercent || 0, isOHKO: !!res.isOHKO, is2HKO: !!res.is2HKO };
       } catch (e) { return null; }
     }
 
-    _bestMove(mon, target, field) {
+    /**
+     * Their best move AND the damage it does. `_bestMove` is the name-only view of this, kept so
+     * the call sites that only want the label do not carry the result object around — and so the
+     * quiescence follow-up does not pay for the search twice (one pass per candidate move, not
+     * one to find the move and another to price the winner).
+     */
+    _bestMoveWithDamage(mon, target, field, opts) {
       const moves = (mon && mon.setMoves) || (mon && mon.liveSet && mon.liveSet.moves) || (mon && mon.revealedMoves) || [];
-      let best = null, bestDmg = -1;
+      let best = null, bestDmg = null;
       for (let i = 0; i < moves.length; i++) {
-        const res = this._damageOf(mon, target, moves[i], field, false);
-        if (res && res.avgPercent > bestDmg) { bestDmg = res.avgPercent; best = moves[i]; }
+        const res = this._damageOf(mon, target, moves[i], field, false, opts);
+        if (res && (!bestDmg || res.avgPercent > bestDmg.avgPercent)) { bestDmg = res; best = moves[i]; }
       }
-      return best || 'Struggle';
+      return { move: best || 'Struggle', damage: bestDmg };
+    }
+
+    _bestMove(mon, target, field, opts) {
+      return this._bestMoveWithDamage(mon, target, field, opts).move;
     }
 
     _hp(mon) {
@@ -879,7 +908,15 @@
 
     /* ------------------------------------------------------------- evaluation */
 
-    /** Payoff of (myAction vs oppAction) in a simulated 1-ply state. */
+    /**
+     * Payoff of (myAction vs oppAction) in a simulated 1-ply state.
+     *
+     * This is STILL one turn: the leaf is the board after both sides have acted once. What
+     * `laplace.quiescence` changes is the pricing of the two opponent replies the 1-ply model read
+     * as no-ops — their SETUP move (no damage, and before this no state change either, so "they
+     * click Dragon Dance" scored as a free hit for us) and their PROTECT (which blocks our move on
+     * the real board, so a line that KOs their body scored the lethal bonus through the shield).
+     */
     _payoff(myAction, oppAction, state, field) {
       const myActive = state.active && state.active.my;
       const oppActive = state.active && state.active.opp;
@@ -888,6 +925,30 @@
       let oppHp = this._hp(oppActive);
       let mySideMon = myActive;
       const events = [];
+
+      const q = this.quiescence;
+      const qOn = !!(q && q.enabled !== false);
+      const oppData = U.getMoveData(oppAction.name);
+      const oppUsesSetup = !!(qOn && q.extendSetup !== false && oppAction.kind === 'move' &&
+        oppData && oppData.isSetup);
+      // Their shield is a game rule, not a payoff term: a Protect that is up blocks our move.
+      const shielded = !!(qOn && q.blockProtect !== false &&
+        (oppAction.kind === 'protect' || (oppData && oppData.isProtect)));
+
+      // The stat stages their setup leaves them with, and whether they can pay for it: Belly Drum
+      // below half HP (Clangorous Soul below a third) FAILS, so a setup they cannot afford is the
+      // wasted turn it is, not a free boost.
+      let setupGain = null;
+      let setupHpCost = 0;
+      if (oppUsesSetup) {
+        const spec = U.setupBoosts(oppAction.name);
+        if (spec) {
+          const gain = {};
+          Object.keys(spec).forEach(function (k) { if (k !== 'hpCostPct') gain[k] = spec[k]; });
+          const cost = spec.hpCostPct || 0;
+          if (Object.keys(gain).length && oppHp > cost) { setupGain = gain; setupHpCost = cost; }
+        }
+      }
 
       if (myAction.kind === 'switch') {
         const incoming = this._switchTarget(state, myAction);
@@ -898,7 +959,9 @@
             incoming.currentBattleItem || incoming.confirmedItem || '', incoming.revealedAbility || '', haz || {});
           myHp = U.clamp(this._hp(incoming) - chip, 0, 100);
         }
-      } else {
+      } else if (!shielded) {
+        // Our move still lands on a turn they spend setting up — they are not attacking us yet.
+        // It does NOT land through a Protect.
         const dmg = this._damageOf(myActive, oppActive, myAction.name, field, true);
         if (dmg) {
           oppHp = U.clamp(oppHp - dmg.avgPercent, 0, 100);
@@ -909,6 +972,17 @@
       if (oppAction.kind === 'switch') {
         // Switched-out opponent survives; the new body is unscratched.
         oppHp = 100;
+      } else if (setupGain && oppHp > 0) {
+        // `oppHp > 0` is not a nicety. If our move already finished them THIS turn, there is no
+        // next turn for them: a fainted body does not keep a boost and does not attack again, so
+        // the extension must not invent the follow-up — which is exactly the "KO the setup user"
+        // line the whole feature exists to reward. (Their DAMAGING replies keep the pre-existing
+        // symmetric treatment, because who moves first is not modelled there either.)
+        const followUp = this._setupFollowUp(myAction, myActive, oppActive, mySideMon, setupGain,
+          setupHpCost, { oppHp: oppHp, myHp: myHp }, field);
+        oppHp = followUp.oppHp;
+        myHp = followUp.myHp;
+        events.push({ move: followUp.move, avgPercent: followUp.avgPercent, boosted: true });
       } else {
         const dmg = oppAction.name === 'Struggle'
           ? { avgPercent: this.struggleChipPercent, isOHKO: false }
@@ -918,16 +992,204 @@
         }
       }
 
-      const sim = this._leafState(state, mySideMon, oppActive, myHp, oppHp);
+      // The boost reaches the leaf only if it is still a LIVE fact: a body that ends this turn
+      // fainted keeps no stat stages, so stamping them there would let the evaluator's boost dims
+      // move a cell whose own board says the body is gone.
+      const applied = (setupGain && oppHp > 0) ? setupGain : null;
+      const sim = this._leafState(state, mySideMon, oppActive, myHp, oppHp,
+        applied ? { opp: applied } : null);
       let score = this.evaluator.evaluate(sim);
       // Terminal bonuses keep the leaf evaluator honest about KOs.
       if (oppHp <= 0) score += this.lethalBonus;
       if (myHp <= 0) score -= this.lethalBonus;
       if (oppAction.kind === 'switch' && myAction.kind === 'move') score += this.switchAteHitBonus;   // their switch ate our hit for free
+
+      // ---- the optional tiers, both inert unless their config section says otherwise ----
+      // The profiler's COLUMN factor: we are not facing the perfectly rational opponent fictitious
+      // play assumes, so their pivot lines carry proportionally more (or less) weight than the
+      // equilibrium gave them. The factor is exactly 1 when the tier is off or the evidence is
+      // thin, and `score * 1` is bit-identical to the payoff without this line.
+      if (this._oppSwitchFactor !== 1 && oppAction.kind === 'switch') score *= this._oppSwitchFactor;
+      // The win-condition bounty, paid when the body the MEASUREMENTS named as the one standing
+      // between us and the sweep is gone from the simulated board. This is the one tier that can
+      // outrank raw damage, which is exactly why it is capped in config and off by default.
+      if (this._winconPlan && this.wincon) {
+        const paid = this.wincon.bonus(this._winconPlan, this._faintedIds(sim));
+        if (paid) score += paid;
+      }
       return score;
     }
 
-    _leafState(state, myMon, oppMon, myHp, oppHp) {
+    /* ----------------------------------------------------------- optional tiers */
+
+    /**
+     * _tiers(state, worlds, myActions) -> { profile, scouting, wincon, endgame, feedError }
+     *
+     * Publishes what each optional tier says, and sets the two per-turn fields `_payoff` reads
+     * (`_oppSwitchFactor`, `_winconPlan`) — left at their inert values whenever a tier is off, so
+     * the default path through this method costs four constructor checks and nothing else.
+     */
+    _tiers(state, worlds, myActions) {
+      this._oppSwitchFactor = 1;
+      this._winconPlan = null;
+      const out = { profile: null, scouting: null, wincon: null, endgame: null, feedError: null };
+      // The observation feed runs BEFORE the profile is read: it scores what the opponent provably
+      // did last turn against the mix published for it. A feed bug must not cost a turn, so the
+      // failure is PUBLISHED on the readout rather than swallowed.
+      try { this._observeOpponent(state); } catch (e) { out.feedError = String((e && e.message) || e); }
+      if (this.profiler) {
+        out.profile = this.profiler.profile(state);
+        const factor = out.profile && typeof out.profile.switchFactor === 'number'
+          ? out.profile.switchFactor : 1;
+        if (isFinite(factor) && factor > 0) this._oppSwitchFactor = factor;
+      }
+      if (this.scouting && myActions && myActions.length) {
+        out.scouting = this.scouting.gainFor(myActions[0], state);
+      }
+      if (this.wincon) {
+        out.wincon = this.wincon.plan(state, worlds);
+        this._winconPlan = out.wincon;
+      }
+      if (this.endgame && this.endgame.enabled) {
+        out.endgame = this.endgame.solve(state, (worlds && worlds[0]) || null);
+      }
+      return out;
+    }
+
+    /**
+     * Record what the opponent PROVABLY did on the turn that just resolved, so the profiler has
+     * something real to score against the mix we published. Only two things are provable from the
+     * state alone, and nothing else is recorded:
+     *   - their ACTIVE BODY CHANGED while the body we last priced is still on their team and not
+     *     fainted — a faint also swaps the body, and a replacement is not a CHOICE, which is why
+     *     the fainted check is there;
+     *   - exactly ONE new move was revealed, which names the move they clicked.
+     * A profiler fed guesses is worse than one fed nothing, so every other turn is silent.
+     */
+    _observeOpponent(state) {
+      const opp = (state && state.active) ? state.active.opp : null;
+      const now = {
+        activeId: opp ? U.toID(opp.id || opp.species) : null,
+        revealed: this._revealedIds(opp)
+      };
+      const seen = this._oppSeen;
+      this._oppSeen = now;
+      if (!seen || !this.profiler) return null;
+      let kind = null;
+      let move = null;
+      if (now.activeId && seen.activeId && now.activeId !== seen.activeId) {
+        const team = state.oppTeam || [];
+        for (let i = 0; i < team.length; i++) {
+          const id = U.toID(team[i].id || team[i].species);
+          if (id !== seen.activeId) continue;
+          if (!team[i].fainted) kind = 'switch';   // it left the field ALIVE: that is a pivot
+          break;
+        }
+      }
+      if (!kind) {
+        const added = now.revealed.filter(function (id) { return seen.revealed.indexOf(id) === -1; });
+        if (added.length === 1) {
+          move = added[0];
+          const data = U.getMoveData(move);
+          kind = (data && data.isProtect) ? 'protect'
+            : (data && data.isSetup) ? 'setup'
+              : (data && data.isRecovery) ? 'recovery' : 'attack';
+        }
+      }
+      if (!kind) return null;
+      this.profiler.observe({ kind: kind, predictedFreq: this._predictedFreq(kind, move), turn: state.turn });
+      return { kind: kind, move: move };
+    }
+
+    /** The move ids we know a body has, from the lists the state manager maintains. */
+    _revealedIds(mon) {
+      const out = [];
+      const lists = mon ? [mon.revealedMoves, mon.activeStintMoves] : [];
+      for (let i = 0; i < lists.length; i++) {
+        const list = lists[i];
+        if (!Array.isArray(list)) continue;
+        for (let k = 0; k < list.length; k++) {
+          const id = U.toID(list[k]);
+          if (id && out.indexOf(id) === -1) out.push(id);
+        }
+      }
+      return out;
+    }
+
+    /**
+     * The frequency our LAST solve gave to the reply we now know they made. A switch observation is
+     * the whole switch MASS of the mix (the number the profiler's switchFactor is built to compare
+     * against), a named move is its own column, and null means the matrix never priced that reply —
+     * which the profiler records but refuses to score.
+     */
+    _predictedFreq(kind, move) {
+      const mix = this._lastOppMix;
+      if (!mix || !mix.length) return null;
+      if (kind === 'switch') {
+        let mass = 0, any = false;
+        for (let i = 0; i < mix.length; i++) {
+          if (mix[i].kind !== 'switch') continue;
+          any = true;
+          if (typeof mix[i].freq === 'number') mass += mix[i].freq;
+        }
+        return any ? mass : null;
+      }
+      if (move) {
+        for (let i = 0; i < mix.length; i++) {
+          if (mix[i].name && U.toID(mix[i].name) === move) return mix[i].freq;
+        }
+      }
+      return null;
+    }
+
+    /** The ids of every body fainted on a simulated board — the bounty's payout condition. */
+    _faintedIds(sim) {
+      const out = [];
+      const scan = function (list) {
+        for (let i = 0; list && i < list.length; i++) {
+          const m = list[i];
+          if (!m || !m.fainted) continue;
+          const id = U.toID(m.id || m.species);
+          if (id && out.indexOf(id) === -1) out.push(id);
+        }
+      };
+      scan(sim && sim.oppTeam);
+      scan(sim && sim.myTeam);
+      return out;
+    }
+
+    /**
+     * _setupFollowUp(...) -> { myHp, oppHp, move, avgPercent }
+     *
+     * The extra exchange a setup reply buys. They spend this turn boosting; on the next turn their
+     * best attack arrives from the BOOSTED state, and our line — the very move this row prices — is
+     * repeated. On a switch row there is no second hit: the body is still coming in.
+     *
+     * STATED APPROXIMATIONS, because a one-turn solver has no business implying more certainty:
+     *   - No speed order is modelled, so both second actions land. A KO either way still gets its
+     *     lethal bonus, but "who moves first" is NOT claimed.
+     *   - Their second action is their best move from the boosted state, priced by the damage
+     *     engine; the boost is passed to `calculateDamage` as an override, so stat stages, Choice
+     *     lock, weather and ability all run through the one calculator the engine already uses.
+     *   - One extension, not a tree: their Protect is not re-checked on the second turn.
+     */
+    _setupFollowUp(myAction, myActive, oppActive, mySideMon, gain, hpCostPct, hp, field) {
+      let oppHp = hpCostPct ? U.clamp(hp.oppHp - hpCostPct, 0, 100) : hp.oppHp;
+      let myHp = hp.myHp;
+      const asAttacker = { attacker: { boosts: gain } };
+      const best = this._bestMoveWithDamage(oppActive, mySideMon, field, asAttacker);
+      // Same stand-in as the main path when the body has no modelled attack at all.
+      const dmg = best.damage || (best.move === 'Struggle' ? { avgPercent: this.struggleChipPercent } : null);
+      if (dmg) myHp = U.clamp(myHp - dmg.avgPercent, 0, 100);
+      if (myAction.kind === 'move') {
+        const again = this._damageOf(myActive, oppActive, myAction.name, field, true,
+          { defender: { boosts: gain } });
+        if (again) oppHp = U.clamp(oppHp - again.avgPercent, 0, 100);
+      }
+      return { myHp: myHp, oppHp: oppHp, move: best.move, avgPercent: dmg ? dmg.avgPercent : 0 };
+    }
+
+    _leafState(state, myMon, oppMon, myHp, oppHp, extraBoosts) {
       const leaf = {
         myTeam: null,
         oppTeam: null,
@@ -940,16 +1202,26 @@
         mySide: state.mySide,
         oppSide: state.oppSide
       };
-      const cloneMon = function (mon, hp) {
+      const cloneMon = function (mon, hp, extra) {
         if (!mon) return null;
         const copy = Object.create(mon);
         copy.hp = hp;
         copy.hpPercent = hp;
         copy.fainted = hp <= 0;
+        // A prototype clone shares the source's `boosts` OBJECT, so a stat stage the quiescence
+        // extension adds has to become an OWN property — otherwise it would be written through to
+        // the live board. The merge is additive because the stage is a delta on the current table.
+        if (extra) {
+          const merged = {};
+          const base = mon.boosts || {};
+          Object.keys(base).forEach(function (k) { merged[k] = base[k]; });
+          Object.keys(extra).forEach(function (k) { merged[k] = (merged[k] || 0) + extra[k]; });
+          copy.boosts = merged;
+        }
         return copy;
       };
-      leaf.active.my = cloneMon(myMon, myHp);
-      leaf.active.opp = cloneMon(oppMon, oppHp);
+      leaf.active.my = cloneMon(myMon, myHp, extraBoosts && extraBoosts.my);
+      leaf.active.opp = cloneMon(oppMon, oppHp, extraBoosts && extraBoosts.opp);
       leaf.myTeam = (state.myTeam || []).map(function (m) {
         if (m === (state.active && state.active.my)) return leaf.active.my;
         return m;
@@ -990,6 +1262,11 @@
       const worlds = this.sampler
         ? this.sampler.sampleWorlds(state, ST.SetDatabase || null, opts.K || this.K)
         : [{ id: 'w0', team: state.oppTeam || [], sets: [], weight: 1, violations: [] }];
+
+      // The optional tiers, once per turn and BEFORE the matrix: two of them change a payoff (the
+      // profiler's column factor and the win-condition bounty) and the other two are readouts
+      // published on `lastReadout` below.
+      const tiers = this._tiers(state, worlds, myActions);
 
       const aggregate = {};
       const cellSum = [];      // cellSum[i][j]    = world-weighted payoff of our action i against their action j
@@ -1135,6 +1412,7 @@
       // A vetoed line must not absorb equilibrium frequency, so it is excluded from the solve
       // rather than being given a zero payoff.
       let nash = null;
+      let oppMix = null;
       const nashOn = !this.nash || this.nash.enabled !== false;
       if (nashOn && live.length > 1 && allOppActions.length > 0) {
         const sub = [];
@@ -1151,6 +1429,13 @@
         }
         for (let i = 0; i < ranked.length; i++) {
           if (ranked[i].isVetoed) ranked[i].confidence = 0;
+        }
+        // Publish the solved opponent mix column by column. Nothing inside the engine reads it on
+        // THIS turn; the observation feed does, next turn, to ask the question the profiler tier
+        // exists to score — what did the matrix expect them to do, and what did they actually do.
+        oppMix = [];
+        for (let j = 0; j < allOppActions.length; j++) {
+          oppMix.push({ name: allOppActions[j].name, kind: allOppActions[j].kind, freq: nash.oppStrategy[j] });
         }
       } else {
         this._softmaxConfidence(ranked, live, opts.temperature);
@@ -1170,10 +1455,16 @@
       }
 
       const elapsed = ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - t0;
+      this._lastOppMix = oppMix;
       this.lastReadout = {
         worlds: worlds,
         tempo: tempoVector,
         clock: this.lastOppPrior || { label: 'unknown', factor: 1, keepSwitchReplies: true },
+        profile: tiers.profile,
+        scouting: tiers.scouting,
+        wincon: tiers.wincon,
+        endgame: tiers.endgame,
+        oppStrategy: oppMix,
         ranked: ranked,
         myActions: myActions,
         elapsedMs: U.round1(elapsed),

@@ -82,6 +82,65 @@
   const SETUP_MOVES = new Set(['swordsdance', 'nastyplot', 'dragondance', 'calmmind', 'bulkup', 'quiverdance',
     'shellsmash', 'irondefense', 'amnesia', 'agility', 'rockpolish', 'shiftgear', 'clangoroussoul',
     'tidyup', 'victorydance', 'takeheart', 'growth', 'howl', 'workup', 'tailglow', 'bellydrum']);
+
+  /* What a setup move does to ITS USER. These are GAME RULES with a single correct value, like
+   * "Trick Room lasts 5 turns" or "Earthquake is 100 BP" — not heuristics, and not guesses about a
+   * species. They live here, beside SETUP_MOVES, because the vendored dex cannot answer the
+   * question: `calc.MOVES[9]` carries only what a DAMAGE calculator needs, and to a damage
+   * calculator a stat boost is an INPUT, not an effect, so `getMoveData('Dragon Dance')` knows the
+   * move is setup and nothing about the +1 Atk / +1 Spe it grants. Every entry below is one of the
+   * 21 SETUP_MOVES, so a move can never be classified as setup and then priced as a no-op.
+   *
+   * `hpCostPct` is the fraction of MAX HP the user pays (Belly Drum 50, Clangorous Soul 33); the
+   * move FAILS below that fraction (Showdown refuses it), and the caller treats a failed setup as
+   * the wasted turn it is rather than granting a free boost.
+   *
+   * NOT MODELLED, deliberately: weather- and screen-dependent variants (Growth is +1/+1 in clear
+   * weather and +2/+2 in sun). The no-weather value is the one below; the extension that consumes
+   * this table prices those as their base value instead of inventing a weather rule. */
+  const SETUP_BOOSTS = {
+    swordsdance: { atk: 2 },
+    nastyplot: { spa: 2 },
+    dragondance: { atk: 1, spe: 1 },
+    calmmind: { spa: 1, spd: 1 },
+    bulkup: { atk: 1, def: 1 },
+    quiverdance: { spa: 1, spd: 1, spe: 1 },
+    shellsmash: { atk: 2, spa: 2, spe: 2, def: -1, spd: -1 },
+    irondefense: { def: 2 },
+    amnesia: { spd: 2 },
+    agility: { spe: 2 },
+    rockpolish: { spe: 2 },
+    shiftgear: { atk: 1, spe: 2 },
+    clangoroussoul: { atk: 1, def: 1, spa: 1, spd: 1, spe: 1, hpCostPct: 33 },
+    tidyup: { atk: 1, spe: 1 },
+    victorydance: { atk: 1, def: 1, spe: 1 },
+    takeheart: { spa: 1, spd: 1 },
+    growth: { atk: 1, spa: 1 },
+    howl: { atk: 1 },
+    workup: { atk: 1, spa: 1 },
+    tailglow: { spa: 3 },
+    bellydrum: { atk: 6, hpCostPct: 50 }
+  };
+
+  const BOOST_KEYS = ['atk', 'def', 'spa', 'spd', 'spe', 'accuracy', 'evasion'];
+
+  /**
+   * setupBoosts(name) -> { atk?, ..., hpCostPct? } | null
+   * A copy, so a caller can merge it into a stat table without writing through the table above.
+   * Null for anything that is not one of the 21 SETUP_MOVES (an unknown move is not a setup).
+   */
+  function setupBoosts(name) {
+    const id = toID(name);
+    const spec = id && SETUP_BOOSTS[id];
+    if (!spec) return null;
+    const out = {};
+    for (let i = 0; i < BOOST_KEYS.length; i++) {
+      const k = BOOST_KEYS[i];
+      if (typeof spec[k] === 'number' && spec[k]) out[k] = spec[k];
+    }
+    if (typeof spec.hpCostPct === 'number') out.hpCostPct = spec.hpCostPct;
+    return out;
+  }
   const CHOICE_ITEMS = ['Choice Band', 'Choice Specs', 'Choice Scarf'];
   const CHOICE_IDS = new Set(['choiceband', 'choicespecs', 'choicescarf']);
   const TYPE_Z_CRYSTALS = ['Normalium Z', 'Fightinium Z', 'Flyinium Z', 'Poisonium Z', 'Groundium Z',
@@ -403,6 +462,10 @@
   function isDamagingMove(name) { const m = getMoveData(name); return !!m && !m.isStatus && m.basePower > 0; }
   function isProtectMove(name) { return PROTECT_MOVES.has(toID(name)); }
   function isRecoveryMove(name) { return RECOVERY_MOVES.has(toID(name)); }
+  function isSetupMove(name) {
+    const d = getMoveData(name);
+    return !!(d && d.isSetup);
+  }
   function is8PPRecoveryMove(name) { return RECOVERY_8PP.has(toID(name)); }
   function isPivotMove(name) { return PIVOT_MOVES.has(toID(name)); }
   function isHazardMove(name) { return HAZARD_MOVES.has(toID(name)); }
@@ -734,6 +797,9 @@
     WEATHER_BY_MOVE: WEATHER_BY_MOVE,
     weatherFamily: weatherFamily,
     SETUP_MOVES: SETUP_MOVES,
+    SETUP_BOOSTS: SETUP_BOOSTS,
+    setupBoosts: setupBoosts,
+    isSetupMove: isSetupMove,
     CHOICE_ITEMS: CHOICE_ITEMS,
     CHOICE_IDS: CHOICE_IDS,
     Z_CRYSTALS: Z_CRYSTALS,

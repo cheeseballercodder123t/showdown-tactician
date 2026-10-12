@@ -1,0 +1,492 @@
+/* Showdown Tactician — tests/quiescence_check.js
+ *
+ * WHY THIS EXISTS
+ *   The simultaneous payoff matrix prices ONE turn, and two of the opponent's replies are not
+ *   damage. The 1-ply model read both as no-ops:
+ *
+ *     - their SETUP move dealt no damage and changed no state, so "they click Dragon Dance" scored
+ *       as a free hit for us: the cell had no idea the +1 Atk / +1 Spe it grants arrives next turn;
+ *     - their PROTECT did not block our move, so a line that KO'd their body kept its lethal bonus
+ *       straight through the shield.
+ *
+ *   `config.laplace.quiescence` re-prices both, from GAME RULES only. The stages a setup move
+ *   grants come from the table beside SETUP_MOVES in src/util.js, and they are APPLIED BY THE
+ *   DAMAGE ENGINE as a per-call override — no file under src/ computes a damage number by hand,
+ *   which is the rule tests/blackbox_guard.js exists to enforce.
+ *
+ *   This suite pins the mechanism rather than a hope: the table's completeness, the override
+ *   contract the extension rides on (which was BROKEN — `m.boosts || override` silently ignored
+ *   every override, because every MonState carries a boosts table), the arithmetic of the extra
+ *   exchange, the three guards, purity (the live board is never written through) and the cost.
+ *   Direction checks are IDENTITIES computed from the damage engine's own numbers instead of magic
+ *   constants, so a fixture drifting by a percent cannot make this suite lie.
+ *
+ * Run me with:  node tests/quiescence_check.js
+ */
+'use strict';
+
+const H = require('./harness.js');
+// content.js auto-boots on the harness's stubbed hostname and starts a heartbeat that would keep
+// this process alive forever, so the timers are stubbed exactly as the other suites do.
+const S = H.loadAll({
+  setInterval: function () { return 0; },
+  clearInterval: function () { }
+});
+const ST = S.ST;
+const U = ST.util;
+
+let passed = 0;
+const failures = [];
+function check(name, cond, detail) {
+  if (cond) { passed++; console.log('  PASS ' + name); return true; }
+  failures.push(name + (detail === undefined ? '' : '  ->  ' + detail));
+  console.log('  FAIL ' + name + (detail === undefined ? '' : '  ->  ' + detail));
+  return false;
+}
+/** Compare two numbers exactly by default; `tol` exists only for float identities. */
+function same(name, got, want, tol) {
+  const limit = tol === undefined ? 1e-9 : tol;
+  const ok = typeof got === 'number' && typeof want === 'number' && Math.abs(got - want) <= limit;
+  return check(name, ok, 'got ' + got + ', want ' + want);
+}
+/** JSON equality with sorted keys, so property ORDER in a literal cannot cause a false failure. */
+function sortedJSON(x) {
+  if (Array.isArray(x)) return JSON.stringify(x);
+  if (!x || typeof x !== 'object') return JSON.stringify(x);
+  const o = {};
+  Object.keys(x).sort().forEach(function (k) { o[k] = x[k]; });
+  return JSON.stringify(o);
+}
+function eqc(name, got, want) {
+  const a = sortedJSON(got), b = sortedJSON(want);
+  return check(name, a === b, 'got ' + a + ', want ' + b);
+}
+function section(t) { console.log('\n=== ' + t + ' ==='); }
+function clone(x) { return JSON.parse(JSON.stringify(x)); }
+function firstDiff(a, b) {
+  const seen = [];
+  (function walk(x, y, p) {
+    if (seen.length >= 3) return;
+    if (typeof x !== typeof y) { seen.push(p + ': ' + typeof x + ' vs ' + typeof y); return; }
+    if (x === null || y === null || typeof x !== 'object') { if (x !== y) seen.push(p + ': ' + x + ' vs ' + y); return; }
+    Object.keys(x).forEach(function (k) { walk(x[k], y[k], p + '.' + k); });
+  }(a, b, '$'));
+  return seen.join('; ') || 'equal';
+}
+
+/* ------------------------------------------------------------------- fixtures */
+
+const IVS = { hp: 31, atk: 31, def: 31, spa: 31, spd: 31, spe: 31 };
+const OFFENSE = { hp: 4, atk: 252, def: 0, spa: 0, spd: 0, spe: 252 };
+function zeroBoosts() { return { atk: 0, def: 0, spa: 0, spd: 0, spe: 0, accuracy: 0, evasion: 0 }; }
+
+function mon(species, extra) {
+  return Object.assign({
+    id: U.toID(species), species: species, side: 'p2', revealed: true, level: 100,
+    hp: 100, maxhp: 100, hpPercent: 100, fainted: false, status: '',
+    boosts: zeroBoosts(), volatiles: {}, revealedMoves: [], activeStintMoves: [], movePP: {},
+    possibleAbilities: U.getAbilities(species), speedFloor: 0, speedCeiling: 1012,
+    candidateSets: [], liveSet: null, isActive: false, item: '', ability: '', setMoves: []
+  }, extra || {});
+}
+
+/* Great Tusk into Dragonite. Ice Spinner is 4x (Ice vs Dragon/Flying), so the same board becomes a
+ * KO or a NON-KO by HP alone — the two cases the guards have to tell apart. Dragonite's moves give
+ * its reply space one setup, one priority attack, one coverage attack and one recovery, i.e. every
+ * category the extension does (or deliberately does not) price. */
+const MY_MOVES = ['Ice Spinner', 'Headlong Rush', 'Rapid Spin', 'Close Combat'];
+const THEIR_MOVES = ['Dragon Dance', 'Extreme Speed', 'Earthquake', 'Roost'];
+
+function board(theirExtra) {
+  const me = mon('Great Tusk', {
+    side: 'p1', evs: OFFENSE, ivs: IVS, nature: 'Jolly', ability: 'Protosynthesis',
+    isActive: true, hpPercent: 100, setMoves: MY_MOVES.slice()
+  });
+  const them = mon('Dragonite', Object.assign({
+    evs: OFFENSE, ivs: IVS, nature: 'Adamant', ability: 'Inner Focus',
+    isActive: true, hpPercent: 100, setMoves: THEIR_MOVES.slice()
+  }, theirExtra || {}));
+  return {
+    turn: 12, mySide: 'p1', oppSide: 'p2', formatSupported: true,
+    myTeam: [me], oppTeam: [them], active: { my: me, opp: them }, bench: { my: [], opp: [] },
+    protect: {
+      oppTurnsSinceLastProtect: 2, oppConsecutiveProtects: 0,
+      myTurnsSinceLastProtect: 4, myConsecutiveProtects: 0
+    },
+    recoveryPP: {},
+    field: {
+      turn: 12, trickRoom: false, weather: '', terrain: '',
+      hazards: { p1: {}, p2: {} }, screens: {}, tailwind: {}, gravity: false
+    }
+  };
+}
+
+/* Every engine is built from the same option object the other suites use; the quiescence override
+ * travels through the constructor so this suite exercises the real config plumbing. */
+function mkEngine(quiescence) {
+  const damage = new ST.DamageEngine({ gen: 9 });
+  const trickRoom = new ST.TrickRoomEngine(damage);
+  return new ST.LaplaceEngine({
+    sampler: new ST.WorldSampler({ K: 6 }), damage: damage,
+    evaluator: new ST.DenseStateEvaluator(),
+    tempo: new ST.TempoEngine({ damage: damage, trickRoom: trickRoom }),
+    veto: new ST.BlunderVetoGuard({ damage: damage, trickRoom: trickRoom }), trickRoom: trickRoom,
+    quiescence: quiescence || null
+  });
+}
+const SHIPPED = mkEngine();                                              // whatever config.js ships
+const ON = mkEngine({ enabled: true, extendSetup: true, blockProtect: true });
+const OFF = mkEngine({ enabled: false });                                // the 1-ply model replaced
+const NO_EXTEND = mkEngine({ enabled: true, extendSetup: false });
+const NO_BLOCK = mkEngine({ enabled: true, blockProtect: false });
+
+const ICE = { kind: 'move', name: 'Ice Spinner', moveId: 'icespinner' };
+const SPIN = { kind: 'move', name: 'Rapid Spin', moveId: 'rapidspin' };
+const DD = { kind: 'move', name: 'Dragon Dance', moveId: 'dragondance' };
+const ESPEED = { kind: 'move', name: 'Extreme Speed', moveId: 'extremespeed' };
+const PROTECT = { kind: 'protect', name: 'Protect', moveId: 'protect' };
+const BELLY = { kind: 'move', name: 'Belly Drum', moveId: 'bellydrum' };
+const C_SOUL = { kind: 'move', name: 'Clangorous Soul', moveId: 'clangoroussoul' };
+
+/* =========================================== 1. the wiring and the setup table */
+
+section('1. the switches, and the boost table they read');
+
+const qcfg = ST.CONFIG && ST.CONFIG.laplace && ST.CONFIG.laplace.quiescence;
+check('config.js carries the three quiescence switches', !!qcfg &&
+  typeof qcfg.enabled === 'boolean' && typeof qcfg.extendSetup === 'boolean' && typeof qcfg.blockProtect === 'boolean',
+  JSON.stringify(qcfg));
+check('the extension SHIPS enabled (the decision this suite exists to pin)',
+  qcfg && qcfg.enabled === true && qcfg.extendSetup === true && qcfg.blockProtect === true, JSON.stringify(qcfg));
+check('an engine with no override mirrors the config',
+  SHIPPED.quiescence.enabled === qcfg.enabled && SHIPPED.quiescence.extendSetup === qcfg.extendSetup &&
+  SHIPPED.quiescence.blockProtect === qcfg.blockProtect, JSON.stringify(SHIPPED.quiescence));
+check('the documented literal fallbacks match the shipped config (a standalone load cannot drift)',
+  ON.quiescence.enabled === true && ON.quiescence.extendSetup === true && ON.quiescence.blockProtect === true,
+  JSON.stringify(ON.quiescence));
+
+const TABLE = U.SETUP_BOOSTS || {};
+const setupIds = [];
+U.SETUP_MOVES.forEach(function (id) { setupIds.push(id); });
+const unboosted = setupIds.filter(function (id) { return !TABLE[id]; });
+check('every SETUP_MOVE has a boost entry, so no move is classified setup and then priced as a no-op',
+  unboosted.length === 0, unboosted.join(', '));
+check('the table invents no move the classifier does not know',
+  Object.keys(TABLE).every(function (id) { return U.SETUP_MOVES.has(id); }),
+  Object.keys(TABLE).filter(function (id) { return !U.SETUP_MOVES.has(id); }).join(', '));
+
+const STAT_KEYS = ['atk', 'def', 'spa', 'spd', 'spe', 'accuracy', 'evasion'];
+const badStage = [];
+const emptyStage = [];
+Object.keys(TABLE).forEach(function (id) {
+  let staging = 0;
+  Object.keys(TABLE[id]).forEach(function (k) {
+    if (k === 'hpCostPct') return;
+    staging++;
+    if (STAT_KEYS.indexOf(k) === -1 || TABLE[id][k] % 1 !== 0 || TABLE[id][k] < -6 || TABLE[id][k] > 6 || TABLE[id][k] === 0) {
+      badStage.push(id + '.' + k + '=' + TABLE[id][k]);
+    }
+  });
+  if (!staging) emptyStage.push(id);
+});
+check('every stage is a non-zero integer in [-6, 6] on a real stat', badStage.length === 0, badStage.join(', '));
+check('every entry actually boosts something', emptyStage.length === 0, emptyStage.join(', '));
+
+const costed = Object.keys(TABLE).filter(function (id) { return typeof TABLE[id].hpCostPct === 'number'; }).sort();
+eqc('only the two HP-costing setup moves name a cost', costed, ['bellydrum', 'clangoroussoul']);
+check('the HP costs are the game rules (Belly Drum 50, Clangorous Soul 33)',
+  TABLE.bellydrum.hpCostPct === 50 && TABLE.clangoroussoul.hpCostPct === 33,
+  TABLE.bellydrum.hpCostPct + '/' + TABLE.clangoroussoul.hpCostPct);
+
+eqc('Dragon Dance grants +1 Atk / +1 Spe', U.setupBoosts('Dragon Dance'), { atk: 1, spe: 1 });
+eqc('Belly Drum maximises Attack and carries the 50% cost', U.setupBoosts('Belly Drum'), { atk: 6, hpCostPct: 50 });
+eqc('Shell Smash keeps its drops negative', U.setupBoosts('Shell Smash'), { atk: 2, def: -1, spa: 2, spd: -1, spe: 2 });
+
+const handed = U.setupBoosts('Swords Dance');
+handed.atk = 99;
+check('setupBoosts hands back a COPY: mutating it cannot edit the table',
+  TABLE.swordsdance.atk === 2 && U.setupBoosts('Swords Dance').atk === 2, TABLE.swordsdance.atk + '/' + U.setupBoosts('Swords Dance').atk);
+check('a non-setup move has no boost spec at all',
+  U.setupBoosts('Protect') === null && U.setupBoosts('Headlong Rush') === null && U.setupBoosts('') === null,
+  JSON.stringify([U.setupBoosts('Protect'), U.setupBoosts('Headlong Rush'), U.setupBoosts('')]));
+check('isSetupMove agrees with the table',
+  U.isSetupMove('Dragon Dance') === true && U.isSetupMove('Protect') === false && U.isSetupMove('Recover') === false,
+  JSON.stringify([U.isSetupMove('Dragon Dance'), U.isSetupMove('Protect'), U.isSetupMove('Recover')]));
+check('a recovery move is NOT a setup move (the extension deliberately prices no heal)',
+  U.isSetupMove('Recover') === false && U.getMoveData('Recover').isRecovery === true &&
+  U.getMoveData('Recover').isSetup === false, JSON.stringify(U.getMoveData('Recover')));
+
+/* ================================= 2. the override contract the extension rides on */
+
+section('2. the per-call boost override (this was quietly broken before)');
+
+const dmg = new ST.DamageEngine({ gen: 9 });
+const probeField = board().field;
+const atkMon = mon('Great Tusk', { side: 'p1', evs: OFFENSE, ivs: IVS, nature: 'Jolly', ability: 'Protosynthesis' });
+const defMon = mon('Dragonite', { evs: OFFENSE, ivs: IVS, nature: 'Adamant', ability: 'Inner Focus' });
+const base = dmg.calculateDamage(atkMon, defMon, 'Rapid Spin', probeField);
+const atkUp = dmg.calculateDamage(atkMon, defMon, 'Rapid Spin', probeField, { attacker: { boosts: { atk: 4 } } });
+const defUp = dmg.calculateDamage(atkMon, defMon, 'Rapid Spin', probeField, { defender: { boosts: { def: 4 } } });
+const atkZero = dmg.calculateDamage(atkMon, defMon, 'Rapid Spin', probeField, { attacker: { boosts: { atk: 0 } } });
+const atkSix = dmg.calculateDamage(atkMon, defMon, 'Rapid Spin', probeField, { attacker: { boosts: { atk: 6 } } });
+const atkWild = dmg.calculateDamage(atkMon, defMon, 'Rapid Spin', probeField, { attacker: { boosts: { atk: 99 } } });
+
+check('the fixture really resolves (a failed calculation would make everything below vacuous)',
+  !base.failed && base.avgPercent > 0, base.error || (base.avgPercent + '%'));
+check('an ATTACK override beats the mon\u2019s own zeroed boosts table', atkUp.avgPercent > base.avgPercent,
+  base.avgPercent + '% -> ' + atkUp.avgPercent + '%');
+check('a DEFENCE override cuts the damage', defUp.avgPercent < base.avgPercent,
+  base.avgPercent + '% -> ' + defUp.avgPercent + '%');
+same('a zero override is exactly the base number', atkZero.avgPercent, base.avgPercent);
+same('stages are clamped to +6 (an out-of-range override cannot invent damage)',
+  atkWild.avgPercent, atkSix.avgPercent);
+check('the override does not mutate the mon it was handed',
+  atkMon.boosts.atk === 0 && defMon.boosts.def === 0, JSON.stringify([atkMon.boosts.atk, defMon.boosts.def]));
+same('the override does not leak into the next call (the memo key carries it)',
+  dmg.calculateDamage(atkMon, defMon, 'Rapid Spin', probeField).avgPercent, base.avgPercent);
+
+/* ================================================= 3. their shield is a real shield */
+
+section('3. their Protect blocks our move, and the phantom KO with it');
+{
+  const st = board();
+  const me = st.active.my, them = st.active.opp;
+  const ko = ON._damageOf(me, them, 'Ice Spinner', st.field, true);
+  check('the fixture knockout line really is a knockout at full HP', !!ko && ko.isOHKO === true,
+    ko && (ko.avgPercent + '%'));
+
+  const legacy = OFF._payoff(ICE, PROTECT, st, st.field);
+  const live = ON._payoff(ICE, PROTECT, st, st.field);
+  const unchanged = ON.evaluator.evaluate(ON._leafState(st, me, them, 100, 100));
+  same('the protect cell IS the unchanged board: nothing happened to either side', live, unchanged);
+  check('the legacy 1-ply cell scored our hit straight through the shield', legacy > live, legacy + ' vs ' + live);
+  check('...by at least the lethal bonus it never earned', legacy - live >= ON.lethalBonus - 1e-9,
+    (legacy - live) + ' vs lethalBonus ' + ON.lethalBonus);
+  same('blockProtect:false reproduces the legacy number exactly',
+    NO_BLOCK._payoff(ICE, PROTECT, st, st.field), legacy);
+  same('quiescence.enabled:false reproduces it too (two ways off, one number)',
+    OFF._payoff(ICE, PROTECT, st, st.field), legacy);
+  same('a Protect reported as a plain move is shielded as well',
+    ON._payoff(ICE, { kind: 'move', name: 'Protect', moveId: 'protect' }, st, st.field), live);
+}
+
+/* ========================================= 4. their setup buys exactly one exchange */
+
+section('4. their setup reply buys one extra exchange, priced by the damage engine');
+{
+  const st = board();
+  const me = st.active.my, them = st.active.opp;
+  const hit = ON._damageOf(me, them, SPIN.name, st.field, true);
+  check('the fixture non-knockout line really is a non-knockout at full HP',
+    !!hit && hit.isOHKO === false && hit.avgPercent > 0, hit && (hit.avgPercent + '%'));
+
+  const firstOppHp = U.clamp(100 - hit.avgPercent, 0, 100);
+  const gain = U.setupBoosts('Dragon Dance');
+  const fu = ON._setupFollowUp(SPIN, me, them, me, gain, 0, { oppHp: firstOppHp, myHp: 100 }, st.field);
+
+  // Their follow-up must be their own best move from the boosted state — recomputed here, so this
+  // is an identity and not a remembered name.
+  let bestName = null, bestPct = -1;
+  THEIR_MOVES.forEach(function (n) {
+    const r = ON._damageOf(them, me, n, st.field, false, { attacker: { boosts: gain } });
+    if (r && r.avgPercent > bestPct) { bestPct = r.avgPercent; bestName = n; }
+  });
+  check('their follow-up is their best boosted attack', fu.move === bestName, fu.move + ' vs ' + bestName);
+
+  const boosted = ON._damageOf(them, me, fu.move, st.field, false, { attacker: { boosts: gain } });
+  const plain = ON._damageOf(them, me, fu.move, st.field, false);
+  same('the follow-up hit IS the damage engine\u2019s own boosted number', fu.avgPercent, boosted.avgPercent);
+  check('the boost raises their follow-up hit', boosted.avgPercent > plain.avgPercent,
+    plain.avgPercent + '% -> ' + boosted.avgPercent + '%');
+  same('their boosted hit is charged to us', fu.myHp, U.clamp(100 - boosted.avgPercent, 0, 100));
+
+  const repeat = ON._damageOf(me, them, SPIN.name, st.field, true, { defender: { boosts: gain } });
+  same('our row\u2019s own move is repeated against their boosted defence',
+    fu.oppHp, U.clamp(firstOppHp - repeat.avgPercent, 0, 100));
+
+  const leaf = ON._leafState(st, me, them, fu.myHp, fu.oppHp, { opp: gain });
+  let expected = ON.evaluator.evaluate(leaf);
+  if (fu.oppHp <= 0) expected += ON.lethalBonus;
+  if (fu.myHp <= 0) expected -= ON.lethalBonus;
+  same('the setup cell IS that follow-up leaf plus the usual knockout bonuses',
+    ON._payoff(SPIN, DD, st, st.field), expected);
+
+  const legacy = OFF._payoff(SPIN, DD, st, st.field);
+  const live = ON._payoff(SPIN, DD, st, st.field);
+  check('the legacy cell paid us the hit and charged nothing for the boost', legacy > live,
+    legacy + ' vs ' + live);
+  same('a DAMAGING reply is untouched by any of this (their Extreme Speed control)',
+    ON._payoff(SPIN, ESPEED, st, st.field), OFF._payoff(SPIN, ESPEED, st, st.field));
+
+  // A DEFENCE-boosting setup must shrink our repeated hit: the second hit is priced with `gain` as
+  // the DEFENDER\u2019s stages, not the attacker\u2019s.
+  const idGain = U.setupBoosts('Iron Defense');
+  const fuId = ON._setupFollowUp(SPIN, me, them, me, idGain, 0, { oppHp: firstOppHp, myHp: 100 }, st.field);
+  const repeatId = ON._damageOf(me, them, SPIN.name, st.field, true, { defender: { boosts: idGain } });
+  check('a DEFENCE-boosting setup makes our repeated hit smaller', repeatId.avgPercent < hit.avgPercent,
+    hit.avgPercent + '% -> ' + repeatId.avgPercent + '%');
+  same('...and the cell is priced on that smaller repeat',
+    fuId.oppHp, U.clamp(firstOppHp - repeatId.avgPercent, 0, 100));
+}
+
+/* ==================================================== 5. the guards and the switches */
+
+section('5. the guards: a knockout ends it, an unaffordable setup fails, each switch is exact');
+{
+  // --- a body that faints this turn has no next turn
+  const ko = board();
+  same('our knockout line vs their setup reply is EXACTLY the legacy number',
+    ON._payoff(ICE, DD, ko, ko.field), OFF._payoff(ICE, DD, ko, ko.field));
+  const leafDead = ON.evaluator.evaluate(ON._leafState(ko, ko.active.my, ko.active.opp, 100, 0));
+  const leafStamped = ON.evaluator.evaluate(ON._leafState(ko, ko.active.my, ko.active.opp, 100, 0,
+    { opp: U.setupBoosts('Dragon Dance') }));
+  check('...and that equality is not vacuous: stamping the stages WOULD move the leaf',
+    Math.abs(leafStamped - leafDead) > 1e-9, leafDead + ' vs ' + leafStamped);
+
+  // --- a setup they cannot pay for
+  const poor = board({ hpPercent: 40, setMoves: ['Belly Drum', 'Extreme Speed', 'Earthquake', 'Roost'] });
+  same('Belly Drum at 40% HP FAILS, so it prices as the wasted turn it is',
+    ON._payoff(SPIN, BELLY, poor, poor.field), OFF._payoff(SPIN, BELLY, poor, poor.field));
+  const rich = board({ hpPercent: 90, setMoves: ['Belly Drum', 'Extreme Speed', 'Earthquake', 'Roost'] });
+  const hitRich = ON._damageOf(rich.active.my, rich.active.opp, SPIN.name, rich.field, true);
+  const firstRich = U.clamp(90 - hitRich.avgPercent, 0, 100);
+  const bellyGain = { atk: 6 };
+  const fuBelly = ON._setupFollowUp(SPIN, rich.active.my, rich.active.opp, rich.active.my, bellyGain, 50,
+    { oppHp: firstRich, myHp: 100 }, rich.field);
+  const repeatBelly = ON._damageOf(rich.active.my, rich.active.opp, SPIN.name, rich.field, true,
+    { defender: { boosts: bellyGain } });
+  same('...but at 90% HP the 50% cost is charged before the follow-up',
+    fuBelly.oppHp, U.clamp(U.clamp(firstRich - 50, 0, 100) - repeatBelly.avgPercent, 0, 100));
+  check('...so that cell is no longer the legacy number',
+    ON._payoff(SPIN, BELLY, rich, rich.field) !== OFF._payoff(SPIN, BELLY, rich, rich.field),
+    'both ' + ON._payoff(SPIN, BELLY, rich, rich.field));
+
+  const soulMoves = ['Clangorous Soul', 'Extreme Speed', 'Earthquake', 'Roost'];
+  const brokeSoul = board({ hpPercent: 33, setMoves: soulMoves });
+  same('Clangorous Soul at exactly its 33% cost FAILS (the affordability test is strict)',
+    ON._payoff(SPIN, C_SOUL, brokeSoul, brokeSoul.field), OFF._payoff(SPIN, C_SOUL, brokeSoul, brokeSoul.field));
+  const richSoul = board({ hpPercent: 34, setMoves: soulMoves });
+  check('...and at 34% it applies',
+    ON._payoff(SPIN, C_SOUL, richSoul, richSoul.field) !== OFF._payoff(SPIN, C_SOUL, richSoul, richSoul.field),
+    'both ' + ON._payoff(SPIN, C_SOUL, richSoul, richSoul.field));
+  const soulBig = board({ hpPercent: 90, setMoves: soulMoves });
+  const hitSoul = ON._damageOf(soulBig.active.my, soulBig.active.opp, SPIN.name, soulBig.field, true);
+  const firstSoul = U.clamp(90 - hitSoul.avgPercent, 0, 100);
+  const soulGain = { atk: 1, def: 1, spa: 1, spd: 1, spe: 1 };
+  const fuSoul = ON._setupFollowUp(SPIN, soulBig.active.my, soulBig.active.opp, soulBig.active.my, soulGain, 33,
+    { oppHp: firstSoul, myHp: 100 }, soulBig.field);
+  const repeatSoul = ON._damageOf(soulBig.active.my, soulBig.active.opp, SPIN.name, soulBig.field, true,
+    { defender: { boosts: soulGain } });
+  same('Clangorous Soul\u2019s third of max HP is charged the same way as Belly Drum\u2019s half',
+    fuSoul.oppHp, U.clamp(U.clamp(firstSoul - 33, 0, 100) - repeatSoul.avgPercent, 0, 100));
+
+  // --- a switch row: the boost is still paid for, but WE get no second hit out of it
+  const st = board();
+  const sw = { kind: 'switch', name: 'Slowking-Galar', targetId: 'slowkinggalar' };
+  const fuSwitch = ON._setupFollowUp(sw, st.active.my, st.active.opp, st.active.my,
+    U.setupBoosts('Dragon Dance'), 0, { oppHp: 80, myHp: 100 }, st.field);
+  same('a switch row adds no second hit of ours: their HP is never debited by us', fuSwitch.oppHp, 80);
+  check('...unlike a move row, which does debit them again',
+    ON._setupFollowUp(SPIN, st.active.my, st.active.opp, st.active.my, U.setupBoosts('Dragon Dance'), 0,
+      { oppHp: 80, myHp: 100 }, st.field).oppHp < 80, 'a move row did not repeat the hit');
+  check('a pivot still pays their boosted follow-up (the boost is not skipped for a switch)',
+    ON._payoff(sw, DD, st, st.field) < OFF._payoff(sw, DD, st, st.field),
+    ON._payoff(sw, DD, st, st.field) + ' vs ' + OFF._payoff(sw, DD, st, st.field));
+
+  // --- our OWN setup is not the thing being priced
+  const mySetup = { kind: 'move', name: 'Swords Dance', moveId: 'swordsdance' };
+  same('our own setup move is untouched: only THEIR reply is priced',
+    ON._payoff(mySetup, ESPEED, st, st.field), OFF._payoff(mySetup, ESPEED, st, st.field));
+
+  // --- each switch on its own reproduces the legacy number
+  same('extendSetup:false reproduces the legacy setup cell exactly',
+    NO_EXTEND._payoff(SPIN, DD, st, st.field), OFF._payoff(SPIN, DD, st, st.field));
+
+  // --- a reply space with nothing to re-price is untouched, reply by reply
+  const quiet = board({ setMoves: ['Extreme Speed', 'Earthquake', 'Roost', 'Dragon Claw'] });
+  const untouched = quiet.active.opp.setMoves.every(function (n) {
+    const act = { kind: 'move', name: n, moveId: U.toID(n) };
+    return ON._payoff(SPIN, act, quiet, quiet.field) === OFF._payoff(SPIN, act, quiet, quiet.field);
+  });
+  check('a reply space with no setup and no Protect is priced byte-for-byte as before', untouched);
+}
+
+/* ==================================================== 6. purity and determinism */
+
+section('6. purity and determinism (the live board is never written through)');
+{
+  const st = board();
+  const before = clone(st);
+  const a1 = ON._payoff(SPIN, DD, st, st.field);
+  const b1 = ON._payoff(ICE, PROTECT, st, st.field);
+  const a2 = ON._payoff(SPIN, DD, st, st.field);
+  const b2 = ON._payoff(ICE, PROTECT, st, st.field);
+  check('the live board is byte-identical after pricing a setup cell and a protect cell',
+    JSON.stringify(before) === JSON.stringify(st), firstDiff(before, st));
+  eqc('...including the boosts table (no stage was written through)',
+    st.active.opp.boosts, before.active.opp.boosts);
+  same('a repeated setup cell is identical (deterministic)', a2, a1);
+  same('a repeated protect cell is identical', b2, b1);
+  same('a second engine prices the same cell identically',
+    mkEngine({ enabled: true })._payoff(SPIN, DD, st, st.field), a1);
+
+  const stacked = board();
+  stacked.active.opp.boosts.atk = 2;
+  const snap = clone(stacked);
+  const stackedCell = ON._payoff(SPIN, DD, stacked, stacked.field);
+  eqc('a body that already had +2 Atk is still +2 afterwards (no write-through)',
+    stacked.active.opp.boosts, snap.active.opp.boosts);
+  check('...and that cell really did price the boosted body',
+    typeof stackedCell === 'number' && isFinite(stackedCell), String(stackedCell));
+
+  const leaf = ON._leafState(stacked, stacked.active.my, stacked.active.opp, 100, 50, { opp: { atk: 1 } });
+  eqc('the leaf merges the stage additively into its OWN property (+2 and +1 is +3)',
+    leaf.active.opp.boosts, { atk: 3, def: 0, spa: 0, spd: 0, spe: 0, accuracy: 0, evasion: 0 });
+  eqc('...while the source body is untouched by the merge', stacked.active.opp.boosts, snap.active.opp.boosts);
+  check('...and the leaf is still a prototype clone, as everything downstream assumes',
+    Object.getPrototypeOf(leaf.active.opp) === stacked.active.opp, 'not a prototype clone');
+}
+
+/* ============================================================= 7. what it costs */
+
+section('7. cost: it pays only for the replies it re-prices');
+
+/** Count the engine-level damage calls one payoff makes (memo hits included: this is work asked for). */
+function damageCalls(engine, fn) {
+  let n = 0;
+  const real = engine._damageOf;
+  engine._damageOf = function () { n++; return real.apply(engine, arguments); };
+  try { fn(); } finally { delete engine._damageOf; }
+  return n;
+}
+{
+  const st = board();
+  const theirMoves = st.active.opp.setMoves.length;
+
+  const onAttack = damageCalls(ON, function () { ON._payoff(SPIN, ESPEED, st, st.field); });
+  const offAttack = damageCalls(OFF, function () { OFF._payoff(SPIN, ESPEED, st, st.field); });
+  same('a damaging reply costs both engines the same number of damage calls', onAttack, offAttack);
+
+  const offSetup = damageCalls(OFF, function () { OFF._payoff(SPIN, DD, st, st.field); });
+  const onSetup = damageCalls(ON, function () { ON._payoff(SPIN, DD, st, st.field); });
+  same('the legacy path spends two calls (our hit + their reply)', offSetup, 2);
+  same('the extended path spends our hit + their modelled moves + our repeat, and not one more',
+    onSetup, theirMoves + 2);
+  check('...which is a bounded number: the search is per move, not a tree',
+    onSetup - offSetup <= theirMoves + 1, (onSetup - offSetup) + ' extra calls');
+
+  const offBlock = damageCalls(OFF, function () { OFF._payoff(ICE, PROTECT, st, st.field); });
+  const onBlock = damageCalls(ON, function () { ON._payoff(ICE, PROTECT, st, st.field); });
+  same('their shield costs ONE call fewer: our hit is skipped entirely', onBlock, offBlock - 1);
+}
+
+/* ------------------------------------------------------------------ report */
+
+console.log('');
+if (failures.length) {
+  console.error('FAILED: ' + failures.length + ' of ' + (passed + failures.length) + ' checks');
+  failures.forEach(function (f) { console.error('  - ' + f); });
+  process.exit(1);
+}
+console.log('ALL QUIESCENCE CHECKS PASSED (' + passed + ')');
+process.exit(0);

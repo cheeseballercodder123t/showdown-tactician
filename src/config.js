@@ -68,6 +68,24 @@
         // 95% "never miss in practice" move cannot be branded a game-ender.
         lethalChargeMaxAccuracy: 90
       },
+      // Quiescence (the "setup punisher"). The simultaneous matrix prices ONE turn, and the two
+      // opponent replies that punish that blind spot were both priced as no-ops: a setup move
+      // deals no damage and (before this) changed no state, so "they click Dragon Dance" scored as
+      // a free hit for us; a Protect did not block our move either, so a line that KOs their body
+      // scored the lethal bonus through the shield. Both are re-priced here, from GAME RULES only
+      // — the boost they gain comes from the table in src/util.js and is applied by the damage
+      // engine's own calculator, never by a heuristic. `enabled: false` restores the raw 1-ply
+      // payoff bit-for-bit, the same way `nash.enabled` and `volatility.enabled` do.
+      quiescence: {
+        enabled: true,
+        // Their SETUP reply is extended one ply: they keep the boost their move grants, their best
+        // attack lands again from that boosted state, and the cell is scored on the resulting
+        // board instead of on a turn in which nothing happened. ONE extra exchange, not a tree.
+        extendSetup: true,
+        // Their PROTECT reply blocks OUR move this turn (a game rule). Without it the matrix
+        // credited us the hit anyway, lethal bonus included.
+        blockProtect: true
+      },
       // Mixed-strategy solver: fictitious play over the simultaneous payoff matrix. With it on,
       // `confidence` is the equilibrium FREQUENCY of the line (how often to click it), which
       // cannot be exploited by a patient opponent the way a single always-printed line can.
@@ -80,6 +98,59 @@
         // 0.006 at 2000, while a realistic 5x9 solve still costs ~0.22 ms at 2000 rounds
         // (vs ~0.035 ms at 240) — noise next to the damage engine. See tests/upgrades_check.js.
         iterations: 2000
+      },
+      // Scouting (information gain). The matrix scores HP, but early in a game INFORMATION is
+      // worth more than HP, and the engine already holds the measurement it needs: the opponent's
+      // surviving candidate sets and their weights (src/set_pruner.js + src/world_sampler.js).
+      // src/information_gain.js turns that pool into a Shannon entropy and prices what a move
+      // teaches us about it. `maxBounty` caps the payoff a single move may earn for information
+      // alone, and it is 0 while the tier is inert — a scouting bounty that has not been measured
+      // would change the ranking, and this repo adopts a policy only after a measurement.
+      scouting: {
+        enabled: false,
+        maxBounty: 0,
+        // Below this many bits of entropy there is nothing left to learn, so no bounty is paid.
+        minEntropy: 0.05
+      },
+      // Opponent profiling. Fictitious play solves for the equilibrium of a perfectly rational
+      // opponent; a ladder human is not one. src/opponent_profile.js watches how the opponent's
+      // observed replies deviate from the frequencies the engine's OWN matrix predicted and
+      // exposes ONE bounded factor, the way src/opponent_clock.js exposes its switch factor — a
+      // column re-weight on their switch replies, never a new payoff. Inert until adopted.
+      profile: {
+        enabled: false,
+        // Deviations are not scored until there are this many observations: a personality read
+        // off two turns is noise, and it would move the matrix.
+        minSamples: 6,
+        // Share of the observations that must be a pivot (or an attack) before the label flips.
+        flightThreshold: 0.25,
+        aggressionThreshold: 0.25,
+        // The factor is clamped to [1/maxFactor, maxFactor] so one bad read cannot dominate.
+        maxFactor: 2,
+        maxHistory: 24
+      },
+      // Win-condition bounty (backward chaining). The leaf evaluator scores a board holistically;
+      // src/wincon_bounty.js instead asks which enemy body is standing between us and the sweep —
+      // from MEASUREMENTS only (their best move into our team, our best move into them, never a
+      // species rule) — and pays a bounded bonus once that body is gone. Inert while
+      // `maxBounty` is 0, and `maxTargets` bounds how many bodies may be considered.
+      wincon: {
+        enabled: false,
+        maxBounty: 0,
+        maxTargets: 3
+      },
+      // The endgame solver. With few bodies left per side the branching factor collapses and a
+      // bounded alpha-beta search (src/endgame_solver.js) can be run instead of one turn of the
+      // matrix. It REFUSES outside its competence rather than guessing, and it is inert until it
+      // has been measured on positions whose answer is known.
+      endgame: {
+        enabled: false,
+        // Bodies alive per side at or below which the solver is allowed to run.
+        maxBodies: 2,
+        maxDepth: 10,
+        // Hard ceiling on explored nodes: the search stops and reports "budget", it never runs
+        // away on a phone.
+        nodeBudget: 20000
       }
     },
 

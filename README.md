@@ -196,6 +196,16 @@ tests/pressure_check.js    the PP-stall gauge and its 3-way pivot, the volatilit
                            Z-Move/Mega format sentinel (151 checks)
 tests/invariants_check.js  the Object.create leaf clones (no write-through), evaluateTurn purity,
                            and the simulate()/_mutableSim contract (17 checks)
+tests/quiescence_check.js  the setup punisher: the boost table, the one extra exchange, the three
+                           guards (71 checks)
+tests/profile_check.js     the opponent profiler: the deviation estimator, label/factor agreement,
+                           every refusal (80 checks)
+tests/entropy_check.js     the scouting entropy: Shannon arithmetic against hand-computed constants,
+                           the assumed response model, the bounty bounds (48 checks)
+tests/wincon_check.js      the win-condition bounty: the refusals, the body the measurements name,
+                           the payout (56 checks)
+tests/endgame_check.js     the endgame solver: every refusal, a proven mate, the Speed rail from
+                           both sides, the node budget (45 checks)
 tests/perf_bench.js        the per-turn decision-cost benchmark: real log replay + worst case,
                            calibration and a Geekbench-scaled device projection
 tests/run_all.js           runs every suite in sequence; `npm test` calls this
@@ -255,6 +265,11 @@ node tests/hud_check.js       # 175 checks: the seven HUD extras (stub DOM), the
 node tests/discrete_check.js  # 110 checks: the 16 discrete rolls, the exact KO count, EV pinning, residual order
 node tests/scout_check.js     #  78 checks: the scouting tool, the overlay, the pruner's re-weighting
 node tests/pressure_check.js  # 151 checks: the PP-stall pivot, the volatility charge, the format sentinel
+node tests/quiescence_check.js #  71 checks: the setup punisher, the boost table, the guards
+node tests/profile_check.js   #  80 checks: the opponent profiler (deviation, labels, clamping)
+node tests/entropy_check.js   #  48 checks: the scouting entropy and its assumed-response model
+node tests/wincon_check.js    #  56 checks: the win-condition bounty (refusals, payout)
+node tests/endgame_check.js   #  45 checks: the bounded endgame search and its honest rails
 ```
 
 The first suite loads every script in manifest order inside a DOM-less sandbox (so a load-order
@@ -378,6 +393,91 @@ through its own `veto.*` boolean (`veto.wastedHazardClear`, `veto.consecutivePro
 
 None of the five vetoes a signal it cannot read: an unreadable hazard record, a missing weather
 countdown and an opponent with no ability grounds all fall through to the next check.
+
+## Quiescence: the two replies the matrix used to price as no-ops
+
+The simultaneous matrix prices **one turn**, and two of the opponent's replies are not damage. Both
+used to be read as no-ops, in the two directions ladder games are actually decided by:
+
+* **Their setup move.** Dragon Dance deals no damage and changed no state, so "they click Dragon
+  Dance" scored as a free hit for us: the cell had no idea that the +1 Atk / +1 Spe it grants
+  arrives on the *next* turn. The engine walked into the sweep it had just paid itself to ignore.
+* **Their Protect.** A shield being up did not block our move either, so a line that KO'd their
+  body kept its lethal bonus straight through it: the matrix believed a Protect could not save
+  them.
+
+`laplace.quiescence` re-prices both, from **game rules only**. The stages a setup move grants live
+beside `SETUP_MOVES` in `src/util.js`, because the vendored dex cannot answer the question (it is a
+damage calculator, and to a damage calculator a stat boost is an *input*, not an effect), and they
+are applied by `ST.DamageEngine` as a per-call override. No file under `src/` computes a damage
+number by hand.
+
+* Their **setup** reply is extended exactly one exchange: they keep the stages their move grants,
+  their best attack lands again from that boosted state, and our row's own move is repeated. One
+  ply, not a tree.
+* Their **Protect** reply blocks our move for the turn.
+* `laplace.quiescence.enabled` (default `true`) is the master switch; `extendSetup` and
+  `blockProtect` are each switchable on their own. Any of the three set to `false` restores the raw
+  1-ply payoff **bit-for-bit**, the same contract `nash.enabled` and `volatility.enabled` keep.
+* **Guards, because a one-turn model has no business implying certainty.** If our move already
+  finished them this turn, the extension does not apply at all: a fainted body keeps no boost and
+  attacks no more, which is exactly the "KO the setup user" line the feature exists to reward. A
+  setup they cannot pay for fails in game (Belly Drum needs more than half HP, Clangorous Soul more
+  than a third), so it prices as the wasted turn it is. And their **recovery** replies are
+  deliberately *not* priced: Recover-class healing varies by move and by weather, so it stays the
+  legacy no-op rather than an invented number.
+* **Stated approximations.** No speed order is modelled, so both second actions land and "who moves
+  first" is never claimed; their Protect is not re-checked on the second turn; their *damaging*
+  replies keep the pre-existing symmetric treatment. The published score is the same zero-sum
+  quantity it always was.
+
+* **What it costs.** The extension buys damage calls, not `_payoff` calls: a cell whose reply is a
+  damaging move is untouched, a Protect cell makes one *fewer* call (our hit is skipped), and a setup
+  cell makes `theirModelledMoves + 1` more. Measured on a two-body board (5 rows x K=6) where their
+  reply space holds a setup move, the turn goes from **13.5 to 18.4 ms (+4.9 ms, +36%)**; the shipped
+  per-turn benchmark, run with the feature on by default, still reports p50 66.6 ms / p95 94.2 ms with
+  the same 432 `_payoff` calls per busy turn, and the suite pins the per-cell counts. It is a config
+  flag (`laplace.quiescence.enabled`) rather than a constant because that trade is a taste, not a fact.
+
+`tests/quiescence_check.js` (71 checks) pins the table's completeness, the override contract it
+rides on, the arithmetic of the extra exchange as identities against the damage engine's own
+numbers, the three guards, purity and the cost.
+
+## The four gated tiers
+
+Four more tiers exist, one file each, and **every one of them ships `enabled: false`**. That is not
+modesty: this repository's rule is that a change to what the engine *plays* earns its place by being
+measured, and none of these four has a measurement yet. What each one is, and what turning it on
+would mean:
+
+* **`src/opponent_profile.js`** (`laplace.profile`). Fictitious play solves for the equilibrium of a
+  perfectly rational opponent; a ladder human is not one. The profiler scores each observed reply
+  against the frequency the engine's **own** matrix published for that reply, and exposes one bounded
+  `switchFactor` that re-weights the opponent's pivot columns — exactly 1 until `minSamples` scored
+  observations exist, so it is inert on a fresh battle. The observation feed is deliberately narrow:
+  `_observeOpponent` records a pivot only when the body the engine priced is still on their team and
+  alive (a faint swaps the body too, and a replacement is not a choice) or a move when exactly one
+  new move was revealed, and stays silent otherwise. A profiler fed guesses is worse than one fed
+  nothing.
+* **`src/information_gain.js`** (`laplace.scouting`). Shannon entropy over the opponent's surviving
+  candidate sets, and the reduction a single observed answer would buy. Its one assumption is named
+  in the file: the answer is their best damaging move, and the sets eliminated are the ones whose
+  known moves exclude it. Wiring it exposed a fact worth stating: the entropy is a property of the
+  *pool*, identical for every one of our rows, so it is published as a readout and cannot move the
+  ranking until a row-dependent reveal model exists.
+* **`src/wincon_bounty.js`** (`laplace.wincon`). Names the body the **measurements** say stands
+  between us and our best line — our hit does not KO it, its answer hurts most — and pays a capped
+  bounty once that body is fainted on the simulated board. This is the one tier that can outrank raw
+  damage, which is exactly why it is capped in config and off.
+* **`src/endgame_solver.js`** (`laplace.endgame`). With few bodies left the branching factor collapses
+  and a bounded alpha-beta search runs instead of one turn of the matrix. Its value as specified is a
+  **readout** (`lastReadout.endgame`: the line and its `mateIn`), not a policy change: a proof of a
+  forced win is published for the HUD and the LLM to show. It refuses outside its competence, and the
+  rail that matters is Speed — when both orders agree the pair is decided, and one undecided pair
+  anywhere in the tree refuses the whole solve.
+
+All four publish on `lastReadout` (`profile`, `scouting`, `wincon`, `endgame`), which is what the HUD
+and the LLM bridge already read; `src/ui_overlay.js` does not render them yet.
 
 ## The six HUD extras
 

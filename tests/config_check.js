@@ -112,6 +112,16 @@ const INVENTORY = [
   'laplace.maxOppActions', 'laplace.vetoScore', 'laplace.lethalBonus', 'laplace.maxSwitchFallback',
   'laplace.struggleChipPercent', 'laplace.switchAteHitBonus',
   'laplace.nash.enabled', 'laplace.nash.iterations',
+  // quiescence (the setup punisher: the two replies the 1-ply matrix priced as no-ops)
+  'laplace.quiescence.enabled', 'laplace.quiescence.extendSetup', 'laplace.quiescence.blockProtect',
+  // the four gated policy tiers (each `enabled: false` until it has been measured, so a deleted
+  // key here is a module that silently stops being registered)
+  'laplace.scouting.enabled', 'laplace.scouting.maxBounty', 'laplace.scouting.minEntropy',
+  'laplace.profile.enabled', 'laplace.profile.minSamples', 'laplace.profile.flightThreshold',
+  'laplace.profile.aggressionThreshold', 'laplace.profile.maxFactor', 'laplace.profile.maxHistory',
+  'laplace.wincon.enabled', 'laplace.wincon.maxBounty', 'laplace.wincon.maxTargets',
+  'laplace.endgame.enabled', 'laplace.endgame.maxBodies', 'laplace.endgame.maxDepth',
+  'laplace.endgame.nodeBudget',
   // sampler
   'sampler.K', 'sampler.maxTeam', 'sampler.maxResample', 'sampler.minSetWeight',
   // usage overlay (the monthly chaos sync writes the DATA; these two are the knobs)

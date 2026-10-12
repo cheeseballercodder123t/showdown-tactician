@@ -889,3 +889,59 @@ read entirely off `state.formatLocks` + the reported bench size (never off a har
 `content.js` renders it from `_renderScreenExtras`; `MobileHUD.renderFormatSentinel(sentinel)` /
 `clearFormatSentinel()` draw `.st-format-sentinel[data-st-sentinel]`, and `clear()` tears it down
 with everything else.
+
+### 6.7 Quiescence: the setup punisher (`src/laplace_core.js`, `src/util.js`)
+
+An addition beyond the six the original brief listed, so it is numbered on its own rather than
+renumbering §6.4 to §6.6. The simultaneous matrix prices one turn, and two opponent replies are not
+damage. The 1-ply model read both as no-ops: their SETUP move (no damage, no state change, so the
+cell credited us a free hit while ignoring the stat stages the move grants) and their PROTECT (which
+on the real board blocks our move, so a line that KO'd them kept its lethal bonus through the
+shield).
+
+`config.laplace.quiescence = { enabled: true, extendSetup: true, blockProtect: true }`. Every switch
+is `false`-able, and each one on its own restores the raw 1-ply payoff bit-for-bit (the same
+`enabled:false` contract `nash`, `volatility` and the veto switches keep).
+
+`_payoff` classifies the reply from its own move data: `isProtect` (or an action `kind` of
+`'protect'`) skips our move entirely, and `isSetup` asks `U.setupBoosts(name)` for the stages the
+move grants its USER. That table lives beside `SETUP_MOVES` in `src/util.js` because the vendored
+dex cannot answer the question: `calc.MOVES[9]` carries what a damage calculator needs, and to a
+damage calculator a stat boost is an input, not an effect. The amounts are game rules with a single
+correct value (Dragon Dance is +1 Atk / +1 Spe), which is why a literal is allowed THERE and not
+anywhere a damage number would go: the stages reach the calculator as `options.attacker.boosts`, so
+the stat table, the Choice lock, the weather and the ability all run through `ST.DamageEngine`.
+
+`_setupFollowUp(myAction, myActive, oppActive, mySideMon, gain, hpCostPct, hp, field)` prices the ONE
+extra exchange and returns `{ myHp, oppHp, move, avgPercent }`:
+
+```
+gain   = U.setupBoosts(theirMove)              // +1 Atk / +1 Spe for Dragon Dance, etc.
+oppHp -= hpCostPct                             // Belly Drum 50, Clangorous Soul 33
+myHp  -= their best attack WITH `gain`         // the calculator's own number, not a model
+oppHp -= our row's move AGAIN, `gain` as the DEFENDER's stages
+```
+
+Our row's move is the move being priced, so it is the one repeated; theirs is their best attack from
+the boosted state. A switch row has no second hit of ours (the body is still coming in), though it
+still pays their follow-up.
+
+`_leafState(state, my, opp, myHp, oppHp, extraBoosts)` takes the stages in `{ my, opp }` form and
+merges them ADDITIVELY into an own `boosts` property on the `Object.create` clone. That own property
+is load-bearing: the clones share nested objects by reference by design (pinned in
+`tests/invariants_check.js`), so a stage written onto the shared table would land on the live board.
+
+Guards, each pinned by `tests/quiescence_check.js`:
+
+* `oppHp > 0`: a body that ends the turn fainted has no next turn, so neither the follow-up nor the
+  stages reach the leaf. This is the "KO the setup user" line the feature exists to reward, and
+  stamping stages on a dead body would let the evaluator's boost dims move a cell whose own board
+  says the body is gone.
+* `oppHp > hpCostPct`: a setup the opponent cannot pay for fails in game, so it prices as the wasted
+  turn it is (Belly Drum at 50% or below, Clangorous Soul at a third or below).
+* Recovery replies are NOT priced: heal amounts vary by move and by weather, so `isRecovery` stays a
+  no-op rather than an invented number.
+
+Stated approximations (they are repeated at the call site): no speed order is modelled, so both
+second actions land and "who moves first" is never claimed; their Protect is not re-checked on the
+second turn; their damaging replies keep the pre-existing symmetric treatment.

@@ -177,7 +177,15 @@
       if (typeof m.toxicCounter === 'number' && m.toxicCounter > 0 && !status) status = 'tox';
       if (opts[overrideKey] && opts[overrideKey].status !== undefined) status = opts[overrideKey].status;
 
-      let boosts = m.boosts || (opts[overrideKey] && opts[overrideKey].boosts);
+      // Explicit per-call override wins, exactly as this descriptor's own contract says. The old
+      // form (`m.boosts || override`) read the mon's table FIRST, and every MonState carries one
+      // (state_manager seeds all seven keys to zero), so a boost override was silently ignored for
+      // every real caller and only ever applied to a mon that had no boosts at all. That made it
+      // impossible to price a stat stage the mon does not have YET — which is the whole question
+      // `_payoff`'s setup extension asks ("what does their Attack look like after they set up?").
+      let boosts = (opts[overrideKey] && opts[overrideKey].boosts !== undefined)
+        ? opts[overrideKey].boosts
+        : m.boosts;
 
       // Supreme Overlord / Last Respects: the state manager stamps `alliesFainted` onto every
       // MonState, so the count is real rather than assumed. Without it the library computes
