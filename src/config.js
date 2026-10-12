@@ -86,6 +86,39 @@
         // credited us the hit anyway, lethal bonus included.
         blockProtect: true
       },
+      // Comeback mode (prospect theory on the risk dial — see laplace_core._comebackScale). Scales
+      // the volatility charge by where the 128D evaluator puts the board: sharpened when we are
+      // ahead (minimum variance), softened when we are behind (we need the swing). Ships OFF; the
+      // margins are in the evaluator's own units (evaluator.scale is 1000, so +/-300 is a clear
+      // lead either way).
+      comeback: {
+        enabled: false,
+        winMargin: 300,                 // board score at or above this reads as winning
+        lossMargin: -300,               // ...at or below this reads as losing
+        winChargeScale: 2,              // sharpen the miss charge while ahead
+        lossChargeScale: 0.4            // soften it while behind
+      },
+      // Turn urgency (patience decay — see laplace_core._urgencyDelta). Past `startTurn` a
+      // COMMITTING line gains a bounded bonus and a PASSIVE line takes a bounded malus, ramping to
+      // the cap at `rampTurn` and multiplied by `breakoutScale` at `breakoutTurn`.
+      //
+      // ADOPTED 2026-10-12 on the config-flag ablation, the only one of the four newest tiers to
+      // clear the gate: 60 battles per arm across the three league personas on a shared seed,
+      // paired bootstrap (2000 resamples) on the win indicator — win rate 68.3% -> 96.7%, delta
+      // +28.3 points, 95% CI [+18.3, +40.0], and the 100-turn cap ties collapsed from 17/60 to
+      // 1/60 (p90 game length 101 -> 89). `tools/run_ablation.js --features urgency` reproduces it.
+      // The three sibling tiers (clock.ratingBands, laplace.comeback, pruner.abilityDeduction.
+      // absenceRules) all measured flat and stay OFF.
+      urgency: {
+        enabled: true,
+        startTurn: 25,                  // no effect at all before this turn
+        rampTurn: 60,                   // the ramp reaches its cap here
+        breakoutTurn: 50,               // from here the delta is multiplied by breakoutScale
+        maxBonus: 120,                  // cap on the committing-line bonus
+        breakoutScale: 2,               // breakout multiplier past breakoutTurn
+        minBasePower: 60,               // a damaging move at or above this base power "commits"
+        passiveMalus: 40                // cap on the passive-line penalty
+      },
       // Mixed-strategy solver: fictitious play over the simultaneous payoff matrix. With it on,
       // `confidence` is the equilibrium FREQUENCY of the line (how often to click it), which
       // cannot be exploited by a patient opponent the way a single always-printed line can.
@@ -343,6 +376,20 @@
         normal: 1.0,
         agonised: 1.6,                // they burned the timer: a safe pivot gets more likely
         unknown: 1.0
+      },
+      // Elo-adaptive switch prior. The opponent's rating is READ from the protocol, never guessed,
+      // and folded into the SAME single number the solver consumes (switchFactor), so a build with
+      // this family off is bit-for-bit unchanged. A mid-ladder player rarely double-switches, so
+      // their pivot columns deserve less weight; a high-ladder one pivots constantly. These bands
+      // are PRIORS like the deliberation factors above — unvalidated heuristics — so the whole
+      // family ships OFF until a replay corpus can measure it.
+      ratingBands: {
+        enabled: false,
+        low: 1350,                    // at or below this rating: `lowFactor`
+        high: 1650,                   // at or above this rating: `highFactor`
+        lowFactor: 0.05,              // below switchKeepThreshold, so their pivots leave the matrix
+        midFactor: 1.0,               // identity: the band changes nothing in the middle
+        highFactor: 1.6
       }
     },
 
@@ -445,7 +492,11 @@
       // against the same probe defender, with `alliesFainted` = fallen vs 0), never modelled,
       // because RULE 1 forbids writing the ability's own rule down here.
       overlord: { probeMove: 'Kowtow Cleave', probeDefender: 'Great Tusk' },
-      receipt: { maxDamageRows: 5, copyLabel: 'Copy Summary' }
+      receipt: { maxDamageRows: 5, copyLabel: 'Copy Summary' },
+      // The Turn-0 lead advisory card (src/laplace_core.js leadAdvisory + src/content.js at
+      // `|teampreview|`). Unlike the risk-tuning tiers this is a MEASUREMENT — the evaluator scores
+      // each pair of bodies — so it ships ON; `enabled: false` suppresses it entirely.
+      leadAdvisory: { enabled: true }
     },
 
     /* --------------------------------------------------------------------- llm */
@@ -514,6 +565,21 @@
       scout: {
         enabled: true,
         maxBend: 0.5
+      },
+      // Ability deduction via negative space (src/set_pruner.js, tables in src/util.js). Each rule
+      // turns something the log PRINTED into an elimination, in the same spirit as the item rules
+      // above: the status a body carries, and damage only a grounded body can take, are both
+      // positive evidence against the candidate abilities that would have prevented them.
+      // `absenceRules` is the one that reasons from a MISSING announcement (Intimidate or a
+      // weather/terrain surge that never fired on switch-in). It ships OFF because Neutralizing
+      // Gas and similar suppression can silence that announcement, so it needs suppression
+      // tracking and a measurement before it is allowed to eliminate anything. `enabled` is the
+      // master switch; the three sub-knobs let one family be turned off on its own.
+      abilityDeduction: {
+        enabled: true,
+        statusRules: true,          // an observed status disproves the abilities that block it
+        groundRules: true,          // grounded-only damage disproves Levitate / Earth Eater
+        absenceRules: false         // a switch-in ability that never fired disproves its sets
       }
     },
 

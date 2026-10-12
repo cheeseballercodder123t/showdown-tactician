@@ -77,6 +77,10 @@ function printUsage(out) {
     '  --mutate             Fuzz the persona team (item/EV/coverage mutation)',
     '  --harvest            Synthesize a regression puzzle for every loss',
     '  --seed <n>           Base RNG seed (default: ' + DEFAULT_SEED + ')',
+    '  --set <path=value>   Patch a config.js tunable for this run (repeatable). The path must',
+    '                       ALREADY exist in config.js, so a typo fails loudly instead of',
+    '                       measuring nothing. Scalars only: true/false/null/number/string.',
+    '                       e.g. --set laplace.nash.enabled=false --set veto.redundantField=false',
     '  --max-turns <n>      Turn cap per battle (default: 100)',
     '  --replay <file>      Replay log for crucible mode (default: test_log.txt)',
     '  --mutate-rate <r>    Mutation probability per Pokemon (default: ' + MUTATION_RATE + ')',
@@ -92,7 +96,7 @@ function parseArgs(argv) {
   const opts = {
     battles: 100, mode: 'crucible', agent: 'all', mutate: false, harvest: false,
     seed: DEFAULT_SEED, maxTurns: 100, replay: null, mutateRate: MUTATION_RATE,
-    json: null, quiet: false, help: false
+    json: null, quiet: false, help: false, sets: []
   };
   const need = function (flag, value) {
     if (value === undefined) throw new SetupError(flag + ' needs a value');
@@ -108,6 +112,7 @@ function parseArgs(argv) {
       case '--max-turns': opts.maxTurns = Number(need(a, argv[++i])); break;
       case '--replay': opts.replay = String(need(a, argv[++i])); break;
       case '--mutate-rate': opts.mutateRate = Number(need(a, argv[++i])); break;
+      case '--set': opts.sets.push(String(need(a, argv[++i]))); break;
       case '--json': opts.json = String(need(a, argv[++i])); break;
       case '--mutate': opts.mutate = true; break;
       case '--harvest': opts.harvest = true; break;
@@ -188,6 +193,60 @@ function distribute(total, buckets) {
   const rem = total % buckets;
   for (let i = 0; i < buckets; i++) out.push(base + (i < rem ? 1 : 0));
   return out;
+}
+
+/* -------------------------------------------------------------- config patching */
+
+/**
+ * Parse a `--set` value. Only the scalars config.js actually stores are inferred and anything
+ * else stays a string, so `--set x=maybe` cannot silently become NaN or `0`.
+ */
+function parseConfigValue(raw) {
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+  if (raw === 'null') return null;
+  if (/^-?\d+(\.\d+)?$/.test(raw)) return Number(raw);
+  return raw;
+}
+
+function formatConfigValue(v) {
+  return v === null ? 'null' : (typeof v === 'string' ? JSON.stringify(v) : String(v));
+}
+
+/**
+ * applyConfigPatch(ST, sets) -> [{ path, from, to }]
+ *
+ * WHY THE LEAF MUST ALREADY EXIST: a benchmark that toggles a MISSPELT flag measures nothing and
+ * then reports it as "neutral", which is the worst possible failure for an ablation runner. So an
+ * unknown path is a SetupError rather than a new key — config.js is the one place tunables live,
+ * and a path that is not in it is a typo. The same goes for every intermediate section.
+ */
+function applyConfigPatch(ST, sets) {
+  const config = ST && ST.CONFIG;
+  if (!config) throw new SetupError('config.js is not loaded in the engine sandbox — cannot apply --set');
+  const applied = [];
+  (sets || []).forEach(function (entry) {
+    const at = String(entry).indexOf('=');
+    if (at <= 0) throw new SetupError('--set needs <path>=<value>, got "' + entry + '"');
+    const path = String(entry).slice(0, at).trim();
+    const value = parseConfigValue(String(entry).slice(at + 1).trim());
+    const parts = path.split('.');
+    let node = config;
+    for (let i = 0; i < parts.length - 1; i++) {
+      const prefix = parts.slice(0, i + 1).join('.');
+      if (node[parts[i]] === undefined) throw new SetupError('--set ' + path + ': "' + prefix + '" is not in config.js');
+      if (typeof node[parts[i]] !== 'object' || node[parts[i]] === null) {
+        throw new SetupError('--set ' + path + ': "' + prefix + '" is a value, not a config section');
+      }
+      node = node[parts[i]];
+    }
+    const leaf = parts[parts.length - 1];
+    if (node[leaf] === undefined) throw new SetupError('--set ' + path + ': not in config.js (nothing to patch)');
+    const from = node[leaf];
+    node[leaf] = value;
+    applied.push({ path: path, from: from, to: value });
+  });
+  return applied;
 }
 
 function latencyMs(t0) {
@@ -431,6 +490,14 @@ async function runOneBattle(ctx, personaId, index) {
     record.aborted = !!report.aborted;
     record.logLines = (report.fullLog || []).length;
     record.battleErrors = (report.errors || []).length;
+    /* How much attrition a battle actually had, counted from the omniscient log rather than
+     * inferred. A game that runs to the turn cap with 4 of 12 bodies down is a STANDOFF — neither
+     * side could break through — while one that caps with 10 down is something else entirely. The
+     * ablation needs the distinction to say anything useful about a 100-turn tie, and counting
+     * `|faint|` lines is the only way to get it without touching the sim's internals. */
+    record.faints = (report.fullLog || []).filter(function (l) {
+      return String(l).indexOf('|faint|') === 0;
+    }).length;
   }
   record.engineEmptyRankings = engineAgent.stats.emptyRankings;
   record.engineFallbacks = engineAgent.stats.fallbacks;
@@ -526,6 +593,11 @@ function renderSummary(summary, ctx, options) {
   console.log('  mode: ' + options.mode + (ctx.mode !== options.mode ? c('yellow', ' (fell back to full)') : '') +
     ' | battles: ' + t.battles + ' | seed: ' + options.seed + ' | max turns: ' + options.maxTurns);
   console.log('  teams: engine=' + ctx.engineTeamKey + (options.mutate ? ', persona mutated at rate ' + options.mutateRate : ''));
+  if (ctx.appliedSets && ctx.appliedSets.length) {
+    console.log('  config patch: ' + ctx.appliedSets.map(function (s) {
+      return s.path + '=' + formatConfigValue(s.to);
+    }).join(', '));
+  }
   if (ctx.crucible) {
     console.log('  crucible: ' + ctx.crucible.source + ' turn ' + ctx.crucible.turn + ' (' + ctx.crucible.reason + ')' +
       (t.fallbacks ? c('yellow', ' | ' + t.fallbacks + ' battle(s) fell back to full') : ''));
@@ -549,6 +621,26 @@ async function main(argv) {
   const notes = [];
 
   const bridge = loadArenaModule('engine_bridge.js', 'the engine session');
+  // The config patch goes in BEFORE the first session is constructed, and for the modules that
+  // capture their tunables while the sandbox is LOADED (src/set_pruner.js and its ability-deduction
+  // switches) it must go in before those files are evaluated at all — so it is handed to
+  // loadHarness, which applies it the moment src/config.js has run. Patching after the harness
+  // returns would leave those constants stale and turn the flag into a measurement of nothing.
+  const appliedSets = (options.sets && options.sets.length)
+    ? (bridge.loadHarness({ setArgs: options.sets, applyPatch: applyConfigPatch }).appliedSets || [])
+    : [];
+  // A --set that did not reach the sandbox must be a SETUP ERROR. The echo is produced by the
+  // mid-load hook, which is keyed on `src/config.js` still being the file its manifest entry names;
+  // if that ever stopped matching, the run would otherwise ship a plausible report of the SHIPPED
+  // config wearing a variant's label. The ablation runner checks the echo it reads back, and this is
+  // the same check for a standalone `node tools/run_arena.js --set ...`.
+  if (options.sets && options.sets.length && appliedSets.length !== options.sets.length) {
+    throw new SetupError('applied ' + appliedSets.length + ' of ' + options.sets.length +
+      ' config flags — refusing a run that would not measure what it claims');
+  }
+  appliedSets.forEach(function (s) {
+    notes.push('config: ' + s.path + ' ' + formatConfigValue(s.from) + ' -> ' + formatConfigValue(s.to));
+  });
   const teamsMod = loadArenaModule('teams.js', 'sample teams and legality validation');
   const simRunner = loadArenaModule('sim_runner.js', 'driving @pkmn/sim');
   const league = loadArenaModule('league_agents.js', 'the three adversarial personas');
@@ -683,7 +775,7 @@ async function main(argv) {
     personaTeams: personaTeams,
     personaPacked: function (id) { return personaPacked[id]; },
     baseSeed: options.seed, useColor: useColor, harvested: 0, harvestFailures: 0, fallbacks: 0,
-    notes: notes
+    appliedSets: appliedSets, notes: notes
   };
 
   if (!options.quiet && useColor) {
@@ -730,6 +822,7 @@ async function main(argv) {
     const payload = {
       generatedBy: 'tools/run_arena.js', generatedAt: new Date().toISOString(),
       options: options, mode: mode, formatId: formatId, engineTeamKey: ctx.engineTeamKey,
+      appliedSets: ctx.appliedSets,
       crucible: crucible ? { source: crucible.source, turn: crucible.turn, reason: crucible.reason } : null,
       summary: summary, records: records, notes: ctx.notes,
       harvest: { harvested: ctx.harvested, failures: ctx.harvestFailures, target: path.relative(ROOT, PUZZLE_FILE) },
@@ -769,5 +862,8 @@ module.exports = {
   seedFor: seedFor,
   distribute: distribute,
   renderSummary: renderSummary,
+  parseConfigValue: parseConfigValue,
+  formatConfigValue: formatConfigValue,
+  applyConfigPatch: applyConfigPatch,
   SetupError: SetupError
 };

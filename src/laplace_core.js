@@ -112,6 +112,34 @@
         extendSetup: cfgGet('laplace.quiescence.extendSetup', true),
         blockProtect: cfgGet('laplace.quiescence.blockProtect', true)
       }, options.quiescence || {});
+      // Comeback mode (prospect theory on the risk dial). A 100-turn tie is a loss, and so is a
+      // safe grind when you are already behind: with the board scored by the evaluator, the SAME
+      // miss charge is scaled up when we are winning (minimum variance) and down when we are losing
+      // (we need the swing). This is the honest place for the idea, because `laplace.temperature`
+      // only governs the legacy softmax path — with nash.enabled (the default) the ranking comes
+      // from the equilibrium frequency, so lowering a temperature would change nothing.
+      this.comeback = Object.assign({
+        enabled: cfgGet('laplace.comeback.enabled', false),
+        winMargin: cfgGet('laplace.comeback.winMargin', 300),
+        lossMargin: cfgGet('laplace.comeback.lossMargin', -300),
+        winChargeScale: cfgGet('laplace.comeback.winChargeScale', 2),
+        lossChargeScale: cfgGet('laplace.comeback.lossChargeScale', 0.4)
+      }, options.comeback || {});
+      // Turn urgency (patience decay). Past `startTurn` the engine progressively prefers a line
+      // that COMMITS (a real attack or a setup move) and disfavours one that merely stalls, and
+      // past `breakoutTurn` that preference is multiplied so a stalemate is not accepted silently.
+      // Bounded and additive, exactly like the tempo mask and the volatility charge, so it can only
+      // re-rank lines — it can never override a veto or a forced kill.
+      this.urgency = Object.assign({
+        enabled: cfgGet('laplace.urgency.enabled', false),
+        startTurn: cfgGet('laplace.urgency.startTurn', 25),
+        rampTurn: cfgGet('laplace.urgency.rampTurn', 60),
+        breakoutTurn: cfgGet('laplace.urgency.breakoutTurn', 50),
+        maxBonus: cfgGet('laplace.urgency.maxBonus', 120),
+        breakoutScale: cfgGet('laplace.urgency.breakoutScale', 2),
+        minBasePower: cfgGet('laplace.urgency.minBasePower', 60),
+        passiveMalus: cfgGet('laplace.urgency.passiveMalus', 40)
+      }, options.urgency || {});
       // PP-stall gauge + format sentinel knobs (ARCHITECTURE §6.4 / §6.6).
       this.ppStallCfg = Object.assign({
         enabled: cfgGet('ppStall.enabled', true),
@@ -449,7 +477,11 @@
       const upsideLost = w * miss * (typeof score === 'number' && isFinite(score) ? score : 0);
       const chargedLethal = lethal && accuracy <= cfgObj.lethalChargeMaxAccuracy;
       const charge = miss * threat * cfgObj.fragilityScale * (chargedLethal ? cfgObj.lethalMultiplier : 1);
-      const penalty = -(upsideLost + charge);
+      // Comeback mode scales the whole charge, never the accuracy itself: being behind does not
+      // make a 70% move more likely to hit, it changes how much the miss costs us relative to the
+      // safe line we would otherwise take. `scale === 1` is bit-identical to the raw charge.
+      const comeback = this._comebackScale(state);
+      const penalty = -(upsideLost + charge) * comeback;
       if (!penalty) return none;
       let why = (data.name || action.name) + ' lands ' + accuracy + '% of the time: ' +
         U.round1(upsideLost) + ' of upside given up';
@@ -457,7 +489,167 @@
         why += ' + ' + U.round1(charge) + ' fragility';
         if (chargedLethal) why += ' (a miss hands ' + U.round1(threat) + '% from ' + threatBy + ', which is lethal)';
       }
+      if (comeback !== 1) why += ' — comeback mode x' + U.round1(comeback) + ' (the board is ' +
+        (comeback > 1 ? 'won' : 'lost') + ')';  
       return { penalty: penalty, why: why };
+    }
+
+    /**
+     * _boardScore(state) -> number
+     * The evaluator's own read of the CURRENT board (+ = good for us). Defensive: a missing
+     * evaluator or an evaluator that throws yields 0, which the callers treat as "no opinion".
+     */
+    _boardScore(state) {
+      if (!this.evaluator || typeof this.evaluator.evaluate !== 'function' || !state) return 0;
+      try {
+        const v = this.evaluator.evaluate(state);
+        return (typeof v === 'number' && isFinite(v)) ? v : 0;
+      } catch (e) { return 0; }
+    }
+
+    /**
+     * _comebackScale(state) -> multiplier on the volatility charge (exactly 1 unless enabled).
+     * Winning: sharpen the charge (minimum variance). Losing: soften it (we need the swing). In
+     * between, or with no rating of the board, the identity.
+     */
+    _comebackScale(state) {
+      const c = this.comeback;
+      if (!c || c.enabled === false) return 1;
+      const board = this._boardScore(state);
+      if (board >= c.winMargin) return c.winChargeScale;
+      if (board <= c.lossMargin) return c.lossChargeScale;
+      return 1;
+    }
+
+    /**
+     * _urgencyDelta(action, state) -> { delta, why }
+     * The turn-urgency re-pricing (patience decay). Past `laplace.urgency.startTurn` a COMMITTING
+     * line (a real attack or a setup move) gains a bounded bonus and a PASSIVE line (Protect, or a
+     * status move that does not progress the board) takes a bounded malus; both ramp to their cap
+     * at `rampTurn` and are multiplied by `breakoutScale` at `breakoutTurn`. Before `startTurn` the
+     * delta is exactly 0, so the default build is unaffected.
+     *
+     * This does NOT weaken `quiescence.blockProtect` — that a Protect blocks our move is a game
+     * rule, not a preference. What changes is which ROW the engine prefers as the clock runs out.
+     */
+    _urgencyDelta(action, state) {
+      const u = this.urgency;
+      if (!u || u.enabled === false || !action) return { delta: 0, why: null };
+      const turn = (state && typeof state.turn === 'number') ? state.turn : 0;
+      if (turn < u.startTurn) return { delta: 0, why: null };
+      const span = Math.max(1, u.rampTurn - u.startTurn);
+      const weight = U.clamp((turn - u.startTurn) / span, 0, 1);
+      const scale = turn >= u.breakoutTurn ? u.breakoutScale : 1;
+      const role = this._commitmentOf(action);
+      if (role === 'commit') {
+        const delta = Math.round(u.maxBonus * weight * scale);
+        if (!delta) return { delta: 0, why: null };
+        return { delta: delta, why: 'turn ' + turn + ': a committing line forces a conclusion' };
+      }
+      if (role === 'passive') {
+        const delta = -Math.round(u.passiveMalus * weight * scale);
+        if (!delta) return { delta: 0, why: null };
+        return { delta: delta, why: 'turn ' + turn + ': a passive line cannot end the game' };
+      }
+      return { delta: 0, why: null };
+    }
+
+    /** 'commit' | 'passive' | 'neutral' for the turn-urgency re-pricing. */
+    _commitmentOf(action) {
+      if (!action) return 'neutral';
+      if (action.kind === 'protect') return 'passive';
+      if (action.kind !== 'move') return 'neutral';
+      const id = U.toID(action.moveId || action.name || '');
+      if (!id) return 'neutral';
+      if (U.PROTECT_MOVES.has(id)) return 'passive';
+      const data = U.getMoveData(action.name || action.moveId);
+      if (!data) return 'neutral';
+      if (data.isSetup) return 'commit';
+      if (data.isStatus) return 'passive';
+      if (typeof data.basePower === 'number' && data.basePower >= this.urgency.minBasePower) return 'commit';
+      return 'neutral';
+    }
+
+    /* -------------------------------------------------- team-preview lead advisory */
+
+    /**
+     * leadAdvisory(state) -> { leads, best, risky, count } | null
+     *
+     * The Turn-0 read. At team preview both rosters are visible and nothing else is, so the one
+     * decision worth pricing is which of OUR six to lead. Each candidate is scored against every
+     * opposing body through the SAME leaf evaluator every in-battle decision uses (a two-body
+     * board, both at their current HP, our side active) — never through a type chart written down
+     * here, because the evaluator already folds types, Speed and bulk together.
+     *
+     * `favorability` maps the evaluator's own output (already squashed into +/-evaluator.scale)
+     * onto 0..100, so 50 is an even board and the number is absolute rather than relative to the
+     * sample. `best` is the highest-scoring lead, `risky` the lowest, so the HUD can show the pair
+     * without re-deriving either. Returns null when both rosters are not yet known.
+     */
+    leadAdvisory(state) {
+      if (!state || !this.evaluator || !cfgGet('hud.leadAdvisory.enabled', true)) return null;
+      const mine = (state.myTeam || []).filter(function (m) { return m && !m.fainted; });
+      const theirs = (state.oppTeam || []).filter(function (m) { return m && !m.fainted; });
+      if (!mine.length || !theirs.length) return null;
+      const scale = cfgGet('evaluator.scale', 1000) || 1000;
+
+      const leads = [];
+      for (let i = 0; i < mine.length; i++) {
+        const my = mine[i];
+        if (!my || !my.species) continue;
+        let best = -Infinity;
+        let bestVs = null;
+        for (let j = 0; j < theirs.length; j++) {
+          const their = theirs[j];
+          if (!their || !their.species) continue;
+          const score = this._matchupScore(state, my, their);
+          if (score > best) { best = score; bestVs = their; }
+        }
+        if (best === -Infinity) continue;
+        const fav = U.clamp(Math.round(50 + 50 * (best / scale)), 0, 100);
+        leads.push({
+          species: my.species,
+          score: U.round1(best),
+          favorability: fav,
+          vs: bestVs ? bestVs.species : null,
+          reason: bestVs
+            ? ('best matchup vs ' + bestVs.species + ' (' + fav + '% favorability)')
+            : 'no opposing body to judge'
+        });
+      }
+      if (!leads.length) return null;
+
+      let bestLead = leads[0];
+      let risky = leads[0];
+      for (let k = 1; k < leads.length; k++) {
+        if (leads[k].score > bestLead.score) bestLead = leads[k];
+        if (leads[k].score < risky.score) risky = leads[k];
+      }
+      return { leads: leads, best: bestLead, risky: risky, count: leads.length };
+    }
+
+    /** The evaluator's read of a lone two-body matchup, on a board built only from the pair. */
+    _matchupScore(state, myMon, theirMon) {
+      if (!this.evaluator || typeof this.evaluator.evaluate !== 'function') return 0;
+      const board = {
+        turn: 0,
+        mySide: (state && state.mySide) || 'p1',
+        oppSide: (state && state.oppSide) || 'p2',
+        formatSupported: true,
+        myTeam: [myMon],
+        oppTeam: [theirMon],
+        active: { my: myMon, opp: theirMon },
+        field: (state && state.field) || {},
+        protect: {
+          oppTurnsSinceLastProtect: 99, oppConsecutiveProtects: 0,
+          myTurnsSinceLastProtect: 99, myConsecutiveProtects: 0
+        },
+        recoveryPP: {}
+      };
+      try {
+        const v = this.evaluator.evaluate(board);
+        return (typeof v === 'number' && isFinite(v)) ? v : 0;
+      } catch (e) { return 0; }
     }
 
     /* ------------------------------------------------------- the PP-stall pivot */
@@ -1355,6 +1547,17 @@
         volWhy.push(v.why);
       }
 
+      // Turn urgency (patience decay): a per-row additive delta, computed the same way and folded
+      // into the matrix alongside the volatility charge, so the mixed solve prices it too. Exactly
+      // 0 for every turn before `laplace.urgency.startTurn`, which is the default build.
+      const urgDelta = [];
+      const urgWhy = [];
+      for (let i = 0; i < myActions.length; i++) {
+        const u = this._urgencyDelta(myActions[i], state);
+        urgDelta.push(u.delta);
+        urgWhy.push(u.why);
+      }
+
       // Tempo policy mask (Protect/Bunker rhythm) before vetoes, per the brief.
       const masked = this.tempo ? this.tempo.applyPolicyMask(scored, tempoVector, state) : scored;
       // The mask is a policy nudge (multiplicative for contact attacks, additive for the Bunker
@@ -1374,6 +1577,20 @@
         if (volDelta[index]) {
           copy.volatilityPenalty = U.round1(volDelta[index]);
           copy.volatilityWhy = volWhy[index] || null;
+        }
+        if (urgDelta[index]) {
+          copy.urgencyBonus = U.round1(urgDelta[index]);
+          copy.urgencyWhy = urgWhy[index] || null;
+        }
+        // BOTH deltas are folded into the simultaneous matrix below, which is the only place they
+        // reach the mixed solve — but the SOFTMAX FALLBACK reads `score` directly (see
+        // _softmaxConfidence), so a delta that lived only in the matrix silently stopped existing
+        // whenever the solve did not run: laplace.nash.enabled false, a single live row, no
+        // opponent actions, or a solve that failed its shape check. Fold it into the row score as
+        // well. There is no double count: the solve path overwrites this with its own row value,
+        // which already contains the same delta exactly once.
+        if (typeof copy.score === 'number' && isFinite(copy.score)) {
+          copy.score += (volDelta[index] || 0) + (urgDelta[index] || 0);
         }
         if (this.veto) {
           const verdict = this.veto.evaluateVetoes({ kind: copy.kind, name: copy.name, moveId: copy.moveId, targetId: copy.targetId }, state, tempoVector);
@@ -1401,7 +1618,7 @@
         const mean = seen ? sum / seen : 0;
         // Both deltas are per-ROW, so folding them in here (rather than overwriting a score) lets
         // the mixed solve price the risk-adjusted line without losing the tempo policy nudge.
-        const delta = (maskDelta[i] || 0) + (volDelta[i] || 0);
+        const delta = (maskDelta[i] || 0) + (volDelta[i] || 0) + (urgDelta[i] || 0);
         for (let j = 0; j < row.length; j++) row[j] = (row[j] === null ? mean : row[j]) + delta;
         matrix.push(row);
       }

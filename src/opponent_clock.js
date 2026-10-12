@@ -60,6 +60,11 @@
       this.slowMs = typeof opts.slowMs === 'number' ? opts.slowMs : cfg('clock.slowMs', 20000);
       this.minSamples = typeof opts.minSamples === 'number' ? opts.minSamples : cfg('clock.minSamples', 2);
       this.maxHistory = typeof opts.maxHistory === 'number' ? opts.maxHistory : cfg('clock.maxHistory', 20);
+      // The opponent's ladder rating (`|player|p2|Name|avatar|1480`), or null until one arrives.
+      // Only the Elo-band family reads it; the clock is otherwise blind to it on purpose, because
+      // a rating is a prior about the PLAYER while the deliberation label is a measurement of the
+      // turn.
+      this.rating = (typeof opts.rating === 'number' && isFinite(opts.rating)) ? opts.rating : null;
       this.reset();
     }
 
@@ -145,12 +150,41 @@
 
     label() { return this.last ? this.last.label : 'unknown'; }
 
+    /**
+     * setRating(rating) — the opponent's ladder rating, read from the protocol. Inert unless
+     * `clock.ratingBands.enabled`, which ships false.
+     */
+    setRating(rating) {
+      const r = typeof rating === 'number' ? rating : parseInt(rating, 10);
+      this.rating = isFinite(r) ? r : null;
+      return this;
+    }
+
+    /**
+     * The Elo band multiplier (config `clock.ratingBands`). Exactly 1 — the identity — unless the
+     * family is enabled AND a rating has been seen, so a build without it behaves identically. A
+     * low-ladder opponent pivots far less often than a high-ladder one, so the band shrinks or
+     * grows the opponent's SWITCH columns through the same single number switchFactor already is.
+     */
+    ratingFactor() {
+      if (!cfg('clock.ratingBands.enabled', false)) return 1;
+      if (this.rating === null) return 1;
+      const low = cfg('clock.ratingBands.low', 1350);
+      const high = cfg('clock.ratingBands.high', 1650);
+      if (this.rating <= low) return cfg('clock.ratingBands.lowFactor', 1);
+      if (this.rating >= high) return cfg('clock.ratingBands.highFactor', 1);
+      return cfg('clock.ratingBands.midFactor', 1);
+    }
+
     /** The ONE thing the engine consumes: a multiplier on opponent switch replies. */
     switchFactor() {
       const label = this.label();
       const factor = cfg('clock.switchPrior.' + label,
         cfg('clock.switchPrior.unknown', 1));
-      return typeof factor === 'number' && isFinite(factor) && factor > 0 ? factor : 1;
+      const base = typeof factor === 'number' && isFinite(factor) && factor > 0 ? factor : 1;
+      // The rating band is folded in HERE so the solver keeps reading a single number, and so a
+      // disabled band is the exact identity (1 * base === base).
+      return base * this.ratingFactor();
     }
 
     /** Plain snapshot for the HUD and for state.clock (never a live object reference). */
@@ -167,7 +201,9 @@
         myLastMs: this.last ? this.last.mySubmitMs : null,
         meanMs: this.history.length ? Math.round(sum / this.history.length) : null,
         label: this.label(),
-        switchFactor: this.switchFactor()
+        switchFactor: this.switchFactor(),
+        rating: this.rating,
+        ratingFactor: this.ratingFactor()
       };
     }
 

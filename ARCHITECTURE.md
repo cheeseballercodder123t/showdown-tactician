@@ -420,7 +420,7 @@ state.applyEvent(event)                        // the single mutation entry poin
 state.reset()                                  // wipe everything, keep config
 state.getMon(side, slot) / state.getActive(side) / state.getTeam(side)
 state.registerMyTeam(parsedMons[])             // from TeamParser; fills myTeam with EV/IV truth
-state.setFormat(formatName)                    // -> sets formatSupported (NatDex OU only)
+state.setFormat(formatName)                    // -> sets formatSupported (the NatDex OU allowlist)
 state.isOpponentSpeedAtLeast(value)            // helper
 state.snapshot()                               // deep-ish clone for the sampler/simulator
 state.on('change', cb) / state.emit(...)       // tiny internal event bus (used by the HUD)
@@ -447,8 +447,13 @@ Behavioural requirements for `state_manager.js` (all testable):
 7. Trick Room: `fieldStart` sets true/5; each `turn` while active decrements
    `trickRoomTurnsLeft` (after the turn-a-1 header arrives, i.e. decrement when the *next*
    turn starts); `fieldEnd` clears it. Never below 0.
-8. Unsupported format (`|format|` not containing `National Dex`) ⇒ `formatSupported=false`
-   and `LaplaceEngine.evaluateTurn` returns `[]`.
+8. Format gate — an **allowlist**, not a reject-list. Only the supported format, under the names
+   the ladder and the sim actually use, sets `formatSupported=true`: `[Gen 9] National Dex` (the
+   literal `|init|`/`|tier|` text — there is no `... OU` on the wire), `[Gen 9] National Dex OU`,
+   `gen9nationaldex`, `gen9nationaldexou`. Every other name is false, including the sibling tiers
+   (`National Dex Ubers`, a NatDex OM — the reject-list this replaced let those through) and other
+   generations. An empty/unknown header stays true, since the battle may not have started. False ⇒
+   the UI shows an unsupported-format banner and `LaplaceEngine.evaluateTurn` returns `[]`.
 9. Knock Off resolution: a `move` with `moveId === 'knockoff'` and a `targetSlot` marks that
    target as pending for the current turn. If the target took a `damage` event that turn and
    the turn ends (`_resolveKnockOffs` runs on every event, concluding once
@@ -490,6 +495,12 @@ pruner.applySpeedFloor(mon, state)           // drops sets whose max Speed < mon
                                              // the survivors into mon.candidateSets/liveSet -> { pruned, dropped, floor, survivors:SetCandidate[] }
 pruner.bestSet(mon)                          // -> SetCandidate | null (highest weight survivor)
 pruner.handleSpeedFloorEvent(event, state)   // convenience wrapper used by state_manager
+pruner._disprovedAbilities(mon, state)       // -> { ids: {abilityId: reason}, size } — the negative-space
+                                             // ability rules (config.pruner.abilityDeduction.*); computed
+                                             // once per body in prune() and tested per candidate set
+pruner._abilitySuppressed(state)             // true while a revealed Neutralizing Gas is active (the
+                                             // guard the gated absence rule runs); a status that landed
+                                             // under it is stamped on the body as mon.statusSuppressed
 
 // The damage engine is OPTIONAL (opts.damage). Without it the rule below is a no-op and every
 // other deduction still runs; with it, mon.damageDealt is judged here.
@@ -959,6 +970,57 @@ Stated approximations (they are repeated at the call site): no speed order is mo
 second actions land and "who moves first" is never claimed; their Protect is not re-checked on the
 second turn; their damaging replies keep the pre-existing symmetric treatment.
 
+### 6.8 Ability deduction, the gated tuning tiers, and Turn-0
+
+**Negative-space ability deduction** (`src/set_pruner.js`, tables in `src/util.js`).
+`_disprovedAbilities(mon, state)` returns the candidate ABILITY ids an observation has ruled out, and
+`prune()` drops any set carrying one. Three families, each individually switchable under
+`pruner.abilityDeduction.*`: `statusRules` (a status the body is CARRYING disproves every ability that
+makes it impossible — `U.STATUS_IMMUNITY_ABILITIES`, skipped entirely when the body's status was
+stamped `statusSuppressed`), `groundRules` (damage only a grounded body can take disproves Levitate /
+Earth Eater — a DIRECTLY connecting Ground move, or Spikes / Sticky Web, never Stealth Rock; the
+whole family is skipped under Gravity, which grounds everyone), and `absenceRules` (a switch-in
+trigger ability that never announced itself), which **ships OFF** because Neutralizing Gas and
+friends silence the announcement — the one absence-of-evidence inference in the engine, and the
+reason `_abilitySuppressed` exists. The state manager records the raw facts the rules read
+(`switchedInTurn`, `groundAimedOnTurn` → `groundDisproved`, `statusTurn`, `statusSuppressed`), and
+it refuses the observation rather than the conclusion where the refusal is cheap: the aim is not
+stamped when the attacker's KNOWN ability ignores abilities (`U.ABILITY_IGNORING_ABILITIES`), and
+`groundDisproved` is set only for damage carrying no `[from]` clause, so a burn tick or a hazard in
+the same turn cannot be mistaken for the Ground move landing. A MISSED Ground move leaves a turn
+stamp the next turn cannot match, so it can never disprove anything either.
+
+**The gated tuning tiers.** `laplace.comeback` scales the existing volatility charge by the
+evaluator's board score (`_comebackScale`, `_boardScore`): sharpened when ahead, softened when
+behind. It deliberately does NOT touch `laplace.temperature`, which governs only the legacy softmax
+path while `nash.enabled` is the default. `laplace.urgency` (`_urgencyDelta`, `_commitmentOf`) adds a
+bounded, ramping preference for COMMITTING rows (a real attack or a setup move) over PASSIVE ones
+past `startTurn`, multiplied at `breakoutTurn`; it re-ranks rows and can never override a veto or a
+game rule. `clock.ratingBands` (`OpponentClock.ratingFactor`) bands the clock's single switch-reply
+factor by the OPPONENT's ladder rating, which the parser reads off
+`|player|p2|Name|avatar|1480` and the state carries as `state.opponentRating`. Each is folded into a
+number the solver already consumes, so an off tier is the exact identity.
+
+All three shipped `enabled: false` while unmeasured. **`laplace.urgency` is now ADOPTED (`true`)** —
+the one tier to clear the config-flag ablation gate (60 battles/arm, all three personas, one seed,
+paired bootstrap: win rate 68.3% → 96.7%, Δ +28.3 points, 95% CI [+18.3, +40.0], and the 100-turn
+cap ties collapsed 17/60 → 1/60). `laplace.comeback` and `clock.ratingBands` remain off, and their
+flat ablation rows are 
+"not measurable in this harness" rather than evidence about them: comeback scales a volatility
+charge the arena cannot price (no `|stacc|` from @pkmn/sim), and the band needs a ladder rating the
+arena never supplies (`|player|p2|Name|avatar|` with an empty last field). The `--set` mechanism
+behind those rows is itself pinned — a pruner-family flag is captured at LOAD time, so the arena
+applies its patch from inside `loadHarness`, the moment `src/config.js` has run.
+
+**The Turn-0 lead advisory** (`leadAdvisory` / `_matchupScore`). `|teampreview|` is inert to the
+parser by design (pinned by `tests/parser_fuzz.js`), so `src/content.js` hangs the read off the raw
+command. Each of our bodies is scored against every opposing body through the SAME leaf evaluator
+the in-battle decisions use (a two-body board), `favorability` maps that score onto 0..100, and the
+HUD renders the best and riskiest lead (`renderLeadAdvisory`). A measurement rather than a heuristic,
+so it ships ON under `hud.leadAdvisory.enabled`.
+
+Pinned by `tests/ability_check.js`, `tests/tuning_check.js` and `tests/preview_check.js`.
+
 ## 7. The headless arena (`tools/headless_arena/`, `tools/run_arena.js`)
 
 A second execution path for the same engine, and the only one that runs a real battle engine. It
@@ -986,7 +1048,8 @@ Frozen surfaces — what the suites pin, and what the CLI calls:
 | `mutator.js` | `mutateTeam(packed, rate, { seed }) -> { packed, sets, changes, rejected, seed, mutationRate, inputErrors }`, `new SetMutator(opts)` |
 | `blunder_harvester.js` | `analyzeLoss(matchReport, sessionOrOptions)`, `generatePuzzleCode(analysis, options)`, `appendVaccineToFile(code, targetFile)`, `puzzleNameOf`, `SENTINEL` |
 | `engine_bridge.js` | `SIM_FORMAT_ID`, `createSession(opts)`, `EngineSession`, `choiceForRanked`, `teamPreviewOrder`, `loadHarness`, `loadSim` |
-| `run_arena.js` | `parseArgs(argv)`, `main(argv)`, `createEngineAgent`, `renderSummary`, `SetupError` |
+| `run_arena.js` | `parseArgs(argv)`, `main(argv)`, `createEngineAgent`, `renderSummary`, `applyConfigPatch(ST, sets)`, `parseConfigValue`, `formatConfigValue`, `SetupError` |
+| `run_ablation.js` | `parseArgs(argv)`, `main(argv)`, `FEATURES`, `buildVariants(ids)`, `validateFeaturePaths(variants)`, `arenaArgs(variant, opts, jsonPath)`, `summarizeRun(payload)`, `verifyPairing(base, variant)`, `pairedBootstrap(a, b, B, seed)`, `compareToBaseline(baseSummary, variantSummary, descriptor, opts)`, `renderTable(rows)` |
 
 **An agent** is anything with `chooseAction(request, { side, turn, request, log, runner })` returning
 a choice string. The runner normalizes it, falls back to the first legal option when an agent
@@ -1044,3 +1107,40 @@ defect and goes green only when the engine is fixed. Do not delete a red vaccine
 
 `--harvest` mutates a committed file, so it is a deliberate operation: run it, then commit the
 vaccine together with the fix that turns it green (or with a note recording that it is still red).
+
+### 7.1 The config patch, and the ablation runner built on it
+
+`run_arena.js --set <dotted.path>=<value>` (repeatable) mutates one tunable in `src/config.js` for
+the duration of a run, and the run's report carries an `appliedSets` echo of `[path, from, to]`.
+
+Three properties are contractual, and `tests/ablation_check.js` pins them:
+
+* **The path must already exist.** `applyConfigPatch` refuses an unknown leaf AND an unknown
+  intermediate section, and it refuses to descend into a leaf that is a value rather than a
+  section. It never creates a key. This is the difference between a benchmark and a benchmark that
+  measures a typo and reports it as "neutral" — the worst possible outcome, because the number is
+  plausible and the conclusion drawn from it is wrong.
+* **The patch lands before the engine reads it.** A session reads its tunables at CONSTRUCTION
+  (`laplace_core`'s constructor resolves `laplace.nash`, `laplace.volatility` and
+  `laplace.quiescence` into instance fields; `opponent_clock` resolves `clock.enabled`), so the
+  patch is applied to the sandbox before the first `EngineSession` exists. Patching mid-run would
+  leave the battle already in flight on the old values. One sandbox per process, one variant per
+  process — that is why `run_ablation.js` spawns the arena instead of looping in-process.
+* **It is idempotent.** The same patch applied twice reports the same `from`/`to` the second time,
+  because the write is a plain assignment to a live leaf. The ablation's echo check depends on it.
+
+`run_ablation.js` is a thin orchestrator over that flag: the feature table (`FEATURES`) declares one
+config patch per row plus what the author EXPECTED, `buildVariants` turns a selection into the
+baseline plus one batch per feature, and each batch is a spawned arena run on the shared seed. It
+owns no battle logic, no teams and no engine access of its own — the arena is the only thing that
+touches the sim, and the engine inside it is still the shipped one.
+
+What makes its table readable is not the delta but the interval. Two arms on the same seeds are a
+PAIRED comparison, so the bootstrap resamples battle INDICES and reads both arms at the same index;
+`verifyPairing` re-derives the pairing from the records' own `seed` fields and falls back to an
+unpaired resample (flagged `unpaired` in the row) when they disagree, rather than reporting a
+paired interval it did not earn. A verdict of `helps`/`hurts` means the 95% interval excludes zero;
+everything else is reported as *no measurable effect at this sample size*, which is not a synonym
+for neutral. `stall` is a separate flag raised only when the CHANGE against the baseline is longer
+games or a higher stall-tie share — flagging an absolute share would mark every paired variant that
+inherited a stalling tie from the shared battles.

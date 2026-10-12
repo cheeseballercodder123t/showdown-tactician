@@ -74,7 +74,7 @@ jobs:
         run: node tools/run_arena.js --battles 1 --agent chaos --mode crucible --seed 7 --quiet
 
   # The real-browser gate. Separate from `test` on purpose: the Node suites are zero-dependency
-  # and finish in ~30 s, while this one downloads Chromium and drives it with the extension
+  # and finish in a minute or two, while this one downloads Chromium and drives it with the extension
   # side-loaded. It is the slow job, so it does not block the fast one.
   e2e:
     runs-on: ubuntu-latest

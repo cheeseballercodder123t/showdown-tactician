@@ -160,6 +160,70 @@
   const GRASS_ABSORB = new Set(['sapsipper']);
   const UNBLOCKABLE_STATUS_ABILITY = new Set(['goodasgold']);
 
+  /* Status-immunity abilities. GAME RULES with a single correct value, like the absorb sets above:
+   * each names a status the ability makes impossible, so an OBSERVED status condition on a body is
+   * positive evidence against every candidate set carrying one of them. Two of them are
+   * unconditional immunities to EVERY status — Comatose (the holder is permanently asleep and so
+   * can never be given one) and Purifying Salt — which is why they recur in all six buckets.
+   *
+   * NOT MODELLED, deliberately: conditional shields (Leaf Guard prevents status only in sun) and
+   * cures rather than prevention (Shed Skin, Hydration). A rule that eliminates a set has to hold
+   * in every board, and those do not. */
+  const STATUS_IMMUNITY_ABILITIES = {
+    // Magma Armor is NOT a burn immunity — it prevents FREEZE only, and it is correctly listed
+    // under `frz` below. It used to sit here, which made an ordinary burn eliminate every Magma
+    // Armor set: a false elimination on evidence that does not disprove it. Water Bubble, which
+    // does prevent burns outright, was missing and has been added.
+    brn: new Set(['waterveil', 'waterbubble', 'thermalexchange', 'comatose', 'purifyingsalt']),
+    psn: new Set(['immunity', 'pastelveil', 'comatose', 'purifyingsalt']),
+    tox: new Set(['immunity', 'pastelveil', 'comatose', 'purifyingsalt']),
+    par: new Set(['limber', 'comatose', 'purifyingsalt']),
+    slp: new Set(['insomnia', 'vitalspirit', 'sweetveil', 'comatose', 'purifyingsalt']),
+    frz: new Set(['magmaarmor', 'comatose', 'purifyingsalt'])
+  };
+  const NO_ABILITIES = new Set();
+
+  /* Abilities that leave a body immune to Ground by keeping it airborne or absorbing the type.
+   * Their absence of protection is provable: hazard damage that only grounded bodies take (Spikes)
+   * or a Ground move that connects disproves them — EXCEPT under Gravity, which grounds everyone
+   * and negates Levitate, so there the same observation proves nothing. The caller applies that
+   * guard; this table only names the abilities. */
+  const GROUND_IMMUNE_ABILITIES = new Set(['levitate', 'eartheater']);
+
+  /* Abilities that make their holder IGNORE the target's ability for its own moves. A Ground move
+   * from one of these connects straight through Levitate / Earth Eater, and their Fire move burns
+   * a Water Veil holder, so neither observation is evidence against the defender's ability. The
+   * caller drops the observation when the ATTACKER's ability is one of these; it can only do that
+   * for an attacker whose ability is known (our own team's, or one already revealed). */
+  const ABILITY_IGNORING_ABILITIES = new Set(['moldbreaker', 'teravolt', 'turboblaze']);
+
+  /* Abilities that ALWAYS announce themselves the moment their holder switches in. Used only by the
+   * gated absence inference (pruner.abilityDeduction.absenceRules), which reads a missing
+   * announcement as evidence against the sets that carry them. That inference is off by default:
+   * Neutralizing Gas and similar suppression can silence the announcement, so it needs suppression
+   * tracking (and a measurement) before it may eliminate anything. */
+  const SWITCH_IN_WEATHER_ABILITIES = {
+    drizzle: 'rain',
+    drought: 'sun',
+    sandstream: 'sandstorm',
+    snowwarning: 'snow'
+  };
+  const SWITCH_IN_TERRAIN_ABILITIES = {
+    electricsurge: 'electric',
+    grassyterrain: 'grassy',
+    psychicterrain: 'psychic',
+    mistyterrain: 'misty'
+  };
+  const SWITCH_IN_TRIGGER_ABILITIES = new Set(
+    ['intimidate'].concat(
+      Object.keys(SWITCH_IN_WEATHER_ABILITIES),
+      Object.keys(SWITCH_IN_TERRAIN_ABILITIES)));
+
+  /** The abilities that make `status` impossible, or an empty set for an unknown status id. */
+  function abilitiesBlockingStatus(status) {
+    return STATUS_IMMUNITY_ABILITIES[toID(status || '')] || NO_ABILITIES;
+  }
+
   // TR setters that actually see play in NatDex OU (species ids)
   const TR_SETTERS = new Set(['porygon2', 'cresselia', 'slowking', 'slowkinggalar', 'hatterene', 'indeedee',
     'indeedeef', 'dusclops', 'dusknoir', 'mimikyu', 'oranguru', 'farigiraf', 'armarouge', 'bronzong',
@@ -867,6 +931,13 @@
     FIRE_ABSORB_ABILITIES: FIRE_ABSORB,
     GRASS_ABSORB_ABILITIES: GRASS_ABSORB,
     UNBLOCKABLE_STATUS_ABILITY: UNBLOCKABLE_STATUS_ABILITY,
+    STATUS_IMMUNITY_ABILITIES: STATUS_IMMUNITY_ABILITIES,
+    GROUND_IMMUNE_ABILITIES: GROUND_IMMUNE_ABILITIES,
+    ABILITY_IGNORING_ABILITIES: ABILITY_IGNORING_ABILITIES,
+    SWITCH_IN_TRIGGER_ABILITIES: SWITCH_IN_TRIGGER_ABILITIES,
+    SWITCH_IN_WEATHER_ABILITIES: SWITCH_IN_WEATHER_ABILITIES,
+    SWITCH_IN_TERRAIN_ABILITIES: SWITCH_IN_TERRAIN_ABILITIES,
+    abilitiesBlockingStatus: abilitiesBlockingStatus,
     TR_SETTERS: TR_SETTERS,
     MEGA_STONES: MEGA_STONES,
     STONE_BY_BASE: STONE_BY_BASE,

@@ -50,6 +50,9 @@
   // regression suite, so they are deliberately NOT configurable.
   const PP_ATTR = 'data-st-pp';
   const SENTINEL_ATTR = 'data-st-sentinel';
+  // The team-preview lead advisory card (Turn 0). As with the other attributes this is the
+  // interface with overlay.css and the regression suite, so it is deliberately NOT configurable.
+  const LEAD_ATTR = 'data-st-lead';
   const SENTINEL_ICONS = { burned: '\u274C', live: '\uD83D\uDFE2' };
   // The glyph on each "TACTICAL FREEDOM" bullet, keyed by the engine's `kind`. The engine names
   // the tactic and the renderer chooses how it looks, so the two never disagree about a character
@@ -102,7 +105,7 @@
         banner: null, chip: null, drawer: null, toggle: null,
         teamStatus: null, candidates: null,
         benchStrip: null, badgeRow: null, receipt: null, overlord: null,
-        ppGauge: null, sentinel: null
+        ppGauge: null, sentinel: null, leadAdvisory: null
       };
       this._touched = [];        // [{ el, prop, previous }] inline style rollbacks
       this._lastRanked = [];
@@ -360,6 +363,47 @@
         parts.push('score ' + U.round1(action.score));
       }
       return parts.join(' — ');
+    }
+
+    /* ------------------------------------------------- team-preview advisory */
+
+    /**
+     * renderLeadAdvisory(advisory) — the Turn-0 card. `advisory` is the engine's own object
+     * ({ leads, best, risky }), so the HUD never re-derives a matchup; it only formats. An empty
+     * or malformed advisory dismisses the card rather than rendering an empty box.
+     */
+    renderLeadAdvisory(advisory) {
+      if (!this._document()) return null;
+      if (!advisory || !Array.isArray(advisory.leads) || !advisory.leads.length) return this.dismissLeadAdvisory();
+      let card = this._nodes.leadAdvisory;
+      if (!card) {
+        card = this._el('div', 'st-lead-advisory');
+        if (card && card.setAttribute) card.setAttribute(LEAD_ATTR, '1');
+        this._nodes.leadAdvisory = this._mount(card);
+      }
+      if (!card) return null;
+      card.textContent = '';
+      const heading = this._el('div', 'st-lead-title', 'TEAM PREVIEW ADVISORY');
+      if (heading && typeof card.appendChild === 'function') card.appendChild(heading);
+      const self = this;
+      [['st-lead-best', advisory.best, '\uD83D\uDFE2 Top lead'],
+        ['st-lead-risky', advisory.risky, '\uD83D\uDD34 Risky lead']].forEach(function (pair) {
+        const item = pair[1];
+        if (!item || !item.species) return;
+        const text = pair[2] + ': ' + item.species + ' (' + item.favorability + '% favorability) — ' +
+          (item.reason || '');
+        const row = self._el('div', pair[0], text);
+        if (row && typeof card.appendChild === 'function') card.appendChild(row);
+      });
+      return card;
+    }
+
+    /** Take the Turn-0 card down (battle under way, or a reconnect). */
+    dismissLeadAdvisory() {
+      const card = this._nodes.leadAdvisory;
+      if (card && typeof card.remove === 'function') card.remove();
+      this._nodes.leadAdvisory = null;
+      return null;
     }
 
     /* ------------------------------------------------------------- banner */
@@ -1410,7 +1454,7 @@
         banner: null, chip: null, drawer: null, toggle: null,
         teamStatus: null, candidates: null,
         benchStrip: null, badgeRow: null, receipt: null, overlord: null,
-        ppGauge: null, sentinel: null
+        ppGauge: null, sentinel: null, leadAdvisory: null
       };
       this._drawerOpen = false;
       this._bound = false;

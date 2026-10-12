@@ -27,15 +27,25 @@ Five minutes to a working mental model:
    * **Rule 2 — frozen ground truth.** `test_engine.js` pins five canonical damage rolls.
    * **Rule 4 — one config.** Every tunable lives in [`src/config.js`](src/config.js);
      `tests/config_check.js` inventories all of them and proves live mutation flows through.
-3. **Run everything:** `npm test` (26 suites, 2,051 checks, no runtime dependencies). Individual
-   suites are plain `node tests/<name>.js`. CI runs the same command on every push. Two of the
+3. **Run everything:** `npm test` — 28 suites, 39 s to 2 min depending on machine load (the two
+   figures are the same command on this machine), no runtime dependencies (the arena and
+   ablation suites skip with a plain message without `@pkmn/sim`; CI runs them in a separate job
+   with the install). Individual
+   suites are plain `node tests/<name>.js`. CI runs the same command on every push. The runner also
+   **refuses to start on an inconsistent registry**: every `.js` file in `tests/` must be listed in
+   its `SUITES` or be a declared, explained exception (`harness.js` is the loader, `perf_bench.js` is
+   the benchmark), and the list below must name exactly the registered set. A suite that exists but
+   never runs is a defect rather than an omission — one shipped that way (`tests/quiescence_check.js`,
+   71 checks, green by hand and executed by nothing), and a documented suite that does not run is the
+   same defect from the other side. Two of the
    suites belong to the headless arena: `tests/tactical_puzzles.js` needs no install at all, and
    `tests/arena_check.js` prints an honest skip when `@pkmn/sim` is absent (`npm install` adds it —
    it is a devDependency, never shipped). The arena's own CLI is `npm run arena`;
    see [The headless adversarial arena](#the-headless-adversarial-arena).
 4. **Then the real browser:** `npm run e2e` (41 Playwright tests, ~46 s) loads the actual MV3
    extension into Chromium and drives a page. It is deliberately **separate** from `npm test`: the
-   Node suites are zero-dependency and finish in ~30 s, the browser suite needs a Chromium download.
+   Node suites are zero-dependency and finish in a minute or two, the browser suite needs a
+   Chromium download.
    See [`tests/e2e/helpers.js`](tests/e2e/helpers.js) for the observability contract — a content
    script's isolated world is invisible to `page.evaluate`, so everything asserted is shared DOM,
    the MAIN-world bridge, or the console stream.
@@ -215,6 +225,14 @@ tests/pressure_check.js    the PP-stall gauge and its 3-way pivot, the volatilit
                            Z-Move/Mega format sentinel (151 checks)
 tests/invariants_check.js  the Object.create leaf clones (no write-through), evaluateTurn purity,
                            and the simulate()/_mutableSim contract (17 checks)
+tests/ability_check.js     negative-space ability deduction: an observed status, or grounded-only
+                           damage, disproves the candidate abilities it rules out — and the
+                           unsound-evidence section pins what must NOT eliminate (56 checks)
+tests/tuning_check.js      the three tuning tiers — the Elo switch band, turn urgency (adopted) and
+                           comeback mode — each pinned both ways: its shipped default and the exact
+                           number it moves when toggled (52 checks)
+tests/preview_check.js     the Turn-0 lead advisory: the parser contract, the 6x6 evaluator scoring,
+                           the broker wiring and the HUD card (31 checks)
 tests/quiescence_check.js  the setup punisher: the boost table, the one extra exchange, the three
                            guards (71 checks)
 tests/profile_check.js     the opponent profiler: the deviation estimator, label/factor agreement,
@@ -279,7 +297,12 @@ tools/headless_arena/teams.js             the five curated sample teams, validat
 tools/headless_arena/engine_bridge.js     a DOM-free session that runs the REAL parser -> state manager
                            -> engine pipeline over protocol lines, and translates a frame into a
                            legal sim choice
+tools/run_ablation.js      the config-flag ablation runner: one arena batch per feature variant on
+                           a shared seed, a table of win/loss/tie deltas against the baseline, and
+                           a paired bootstrap that says when a delta is only noise
 tests/arena_check.js       the arena's own suite (125 checks; skips without @pkmn/sim)
+tests/ablation_check.js    the ablation runner's suite (251 checks; the live batch skips without
+                           @pkmn/sim)
 tests/tactical_puzzles.js  the harvested-vaccine registry and runner; ships with zero puzzles
 ARCHITECTURE.md            frozen interface contract every module binds to
 ```
@@ -288,13 +311,14 @@ ARCHITECTURE.md            frozen interface contract every module binds to
 
 ```
 node test_engine.js           #  57 checks: RULE 2 — five ground-truth damage rolls, frozen
-node tests/run_tests.js       # 218 checks: the whole pipeline in a DOM-less sandbox
-node tests/rule_checks.js     #  23 checks: the deductions, replayed from raw protocol linesnode tests/util_smoke.js       #  55 checks: dex access, item naming, type math, Speed maths, the lookup caches
+node tests/run_tests.js       # 229 checks: the whole pipeline in a DOM-less sandbox
+node tests/rule_checks.js     #  23 checks: the deductions, replayed from raw protocol lines
+node tests/util_smoke.js      #  55 checks: dex access, item naming, type math, Speed maths, the lookup caches
 node tests/injected_bridge.js #  23 checks: the MAIN-world WebSocket bridge (fake WebSocket/DOM)
 node tests/config_check.js    #  71 checks: RULE 4 — the config is the only home for a heuristic
 node tests/blackbox_guard.js  #  28 checks: RULE 1 — no handwritten math, 50,616 stats diffed
 node tests/parser_fuzz.js     #  44 checks: RULE 3 — the real log, all its prefixes, junk lines
-node tests/hardening_audit.js #  48 checks: the bug-hunt regressions + a 40-battle invariant fuzz
+node tests/hardening_audit.js #  64 checks: the bug-hunt regressions + a 40-battle invariant fuzz
 node tests/upgrades_check.js  # 118 checks: the mixed-strategy solve, the vetoes, the clock, damage evidence
 node tests/chaos_sync_check.js # 70 checks: the chaos sync + the usage overlay (fixtures only, no network)
 node tests/weights_check.js   # 233 checks: the downloader + the extractor + the fitter + the config adoption
@@ -309,6 +333,15 @@ node tests/entropy_check.js   #  48 checks: the scouting entropy and its assumed
 node tests/wincon_check.js    #  56 checks: the win-condition bounty (refusals, payout)
 node tests/endgame_check.js   #  45 checks: the bounded endgame search and its honest rails
 node tests/arena_check.js     # 125 checks: the arena — runner, splicer, agent legality, mutator, harvester
+node tests/invariants_check.js #  17 checks: the solver's invariants over perturbed boards
+node tests/ability_check.js   #  56 checks: the negative-space ability deduction (status, grounding, the gated absence rule,
+                              #   and every observation that only LOOKS like proof)
+node tests/tuning_check.js    #  52 checks: the tuning tiers — the Elo band, turn urgency (adopted), comeback mode
+node tests/preview_check.js   #  31 checks: the Turn-0 lead advisory (parser contract, 6x6 scoring, HUD card)
+node tests/mlp_check.js       #  48 checks: the residual head's gate, fail-safe and clamp (it ships off)
+node tests/dom_check.js       #  35 checks: the HUD's DOM lifecycle, driven through a stub parser
+node tests/ablation_check.js  # 251 checks: the ablation runner — --set and its refusals, each flag in a real
+                              #   engine, the feature table, the aggregation/bootstrap maths, one live batch
 node tests/tactical_puzzles.js #   0 puzzles: the vaccine registry, green until a --harvest run writes a defect
 ```
 
@@ -402,6 +435,111 @@ reproduces the ranking that lost the game: the puzzle fails until the engine is 
 `npm test` fails with it. That is the point — a vaccine is a written record of a known defect, not a
 passing test. Zero puzzles ship, which is why `tests/tactical_puzzles.js` is green today; after a
 `--harvest` run, expect it to be red until the named defect is fixed.
+
+## The ablation runner: which flag is doing the work
+
+The arena answers "is the engine good?" with one win rate. It cannot answer the question that
+blocks every tuning decision: **which** of the things deciding a move is doing the work. Every tier
+in `src/config.js` ships gated — the mixed Nash solve can fall back to the legacy single-line
+softmax, the five board-state vetoes can each be switched off, and the four optional tiers ship
+inert — and the only way to price one used to be: edit config.js, run the arena, edit it back, run
+it again, subtract the two numbers by hand.
+
+`tools/run_ablation.js` runs that experiment. It spawns `tools/run_arena.js` once per variant, so
+each batch is a separate process with one config patch applied before its first session is built,
+and prints a comparison table:
+
+```
+npm run ablation -- --list                                  # the feature table and its patches
+npm run ablation -- --battles 500 --parallel 4              # baseline + every variant in the table
+npm run ablation -- --features nash,quiescence --battles 500
+npm run ablation -- --battles 500 --out ablation-report.json
+```
+
+Each row carries **W / L / T and win %, loss %, tie %**, the **average turns per battle** with the
+stall-tie share (a 100-turn tie is not a draw, it is a policy that will not commit), the delta
+against the baseline, and a **95% paired-bootstrap interval** on that delta. Because a stall flag is
+relative, the baseline's own stall level is printed **absolutely** as well: a corpus where the
+baseline draws a quarter of its games at the cap reports "no stalls" on every row, so the runner
+says the level out loud instead of leaving it to a reader's eye on a percentage column. Every feature also
+records what its author *expected* (`helps` / `neutral`), printed beside the verdict, so a surprise
+is visible instead of being averaged away.
+
+Four choices make the numbers mean something, and `tests/ablation_check.js` pins each of them:
+
+1. **One seed for every variant.** `run_arena` derives each battle's seed from (base seed, battle
+   index), so a variant and the baseline play byte-identical games — pairing subtracts the variance
+   of two independent draws out of the delta. The runner re-derives that from the records' own seed
+   fields rather than trusting it, and falls back to an unpaired test (flagged `unpaired`) if the
+   seeds ever drift.
+2. **The patch is proven to have landed.** A child that silently ignored its flags would produce a
+   perfect baseline-vs-baseline comparison, printed as "these features do nothing". Every variant's
+   report carries the arena's own `appliedSets` echo, and a variant whose echo is short is a hard
+   failure rather than a row.
+3. **A misspelt flag fails loudly.** `--set` accepts only a path that already exists in
+   `config.js`; an unknown leaf or section is a setup error. A benchmark that measures a typo
+   reports the typo as neutral, which is the worst possible outcome.
+4. **Significance, not sign, and the interval is the same quantity as the delta.** A verdict of
+   `feature HELPS`/`feature HURTS` means the 95% interval excludes zero; anything else is reported
+   as *no measurable effect at this sample size* — 500 battles puts the standard error of a win
+   rate near 2 points, so a 3-point "improvement" is not a result yet. The interval is bootstrapped
+   on the **win indicator**, so it qualifies the `Δwin` printed beside it. (Bootstrapping the
+   win/tie/loss *score* instead once produced a +15.0 delta with a 95% interval of [+1.7, +12.5],
+   i.e. a point estimate outside its own interval. The suite pins the two scales apart.)
+5. **The verdict is about the FEATURE, not about the variant.** Every `laplace`/`veto`/`pruner` row
+   is measured by switching its feature OFF, and the OFF variant beating the baseline means the
+   FEATURE is the problem — so a verdict printed under a feature's name has to flip the sign, and
+   the row says which way the patch pointed (`switching it off` / `switching it on`). A feature
+   whose result contradicts its author's recorded expectation is flagged `surprise`.
+6. **A row that reproduces the baseline in *every* battle is flagged `identical`**, because at any
+   real sample size that is the signature of a flag whose input this harness does not supply rather
+   than a verdict on the tier. The identical rows fall into three groups, and the distinction is
+   the point: **verified harness gaps** — `laplace.volatility` needs the `|stacc|` accuracy snapshot
+   that only the injected MAIN-world bridge emits, and `clock` only records a sample when it sees
+   our own outgoing `/choose` line, which the arena never sends because its agent answers the sim
+   runner directly; **documented controls** — `pruner.scout` and `usage` ship with empty overlays
+   and are flat by construction, so a non-zero delta there would be the finding; and **unresolved**
+   — the two reverse-damage pruners, the six veto rows and the three enabled tiers changed nothing
+   at this sample and no cause is established for any of them. The two pruners carry an explicit
+   UNRESOLVED caveat saying so; the rest are covered by the `identical` footnote. None of them is a
+   "neutral" result, and the runner never prints one as such.
+7. **A tier that is more than one decision gets a row per sub-knob.** `quiescence` re-prices two
+   different replies — their setup move and their Protect — and it is split into `extendSetup` and
+   `blockProtect` for exactly this reason, so `quiescence-extendsetup` and `quiescence-blockprotect`
+   are rows of their own (`parent` marks the family). A 15-point result on the master switch says the
+   tier is wrong; only the sub-rows say which half.
+8. **The turn SHAPE is reported, not just its mean.** A baseline averaging 54 turns looked healthy
+   while a quarter of its games were 100-turn draws, so each row also gets p50/p90/max turns, the
+   count of games that reached the cap, and **how many of the 12 bodies a capped game actually
+   lost** — a low count is a standoff between two walls, a high one is a grind that never resolved,
+   and those need different fixes.
+
+Every batch runs `--mode full`. A spliced battle hands the engine a recorded human line, which is
+not comparable across variants, so the ablation never splices.
+
+**What it has found so far** (numbers, intervals and the two instrument bugs the output exposed are
+in [CHANGELOG.md](CHANGELOG.md)). Two runs on the same seed: of eighteen flags, exactly one separates
+from noise at 60–150 paired battles — **`laplace.quiescence` costs the engine about 19 win points**,
+and the loss is entirely its `extendSetup` half (switching that off reproduces switching the whole
+tier off battle for battle, while `blockProtect` changes no decision at all). The mechanism the
+numbers support is that pricing the opponent's boosted reply as a certainty pushes the engine onto
+non-committal lines: the baseline draws **30.7 %** of its games at the 100-turn cap, and those
+capped games have lost only **5.4 of 12 bodies** — a standoff, not a loss — which disabling the
+setup ply cuts to **10.0 %** while turning 29 of those draws into wins. That is a measurement against
+three fixed personas, so it is handed over as evidence, not as a config change.
+
+The second sweep priced the four newest tiers, and **exactly one cleared the gate: turn urgency**
+(`laplace.urgency`), now adopted and on by default. 60 paired battles per arm, all three personas,
+one seed: win rate **68.3 % → 96.7 %** (Δ **+28.3**, 95 % CI **[+18.3, +40.0]**), and the baseline's
+**17 100-turn cap ties — every tie it played — fell to 1**. The other three rows came back flat for
+three *different* reasons, which is the whole point of reading a flat row carefully: **`absence-rules`
+provably fires** (176 of 624 pruner calls struck an ability for a silent switch-in over 12 battles)
+and still changed no ranking, so it is unresolved rather than disproved; **`elo-band`** needs a
+ladder rating @pkmn/sim never emits; and **`comeback`** scales a volatility charge the arena cannot
+price. The sweep also exposed an instrument bug worth more than the result — `src/set_pruner.js`
+reads its `pruner.*` tunables at LOAD time, so any `--set` on the pruner family was measuring
+nothing; the arena now applies its patch from inside `loadHarness`, and
+tests/ablation_check.js pins the ordering both ways.
 
 ## The four rules this engine is built on
 
@@ -1072,7 +1210,7 @@ the current turn, so it says which line to click now, not how the stall resolves
   over the same 128 inputs are all different bets, and any of them would have to clear the same
   hold-out and bootstrap gate before it could touch the engine.
 * Nothing here has been verified in a real browser. The parser, state manager, engines and HUD
-  are covered by the twenty-six Node suites and stub DOMs; no suite can prove how Showdown's live
+  are covered by the twenty-eight Node suites and stub DOMs; no suite can prove how Showdown's live
   control bar renders or how the extension behaves on an actual Android device.
 * The arena produces evidence about three shapes, not a ladder rating. It runs `@pkmn/sim` 0.10.11
   with a seeded RNG, not the live Showdown server, and its three personas are heuristics — a one-ply
@@ -1084,10 +1222,22 @@ the current turn, so it says which line to click now, not how the stall resolves
 * The arena needs `@pkmn/sim`, a devDependency, and its suite takes the skip path without an
   `npm install` — so CI's fast gate verifies everything EXCEPT the arena, which is what the separate
   `arena` job in CI is for. The skip says exactly what it did not verify.
+* **The ablation runner's power is bounded by its corpus, not by its statistics.** Sixty paired
+  battles per variant puts the standard error near 6 win-rate points, which is why the first sweep
+  separated exactly one feature from noise; the interval, the pairing and the `identical` flag are
+  all honest at that size, but a "no measurable effect" row at 60 battles is a statement about the
+  sample, not about the flag. The 500-battle command is the number to quote, and the whole table at
+  500 is roughly five hours single-threaded (`--parallel 4` brings it near an hour and a half).
+  Against three fixed personas with curated teams the corpus is also narrow: a flag that only
+  matters on boards those three never reach measures as a no-op here, which is why most rows come
+  back identical and why those rows are reported as unresolved rather than as neutral. The one
+  adoption so far — turn urgency — rests on that same 60-battle sample; its interval is far from
+  zero and the mechanism (converting cap ties into wins) is visible in the turn shape, but the
+  headline number is a 60-battle one.
 * A harvested vaccine is a failing suite entry until the defect behind it is fixed, and the
   harvester writes into a committed file. `--harvest` is therefore a mutating operation on the
   repository: run it deliberately, and commit the vaccine together with the fix that turns it green.
-* `tests/hardening_audit.js` is the bug-hunt regression suite: ten defects found by the audit
+* `tests/hardening_audit.js` is the bug-hunt regression suite: eleven engine-side defects found by the audit
   (symptoms, root causes, fixes and the verification evidence are in `BUGS_AUDIT_REPORT.md`),
   each pinned by an assertion that fails on the code as it was, plus a 40-battle seeded fuzz
   that asserts the solver's invariants over random-but-legal protocol streams.

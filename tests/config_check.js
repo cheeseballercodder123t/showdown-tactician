@@ -114,6 +114,12 @@ const INVENTORY = [
   'laplace.nash.enabled', 'laplace.nash.iterations',
   // quiescence (the setup punisher: the two replies the 1-ply matrix priced as no-ops)
   'laplace.quiescence.enabled', 'laplace.quiescence.extendSetup', 'laplace.quiescence.blockProtect',
+  // comeback mode (ships off) + turn urgency (ADOPTED, ships on; adopted on the 60-battle sweep)
+  'laplace.comeback.enabled', 'laplace.comeback.winMargin', 'laplace.comeback.lossMargin',
+  'laplace.comeback.winChargeScale', 'laplace.comeback.lossChargeScale',
+  'laplace.urgency.enabled', 'laplace.urgency.startTurn', 'laplace.urgency.rampTurn',
+  'laplace.urgency.breakoutTurn', 'laplace.urgency.maxBonus', 'laplace.urgency.breakoutScale',
+  'laplace.urgency.minBasePower', 'laplace.urgency.passiveMalus',
   // the four gated policy tiers (each `enabled: false` until it has been measured, so a deleted
   // key here is a module that silently stops being registered)
   'laplace.scouting.enabled', 'laplace.scouting.maxBounty', 'laplace.scouting.minEntropy',
@@ -130,6 +136,8 @@ const INVENTORY = [
   'clock.enabled', 'clock.fastMs', 'clock.slowMs', 'clock.minSamples', 'clock.maxHistory',
   'clock.switchKeepThreshold', 'clock.switchPrior.auto', 'clock.switchPrior.normal',
   'clock.switchPrior.agonised', 'clock.switchPrior.unknown',
+  'clock.ratingBands.enabled', 'clock.ratingBands.low', 'clock.ratingBands.high',
+  'clock.ratingBands.lowFactor', 'clock.ratingBands.midFactor', 'clock.ratingBands.highFactor',
   // evaluator
   'evaluator.dim', 'evaluator.team', 'evaluator.scale', 'evaluator.tanhDenominator',
   'evaluator.unknownHpDefault', 'evaluator.threatEffSpan', 'evaluator.offenseBasePowerCap',
@@ -170,6 +178,7 @@ const INVENTORY = [
   'hud.vibrate.enabled', 'hud.vibrate.pattern', 'hud.vibrate.trLastTurn',
   'hud.benchStripMax', 'hud.overlord.probeMove', 'hud.overlord.probeDefender',
   'hud.receipt.maxDamageRows', 'hud.receipt.copyLabel',
+  'hud.leadAdvisory.enabled',
   // llm
   'llm.timeoutMs', 'llm.geminiModel', 'llm.openrouterModel', 'llm.geminiEndpoint',
   'llm.openrouterEndpoint', 'llm.maxPromptWords', 'llm.maxReasonWords', 'llm.systemPrompt',
@@ -179,6 +188,8 @@ const INVENTORY = [
   'pruner.damageEvidence.enabled', 'pruner.damageEvidence.slackPct',
   'pruner.damageEvidence.slackRel', 'pruner.damageEvidence.minDamagePct',
   'pruner.damageEvidence.maxObservations', 'pruner.damageEvidence.maxSetsTested',
+  'pruner.abilityDeduction.enabled', 'pruner.abilityDeduction.statusRules',
+  'pruner.abilityDeduction.groundRules', 'pruner.abilityDeduction.absenceRules',
   // state
   'state.maxActiveStints', 'state.maxLog'
 ];

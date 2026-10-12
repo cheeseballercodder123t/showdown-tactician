@@ -155,9 +155,14 @@ function createFakeDocument() {
 
 /**
  * Load every script that exists, in manifest order. Throws on syntax errors.
- * opts.skip:    array of relative paths to skip.
- * opts.through: stop after this relative path (inclusive) - use this instead of slicing
- *               MANIFEST_ORDER by index, which silently breaks when a file is inserted.
+ * opts.skip:      array of relative paths to skip.
+ * opts.through:   stop after this relative path (inclusive) - use this instead of slicing
+ *                 MANIFEST_ORDER by index, which silently breaks when a file is inserted.
+ * opts.afterEach: fn(sandbox, rel) called right after each file is evaluated. This exists so a
+ *                 caller can change the state a LATER module captures at its own load time - the
+ *                 pruner reads its config leaves into module constants while it loads, so a
+ *                 patch applied only after loadAll() returns can never reach them. The window
+ *                 between config.js and the modules that consume it is the whole point.
  */
 function loadAll(overrides, opts) {
   opts = opts || {};
@@ -172,6 +177,7 @@ function loadAll(overrides, opts) {
     const code = fs.readFileSync(abs, 'utf8');
     vm.runInContext(code, sandbox, { filename: rel });
     loaded.push(rel);
+    if (typeof opts.afterEach === 'function') opts.afterEach(sandbox, rel);
     if (opts.through && rel === opts.through) break;
   }
   sandbox.__loaded = loaded;

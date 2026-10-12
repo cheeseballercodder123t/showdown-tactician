@@ -42,6 +42,8 @@ const HARNESS_PATH = path.join(__dirname, '..', '..', 'tests', 'harness.js');
 
 /* The label the engine's state manager keys its format support off of. */
 const ENGINE_FORMAT_NAME = '[Gen 9] National Dex OU';
+/* The one file whose evaluation must happen BEFORE any --set can reach a load-time reader. */
+const CONFIG_FILE = 'src/config.js';
 /* The actual ladder format the sim runs — see fact (a) in the header. */
 const SIM_FORMAT_ID = 'gen9nationaldex';
 
@@ -51,20 +53,63 @@ let cachedHarness = null;
  * Load the engine sandbox once per process. `setInterval` is stubbed because content.js boots on
  * the harness's stubbed hostname and starts a 2.5 s heartbeat, which would keep a battle script
  * alive forever (the suites stub it the same way, for the same reason).
+ *
+ * `options.setArgs` + `options.applyPatch` — a config patch to apply WHILE the sandbox is being
+ * built, immediately after src/config.js is evaluated and before every module that captures its
+ * tunables at load time (src/set_pruner.js reads `pruner.*` into module constants; the ability
+ * deduction switches are among them). Applying the same patch after loadAll() returns updates the
+ * config OBJECT but leaves those constants stale, which turns a real flag into a measurement of
+ * nothing — the exact failure a benchmark must not have. The applied-flag echo is returned so a
+ * caller can still prove the patch landed.
+ *
+ * The cache is process-wide and keyed on nothing: the arena applies ONE patch before any session
+ * is constructed, and every later session (including the ones that call loadHarness() with no
+ * options) must see that same patched sandbox.
  */
 function loadHarness(options) {
-  if (cachedHarness && !(options && options.fresh)) return cachedHarness;
+  const opts = options || {};
+  const setArgs = Array.isArray(opts.setArgs) ? opts.setArgs : null;
+  const applyPatch = typeof opts.applyPatch === 'function' ? opts.applyPatch : null;
+  const wantsPatch = !!(setArgs && setArgs.length);
+  if (wantsPatch && !applyPatch) {
+    throw new Error('engine_bridge.loadHarness: setArgs were given without an applyPatch function — ' +
+      'refusing to build a sandbox that would look patched while measuring the shipped config');
+  }
+  const signature = wantsPatch ? JSON.stringify(setArgs) : '';
+  /* A caller with NO patch is asking for "this process's sandbox", so it takes the cache whatever
+   * that cache holds — which is how every session built after run_arena's patched load ends up
+   * sharing the patched config. A caller that NAMES a patch must never be served a cache built
+   * with a different one (its batch would silently be the wrong config), so a mismatch falls
+   * through and rebuilds instead of returning. */
+  if (cachedHarness && !opts.fresh) {
+    if (!wantsPatch || cachedHarness.signature === signature) return cachedHarness;
+  }
+  /* The other half of the same trap: a fresh UNPATCHED build while a patch is active would replace
+   * the cache and silently un-patch every later session in the process. Loud beats plausible. */
+  if (opts.fresh && cachedHarness && cachedHarness.signature && !wantsPatch) {
+    throw new Error('engine_bridge.loadHarness: refusing a fresh load with no setArgs while a config ' +
+      'patch is active — pass the same patch back so the sandbox cannot be silently un-patched');
+  }
   const harness = require(HARNESS_PATH);
+  let appliedSets = null;
+  const loadOpts = opts.harnessOpts ? Object.assign({}, opts.harnessOpts) : {};
+  if (wantsPatch) {
+    loadOpts.afterEach = function (sandbox, rel) {
+      if (rel === CONFIG_FILE && sandbox && sandbox.ST && sandbox.ST.CONFIG) {
+        appliedSets = applyPatch(sandbox.ST, setArgs);
+      }
+    };
+  }
   const sandbox = harness.loadAll({
     setInterval: function () { return 0; },
     clearInterval: function () { }
-  }, (options && options.harnessOpts) || {});
+  }, loadOpts);
   const ST = sandbox.ST;
   if (!ST || !ST.TacticianBoot) {
     throw new Error('engine_bridge: the harness loaded but ST.TacticianBoot is missing — the ' +
       'engine manifest order in tests/harness.js no longer exposes the boot class');
   }
-  cachedHarness = { harness: harness, sandbox: sandbox, ST: ST };
+  cachedHarness = { harness: harness, sandbox: sandbox, ST: ST, appliedSets: appliedSets, signature: signature };
   return cachedHarness;
 }
 

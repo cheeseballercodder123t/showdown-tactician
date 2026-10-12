@@ -264,6 +264,33 @@ function main() {
     other.setFormat('[Gen 9] OU');
     eq('state: non-NatDex format is gated off', other.state.formatSupported, false);
 
+    /* The gate is an ALLOWLIST, and these are the names it has to accept and refuse. The first four
+     * are the supported format under the names Showdown actually uses: `[Gen 9] National Dex` is
+     * what the ladder puts on the wire — the literal `|init|`/`|tier|` text in test_log.txt, with no
+     * "OU" in it — and `gen9nationaldex` is the id `>start {"formatid":...}` sends. The refusals
+     * are the sibling tiers the previous reject-list forgot: it named the lower tiers someone had
+     * thought of, so any OTHER NatDex name (Ubers, a NatDex OM) came back supported and the engine
+     * answered in a tier its set and usage data does not describe. */
+    const fmtOK = function (n) {
+      const m = new S.ST.BattleStateManager();
+      m.setFormat(n);
+      return m.state.formatSupported;
+    };
+    eq('state: the ladder\'s own name is supported (no "OU" on the wire)', fmtOK('[Gen 9] National Dex'), true);
+    eq('state: so is the classic display name', fmtOK('[Gen 9] National Dex OU'), true);
+    eq('state: and the sim id', fmtOK('gen9nationaldex'), true);
+    eq('state: and the sim id with the ou suffix', fmtOK('gen9nationaldexou'), true);
+    eq('state: an empty header fails open (the battle may not have started yet)', fmtOK(''), true);
+    eq('state: National Dex Ubers is gated off (the reject-list let it through)',
+      fmtOK('[Gen 9] National Dex Ubers'), false);
+    eq('state: that same tier by sim id is gated off too', fmtOK('gen9nationaldexubers'), false);
+    eq('state: a NatDex other-metagame is gated off',
+      fmtOK('[Gen 9] National Dex Almost Any Ability'), false);
+    eq('state: a lower tier is still gated off', fmtOK('[Gen 9] National Dex UU'), false);
+    eq('state: a doubles NatDex is still gated off', fmtOK('[Gen 9] National Dex Doubles'), false);
+    eq('state: another generation is gated off (the engine and its data are gen 9)',
+      fmtOK('[Gen 8] National Dex'), false);
+
     // Trick Room lifecycle on a synthetic stream
     const tr = new S.ST.BattleStateManager();
     const trParser = new S.ST.ProtocolParser();

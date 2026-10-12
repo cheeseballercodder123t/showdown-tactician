@@ -6,7 +6,195 @@ provenance — why a number is what it is, and what was tried and rejected. Entr
 
 ## Unreleased
 
+### Fixed
+
+- **Four unsound eliminations in the negative-space ability deduction, found by a review sweep.**
+  Each one let the pruner drop a candidate set on evidence that does not disprove it, which is the
+  single failure mode this tier was built to avoid. All four are pinned by new checks in
+  `tests/ability_check.js` (56, up from 40), and each new check was verified to FAIL with its fix
+  reverted:
+  - **`magmaarmor` was listed as a burn immunity.** It prevents FREEZE only (and was already
+    correctly listed under `frz`), so an ordinary burn eliminated every Magma Armor set. Removed
+    from `brn`, and `waterbubble` — which genuinely does prevent burns — added.
+  - **Any damage in the same turn a Ground move was aimed read as "the Ground move connected".** A
+    missed Earthquake followed by a burn tick, sandstorm, Leech Seed, hazard or recoil in that same
+    turn eliminated Levitate / Earth Eater. The conclusion now requires a DIRECT hit: the protocol
+    marks residual damage with a `[from]` clause, and a direct hit carries none.
+  - **The Gravity guard was applied at prune time only.** `groundDisproved` is a permanent latch, so
+    a Ground move that connected while Gravity was up (which proves nothing, Gravity negatives
+    Levitate) kept eliminating Levitate after Gravity lifted. Gated at the observation too.
+  - **A Mold Breaker / Teravolt / Turboblaze attacker was not excluded.** Their Ground move
+    connects straight through Levitate, and their Fire move burns a Water Veil holder, so neither
+    observation is evidence about the defender. The attacker's ability is now consulted when it is
+    KNOWN (documented residual: an unrevealed Mold Breaker attacker is indistinguishable).
+  - Same class, same sweep: a status that landed while a **Neutralizing Gas** body was on the field
+    no longer disproves Water Veil / Thermal Exchange / Comatose / Purifying Salt. The state manager
+    stamps `mon.statusSuppressed` at the instant the status lands (the Gas may be gone by the time
+    the pruner reads the state), and `pruner._abilitySuppressed` lost a branch that tested
+    `state.field.abilitySuppressed` — a field nothing in `src/` ever wrote, so it could never fire.
+- **Turn urgency and the volatility charge were inert whenever the mixed solve did not run**
+  (`src/laplace_core.js`). Both per-row deltas were folded into the simultaneous payoff matrix,
+  which only the Nash solve reads; `_softmaxConfidence` reads the row SCORE directly, so with
+  `laplace.nash.enabled: false` — a documented, supported switch — an adopted, ON-by-default tier
+  silently did nothing. Measured before the fix: the committing line's score did not move at all
+  (434.4115 -> 434.4115 where +240 was expected). Both deltas now fold into the row score as well;
+  there is no double count, because the solve path replaces the score with its own row value, which
+  already carries the same delta exactly once. Pinned in `tests/tuning_check.js` (52, up from 48),
+  verified to fail with the fix reverted.
+- **The arena's `--set` echo is now asserted, not just printed** (`tools/run_arena.js`). The echo is
+  produced by the mid-load patch hook, which is keyed on `src/config.js` still being the file its
+  manifest entry names; if that ever stopped matching, the run would have reported the SHIPPED
+  config wearing a variant's label and exited 0. A short echo is now a setup error (exit 2).
+  `engine_bridge.loadHarness` also refuses two ways to reach the same false negative: `setArgs`
+  without an `applyPatch`, and a fresh UNPATCHED load while a patch is live (which would un-patch
+  every later session in the process). Pinned in `tests/ablation_check.js` (251).
+- **The opponent clock kept the previous opponent's rating** (`src/content.js`). `reset()` clears
+  the deliberation floor on a new battle but deliberately cannot clear the rating (the constructor
+  seeds it from `opts.rating` after calling `reset()`), so the broker clears it alongside the floor.
+  Harmless while `clock.ratingBands` ships off; wrong the moment it does not.
+
+### Changed
+
+- **Turn urgency is ADOPTED and on by default** (`laplace.urgency.enabled: true`). It was the only
+  one of the four newest tiers to clear the config-flag ablation gate. The measurement, at the
+  repo's standard sample: 60 battles per arm across all three league personas on one shared seed
+  (`1337`), paired per battle, 2000-resample paired bootstrap on the win indicator (not the
+  win/tie/loss score) —
+
+  | arm | W | L | T | win% | Δwin (95% CI) | turns | cap ties |
+  |---|---|---|---|---|---|---|---|
+  | baseline | 41 | 2 | 17 | 68.3% | — | 54.4 | 17/60 |
+  | turn urgency (ON) | 58 | 1 | 1 | 96.7% | **+28.3 [+18.3, +40.0]** | 49.9 | **1/60** |
+
+  The 17 baseline cap ties were EVERY tie it played, and urgency converted 16 of them into wins;
+  p90 game length fell 101 → 89. It is the tier the 100-turn standoff was waiting for. The other
+  three measured flat and STAY OFF — see below for why each flat row means something different.
+- **The ablation runner's `--set` now reaches LOAD-TIME readers, not only construction-time ones.**
+  `src/set_pruner.js` reads its `pruner.*` tunables into module constants while it is EVALUATED, so
+  a config patch applied after the harness was loaded updated the config object and left those
+  constants stale. Any pruner row in the table (`damageEvidence`, `residualOrder`, `scout`,
+  `abilityDeduction.*`) would have measured as a perfectly flat, confidently reported **false
+  negative**. `loadHarness` now takes the patch and applies it the moment `src/config.js` has run
+  (`tests/harness.js` grew an `afterEach` hook for it). Pinned by a new section in
+  `tests/ablation_check.js` that drives the real pruner both ways — it asserts the load-time rule
+  FIRES, and that the same patch applied only after the load does NOT, so the ordering is the thing
+  under test rather than a default.
+- **The four newest tiers are registered in the feature table** (`absence-rules`, `elo-band`,
+  `urgency`, `comeback`), each carrying what its flat row means where that is known. Measured over
+  the same 60-battle corpus with the merge above in place:
+  - **`absence-rules` — FIRES, but moves no ranking here.** Counted directly: 624 pruner calls over
+    12 battles with the flag on, 176 of them striking an ability for a silent switch-in (1,584
+    ability bans). So its flat row is the second of the two cases, "the input arrives and never
+    changes a ranking" — not "the input never arrived". Narrowing the opponent model only moves a
+    decision when the discarded set would have won the ranking, which against three curated personas
+    it never does. Unresolved for adoption, not disproved.
+  - **`elo-band` — not measurable in this harness.** The band needs the ladder rating, which the
+    protocol only carries on `|player|p2|Name|avatar|1480`. `tools/headless_arena/sim_runner.js`
+    creates both players without a `rating` option, so @pkmn/sim emits
+    `|player|p2|Adversary||` (verified against the sim), `state.opponentRating` stays null, and
+    `OpponentClock.ratingFactor()` returns the identity by design.
+  - **`comeback` — unpriceable in this harness, same cause as `volatility`.** It scales only the
+    volatility charge, and `_volatilityDelta` returns a zero penalty before it reaches that scale
+    when `state.moveAccuracy` is empty — which it always is in the arena, because only
+    `src/injected.js` populates it from the client's own `|stacc|` snapshot.
+  - **`urgency` — the adoption above.**
+- `tests/tuning_check.js` now pins turn urgency's ADOPTED default and drives the identity through
+  an explicit constructor override (48 checks, up from 45); the README's suite list and counts were
+  updated with it.
+
 ### Added
+
+- **Negative-space ability deduction in the pruner** (`src/set_pruner.js`, rule tables in
+  `src/util.js`). The pruner narrowed the opponent's candidate sets by ITEM and MOVE; abilities were
+  only ever read the other way (a revealed ability disproved the sets naming a different one). Two
+  rules now run in the opposite direction, both on POSITIVE evidence: a status a body is CARRYING
+  disproves every candidate whose ability makes that status impossible
+  (`U.STATUS_IMMUNITY_ABILITIES`), and damage only a GROUNDED body can take — a connecting Ground
+  move, or Spikes / Sticky Web, but never Stealth Rock — disproves Levitate / Earth Eater, with the
+  Gravity guard that observation actually needs (Gravity grounds everyone, so there it proves
+  nothing). A third family, ABSENCE of evidence (a switch-in Intimidate or weather/terrain surge
+  that never fired), is implemented but ships OFF (`pruner.abilityDeduction.absenceRules`), because
+  Neutralizing Gas and friends can silence the announcement and this repo does not eliminate on a
+  guess. Each family is switchable on its own; the suite drives real protocol lines and pins both
+  the eliminations and the documented fallback when every candidate is disproved.
+- **The opponent's ladder rating is carried on the state** (`|player|p2|Name|avatar|1480`), and the
+  clock can band its single switch-reply factor by it (`clock.ratingBands`). The band ships OFF:
+  the factors are priors, not measurements.
+- **Comeback mode and turn urgency** (`laplace.comeback`, `laplace.urgency`), both shipping OFF.
+  Comeback mode scales the EXISTING volatility charge by where the evaluator puts the board
+  (sharpened when ahead, softened when behind). It deliberately does NOT touch
+  `laplace.temperature`: with `nash.enabled` the default, temperature governs only the legacy
+  softmax path, so lowering it would change nothing about the ranked line. Turn urgency adds a
+  bounded, ramping preference for COMMITTING lines over PASSIVE ones past turn 25, multiplied at
+  the breakout turn — it re-ranks rows and can never override a veto or a game rule (a Protect
+  still blocks the attack; what changes is which row the engine prefers as the clock runs out).
+- **The Turn-0 lead advisory** (`src/laplace_core.js` `leadAdvisory`, wired at `|teampreview|` in
+  `src/content.js`, card in `src/ui_overlay.js`). `|teampreview|` stays inert to the parser
+  (`parser_fuzz` pins that contract), so the broker hangs off the raw command instead. Each of our
+  six bodies is scored against every opposing body through the SAME leaf evaluator the in-battle
+  decisions use, and the card shows the best and the riskiest lead. It is a MEASUREMENT, not a
+  heuristic, so it ships ON (`hud.leadAdvisory.enabled`).
+- **Three new suites** — `tests/ability_check.js` (40), `tests/tuning_check.js` (45) and
+  `tests/preview_check.js` (31) — registered in `tests/run_all.js` and documented in the README list.
+  The 36-matchup lead advisory measures at ~1.6 ms on the development machine (50 runs).
+
+- **The config-flag ablation runner** (`tools/run_ablation.js`, `npm run ablation`), plus the
+  `--set` config patch it is built on (`tools/run_arena.js`). The arena reports one win rate for the
+  whole engine; it cannot say **which** of the things deciding a move is doing the work, and every
+  tier in `src/config.js` ships gated — the mixed Nash solve can fall back to the legacy
+  single-line softmax, five board-state vetoes can each be switched off, and the optional tiers
+  ship inert. The runner spawns the arena once per variant (baseline + one batch per feature,
+  500 battles each by default, `--parallel` to make that bearable), and prints W/L/T and win/loss/
+  tie %, average turns with the stall-tie share, the delta against the baseline, and a verdict.
+- **`--set <dotted.path>=<value>`** (repeatable) patches one `config.js` tunable for a whole arena
+  run, and the run's report carries an `appliedSets` echo of `[path, from, to]`. Three properties
+  are contractual and pinned in the new suite: the patch must name a path that ALREADY exists (an
+  unknown leaf or section is a setup error, never a new key — a benchmark that measures a typo and
+  reports it as "neutral" is the worst possible outcome, because the number is plausible and the
+  conclusion drawn from it is wrong); the patch lands before the first `EngineSession` is built,
+  because a session resolves its tunables at construction (`laplace_core`'s `nash`/`volatility`/
+  `quiescence`, `opponent_clock`'s `enabled`), so one variant per process is the only honest
+  arrangement; and applying the same patch twice reports the same `from`/`to`, which the ablation's
+  echo check depends on.
+- **`tests/ablation_check.js`** — 241 checks. It does not stop at `configGet`: after each patch it
+  builds a real `LaplaceEngine` and asserts the ENGINE changed, per flag, because a patch that only
+  moved the config object would make every variant a baseline-vs-baseline comparison reported as
+  "these features do nothing". It also pins every declared patch to a real FLIP of its leaf (a
+  feature table row that sets a flag to the value it already holds measures nothing, so a stale row
+  fails loudly), the four veto fixtures end to end, the aggregation and bootstrap maths, the
+  verdict buckets, and one tiny live batch through the CLI. It skips only the live batch when
+  `@pkmn/sim` is absent, so `npm test` stays install-free for every other suite.
+- **A verdict is about significance, not sign.** At 500 battles the standard error of a win rate is
+  ~2 points, so the runner reports the delta with a 95% **paired** bootstrap over battles — the
+  same test the residual head was rejected with — and calls a feature `helps`/`hurts` only when the
+  interval excludes zero. Everything else is reported as *no measurable effect at this sample
+  size*, which is deliberately not a synonym for neutral. Pairing is re-derived from the records'
+  own `seed` fields (`verifyPairing`) rather than trusted, and a drifted pairing falls back to an
+  unpaired resample flagged `unpaired`, rather than reporting a paired interval it did not earn.
+- **`identical`, the flag that stops a flat row being read as a finding.** When a variant
+  reproduces the baseline in EVERY battle — same winner, same turn count, 60 battles a side — the
+  row is flagged and the run prints a footnote saying to check the flag's INPUT before concluding
+  anything about the feature. The first sweep produced exactly one such row, and it is a real
+  defect in the harness rather than a verdict on the tier: **the volatility charge is
+  unpriceable in the arena.** `_accuracyOf` reads `state.moveAccuracy`, which only
+  `src/injected.js` populates from the client's own `|stacc|` snapshot, and `@pkmn/sim` emits no
+  such line — so the penalty is always 0 and toggling `laplace.volatility.enabled` cannot change a
+  single decision. Measured: the variant reproduced the baseline battle for battle (41/2/17 wins,
+  54.4 turns per side, identical). All three steps (no telemetry → 0, telemetry present → -30 for a
+  70% move at `accuracyWeight` 1, `enabled: false` → 0) are pinned in the suite, and the feature
+  row carries the caveat. **The clock prior is inert in the arena for a second, verified reason:**
+  `OpponentClock._close()` returns early unless `mySubmitTs` is set, and that is set only by an
+  OUTGOING `/choose` line (kind `send`) — the arena's agent answers the sim runner directly, so the
+  boot never sees one. The history stays empty, the label stays `unknown`, and
+  `clock.switchPrior.unknown` of 1.0 is exactly what `clock.enabled = false` does. Measured the same
+  way (battle-for-battle reproduction) and pinned with the clock's own probe, since a hypothesis
+  that matched the observed flatness was written first and then falsified by reading the code.
+- **Two more flat rows are reported as UNRESOLVED rather than explained away.** Reverse damage
+  evidence and residual speed order also reproduced the baseline exactly, and no cause is
+  established. Both narrow the opponent MODEL, and a narrower model only changes a decision when it
+  removes a candidate that would otherwise have won the ranking — which may simply not happen
+  against three curated personas. Their rows carry a caveat saying so, because the honest reading of
+  a flat row is "unresolved at this sample", not "neutral".
 
 - **The headless adversarial league arena** (`tools/run_arena.js`, `tools/headless_arena/`,
   `npm run arena`). A second execution path that runs the engine against the real `@pkmn/sim` battle
@@ -67,6 +255,110 @@ provenance — why a number is what it is, and what was tried and rejected. Entr
 - **`npm run e2e` / `npm run e2e:headed`**, and `test-results/`, `playwright-report/`, `blob-report/`
   in `.gitignore`.
 
+### Measured (the first ablation sweep)
+
+`node tools/run_ablation.js --battles 60 --parallel 6 --seed 1337` — **19 batches, 1,140 battles,
+21 min 51 s**, one patch per batch on a shared seed so every variant played byte-identical games to
+the baseline. The sweep is deterministic: two complete runs produced identical W/L/T and turn counts
+for all nineteen rows, and a third run, interrupted deliberately after six batches, matched those six
+as well. Five of the nineteen rows did not land on the baseline:
+
+| variant | W | L | T | win% | Δwin (95% CI) | turns | Δturns | verdict |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| baseline | 41 | 2 | 17 | 68.3% | — | 54.4 | — | reference |
+| quiescence OFF | 50 | 2 | 8 | 83.3% | **+15.0 [+3.3, +25.0]** | 45.4 | −9.0 | **feature HURTS** |
+| nash OFF | 46 | 0 | 14 | 76.7% | +8.3 [−1.7, +18.4] | 44.4 | −10.0 | no measurable effect |
+| profile ON | 39 | 2 | 19 | 65.0% | −3.3 [−10.0, +3.3] | 54.1 | −0.3 | no measurable effect |
+| the other 15 rows | 41 | 2 | 17 | 68.3% | 0.0 | 54.4 | 0.0 | flagged `identical` |
+
+- **The one significant finding is that the quiescence tier is hurting the engine in the arena.**
+  Removing it wins **+15.0 points** with the 95% interval entirely above zero, converts a quarter of
+  the ties into wins (28.3% → 13.3%) and shortens games by nine turns. It was the author's
+  expectation that the tier `helps`, so the row is flagged `surprise` — which is exactly what the
+  `expect` field exists for. This is a measurement against three fixed personas, not a verdict on
+  the tier's idea; the honest next step is the 500-battle sweep, not a config edit.
+- **`nash` is not significant at this sample.** Removing the mixed solve is worth +8.3 points and
+  it removed the baseline's two losses outright, but 60 battles puts the standard error near 6
+  points, so the interval [−1.7, +18.4] straddles zero and the runner says so instead of calling it
+  an improvement. `profile` is the mirror image: −3.3, interval straddling zero.
+- **The baseline draws a quarter of its games at the turn cap — and that is true of every row.**
+  **17 of the 60 baseline battles (28.3%) ended tied at the 100-turn cap, and every tie any row
+  played was a cap tie**: not one row produced a genuine draw. No variant tripped the `stall` flag,
+  because that flag is a DELTA and none of them made stalling *worse* — and the first reading of this
+  sweep took "no stall flag" to mean "no stalling", which the numbers refute. So the runner now
+  prints the absolute baseline level on its own line (and the suite pins that it does, including the
+  wording that warns against exactly this misreading). This also sharpens the quiescence result:
+  switching the tier off converted nine of those cap ties into **wins** (ties 28.3% → 13.3%, wins
+  41 → 50) and cut games by nine turns, so the tier is not merely losing games, it is failing to
+  close them out.
+- **15 of the 19 rows reproduced the baseline in every single battle**, and that is a finding about
+  the benchmark's power as much as about the features. Three causes, kept apart on purpose: two
+  are **verified harness gaps** (`laplace.volatility` needs the `|stacc|` snapshot, `clock` needs an
+  outgoing `/choose` — see the Added entry above; both are pinned in the suite); two are
+  **documented controls** (`pruner.scout`, `usage` ship with empty overlays, so flat is the expected
+  result and a delta there would be the bug); the rest are **unresolved** and carry a caveat saying
+  so rather than a plausible-sounding story.
+- **Two bugs in the instrument were found by reading its own output, and both are fixed and pinned.**
+  The first sweep printed `quiescence OFF: Δwin +15.0, 95% CI [+1.7, +12.5]` — a point estimate
+  outside its own interval, because the delta was a win-rate difference while the bootstrap resampled
+  the win/tie/loss SCORE. The interval is now bootstrapped on the win indicator that the delta is
+  computed from, and the suite pins the two scales apart with a case where they disagree (win scale
+  −0.5, score scale 0). The second was framing: the verdict was the VARIANT's direction printed under
+  the FEATURE's name, so `quiescence (off) → helps` read as "quiescence helps" when the measurement
+  says the opposite. Every row now declares which way its patch points and reports what the FEATURE
+  does (`feature HURTS (switching it off +15.0)`), with a `surprise` flag when the result contradicts
+  the recorded expectation.
+- **Scale note.** The brief asks for 500 battles per variant; that is now `--battles 500` on the
+  same command and it is the number to quote. 60 is what fit here, and its ~6-point standard error
+  is why only a +15.0 effect cleared its interval — the sweep's low power is itself reported, not
+  hidden behind a table of zeros.
+
+### Measured (isolating the quiescence result)
+
+The first sweep left one significant finding and one epidemic, so the next run did nothing but split
+them. `node tools/run_ablation.js --features quiescence,quiescence-extendsetup,quiescence-blockprotect
+--battles 150 --parallel 4 --seed 1337` — 4 batches, 600 battles, **18 min 33 s**:
+
+| variant | W | L | T | win% | Δwin (95% CI) | turns | capped | verdict |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| baseline | 100 | 4 | 46 | 66.7% | — | 52.1 | 46/150 | reference |
+| `quiescence.enabled = false` | 129 | 6 | 15 | 86.0% | **+19.3 [+12.0, +26.7]** | 41.7 | 15/150 | feature HURTS |
+| `quiescence.extendSetup = false` | 129 | 6 | 15 | 86.0% | **+19.3 [+12.0, +26.7]** | 41.7 | 15/150 | feature HURTS |
+| `quiescence.blockProtect = false` | 100 | 4 | 46 | 66.7% | 0.0 [0.0, 0.0] | 52.1 | 46/150 | FLAT (`identical`) |
+
+- **The entire harm is the setup ply.** Switching `extendSetup` off reproduces switching the whole
+  tier off *battle for battle* — same 129/6/15, same 41.7 average turns, same interval. The tier was
+  split into two knobs precisely so this could be asked, and the answer is that the Protect half is
+  not implicated at all.
+- **`blockProtect` is inert in this corpus and is NOT dead code.** `tests/quiescence_check.js`
+  proves the shield blocks our move inside the cell and that `blockProtect: false` reproduces the
+  legacy 1-ply number exactly, so the knob works and their Protect does reach it. It changed no
+  decision in 150 battles because their shield never landed on a cell where the block flipped the
+  choice. That row is flagged `identical`, and the runner's footnote now offers both possible causes
+  instead of diagnosing one — an earlier wording asserted "the input never arrived", which this row
+  disproves. Naming the wrong cause is how a flat row becomes a false finding.
+- **The epidemic is a standoff, and the setup ply is what causes it.** The baseline capped **46 of
+  150 games (30.7%)**, and those capped games had lost only **5.4 of the 12 bodies** — two walls
+  staring at each other, not a resolved game. Disabling the setup ply cuts the cap rate to **15 of
+  150 (10.0%)**, turns 29 of those 46 draws into **wins**, and shortens the average game by 10.4
+  turns. The reading that fits every number: pricing their boosted reply as a certainty pushes the
+  engine onto non-committal lines that cannot close a game out. It does not merely lose games, it
+  declines to win them.
+- **The 150-battle run agrees with and sharpens the 60-battle one** (+15.0 → +19.3 on the same seed
+  and corpus, with the interval moving further from zero), which is what a real effect does when the
+  sample quadruples and what a fluke would not.
+- **Nothing was changed on the strength of this.** The tier was adopted because it fixes specific
+  mis-priced lines, and `tests/quiescence_check.js` still pins every one of them; this measurement
+  says it costs more than it buys *against three fixed personas*, which is a different claim from
+  "it is wrong". The decision needs the 500-battle sweep (and a look at whether it is the extension's
+  GUARDS that should tighten rather than the tier that should go), so the finding ships as evidence
+  with its exact numbers and interval, not as a config edit.
+- New tooling the isolation needed, all pinned in `tests/ablation_check.js`: a row per sub-knob
+  (`parent` marks the family, so a multi-decision tier can be split without inventing a new tool),
+  and the **turn shape** — p50/p90/max turns, the count of games that reached the cap, and the
+  faints a capped game actually had, shown as `-> STANDOFF` or `-> grind`. A mean of 52 turns hid a
+  30% draw rate completely; the shape is what made the epidemic visible enough to be worth this run.
+
 ### Changed
 
 - **The move-dex lookup was 52% of a turn; it is now a cache.** A CPU profile of one real turn put
@@ -87,6 +379,63 @@ provenance — why a number is what it is, and what was tried and rejected. Entr
   `node --cpu-prof`; nothing here was adopted on the strength of a claim.
 
 ### Fixed
+
+- **A check suite was written and then never run.** `tests/quiescence_check.js` — 71 checks pinning
+  the setup punisher's boost table, the per-call boost override, the Protect-blocked cell, the
+  affordability guards and the purity/determinism of every re-priced leaf — was absent from
+  `tests/run_all.js`'s `SUITES` and had no `package.json` script, so neither `npm test` nor CI had
+  ever executed it. Nothing signalled this: the suite is green when run by hand, it is documented in
+  the README's suite list, and this changelog cites it as evidence for the quiescence tier, so it
+  read as covered while being the one suite the command skipped. Every regression it was written to
+  catch would have landed silently. It is registered now, which puts it in the path of every push
+  (`npm test`: **28 suites, 121 s, all green**; the suite itself runs in 1.3 s, so it costs the
+  command nothing). Found by diffing the README's documented suite list against `SUITES` rather than
+  trusting either — the same diff also caught two defects in that list: two suites were jammed onto
+  one line (so it under-counted its own entries), and three suites carried no check count. A sweep
+  of every file in `tests/` confirms this was the only orphan suite: `perf_bench.js` is deliberately
+  outside `npm test` (it is a benchmark with its own `npm run bench*` scripts, informational unless
+  `--assert` is passed).
+
+- **A registry gate in `tests/run_all.js`, so this cannot recur silently.** Before it spawns
+  anything, the runner now asserts that every `.js` file in `tests/` is either in `SUITES` or a
+  declared exception WITH its reason (`harness.js` is the loader, `perf_bench.js` is the benchmark,
+  `run_all.js` is the runner — an exception must be argued in the source, which is the opposite of
+  the silent skip that caused the defect above), and that the README's "Run everything" list names
+  **exactly** the registered set. Both directions fail: a suite nobody runs, and a documented suite
+  that does not exist, are the same defect seen from either side. Failure prints the offending names
+  and exits 1 without running a single suite, so `npm test` and CI cannot pass while the registry and
+  the documentation disagree. Both branches were exercised, not assumed: with a probe suite file in
+  `tests/` the gate named it and exited 1 before spawning; with one suite line un-documented in the
+  README it named that suite and exited 1. `npm test` then runs green (28 suites, 116 s) — which is
+  itself the assertion that the README and `SUITES` agree, since the gate would otherwise refuse.
+- **Two stale claims in the docs around that list.** `tests/hardening_audit.js` was documented at 48
+  checks where the suite reports 64 (its own header and the changelog both said 64; the README never
+  followed the 46 → 64 bump), and the e2e job's comment in `ci.yml` still called the Node suites a
+  ~30 s job. The wall clock is load-dependent, which is why a single number was wrong in both
+  directions: the identical command measured **116 s, 121 s and 39 s** on this machine within the
+  hour (the per-suite times move with it — `cross_check` 13.9 s to 39.5 s, `ablation_check` 5.4 s to
+  22.8 s), dominated by `cross_check`, `ablation_check` and `arena_check`. The docs now say 39 s to
+  2 min rather than a figure the next run would contradict. Every one of the 28 documented per-suite
+  counts is diffed against what the suite actually reports, mechanically rather than by eye.
+
+- **The format gate failed OPEN on every sibling tier it had not thought of.** `setFormat` decided
+  support by enumerating the tiers to *reject* (`not uu/ru/nu/pu/doubles/monotype/...`), so any
+  National Dex name that was not on that list was reported as supported: measured through the real
+  pipeline, `[Gen 9] National Dex Ubers`, `gen9nationaldexubers` and
+  `[Gen 9] National Dex Almost Any Ability` all set `formatSupported = true`. The engine would then
+  answer in a tier its set database, usage overlay and calibration do not describe — confidently, and
+  with the HUD reporting the format as fine. The rule is now an **allowlist that names the format we
+  support** (`[Gen 9] National Dex` — the ladder's own string, verbatim in `test_log.txt`, which has
+  no "... OU" on the wire — plus `[Gen 9] National Dex OU`, `gen9nationaldex`,
+  `gen9nationaldexou`), which cannot forget a tier: anything else is gated off, including other
+  generations. Empty/unknown headers still fail open, deliberately, since the battle may not have
+  started. Pinned by 11 new checks in `run_tests.js`'s format-gate block (218 → 229 checks) covering
+  the four accepted names, the fail-open case, and Ubers / a NatDex OM / a lower tier / doubles /
+  another generation as refusals. **This was found chasing a report that the engine shuts itself OFF
+  on the ladder's `[Gen 9] National Dex` naming — that report is wrong for this code, which never
+  required "OU": the twelve-case probe over the real parser and state manager shows the live ladder
+  header is accepted, and `tests/hardening_audit.js` already pinned it. The real defect in that area
+  is the opposite direction, and it is the one fixed above.**
 
 Seven defects the arena found while it was being built (not an audit sweep, but each is a real bug
 with a suite pinning it now):

@@ -190,7 +190,11 @@
         // A fresh battle: the deliberation floor is per-connection and per-opponent, so it must
         // not be inherited from the previous game. Same for the bench selection and the one-shot
         // Trick Room alert.
-        if (this.clock) { this.clock.reset(); this._syncClock(); }
+        // The deliberation floor is per-connection and per-OPPONENT, and so is the rating the
+        // Elo band reads: a rating left over from the previous game is exactly as wrong as a stale
+        // floor, so it is cleared with them. (It has to happen here rather than inside reset(),
+        // which the constructor calls AFTER seeding opts.rating.)
+        if (this.clock) { this.clock.reset(); this.clock.setRating(null); this._syncClock(); }
         this.selectedBenchId = null;
         this._trAlerted = false;
         if (this.hud && typeof this.hud.dismissReceipt === 'function') this.hud.dismissReceipt();
@@ -204,7 +208,24 @@
         }
         return undefined;
       }
-      if (event.type === 'unknown') return undefined;
+      if (event.type === 'unknown') {
+        // `|teampreview|` is deliberately INERT to the parser and the state manager (it is room
+        // chatter, and parser_fuzz pins that contract), but it is the one moment both rosters are
+        // visible and nothing else is. Handle it here from the raw command rather than inventing a
+        // new event type.
+        if (event.cmd === 'teampreview') this._computeLeadAdvisory();
+        return undefined;
+      }
+      if (event.type === 'player') {
+        // Carry the OPPONENT's ladder rating (`|player|p2|Name|avatar|1480`) onto the clock. The
+        // Elo bands ship off, so this is telemetry until they are enabled; the state manager has
+        // already stored both ratings on the state itself.
+        if (this.clock && event.side && this.state) {
+          const pst = this.state.state || this.state;
+          if (pst && event.side === pst.oppSide) { this.clock.setRating(event.rating); this._syncClock(); }
+        }
+        return undefined;
+      }
       if (event.type === 'request') {
         return this._onRequest();
       }
@@ -236,6 +257,11 @@
       if (event.type === 'turn' && this.trickRoom) {
         try { this.trickRoom.tick(this.state ? (this.state.state || this.state) : null); } catch (e) { this._error('tr-tick', e); }
         if (this.hud && this.state) this._refreshNonDecisionUi();
+      }
+      // The lead advisory is a Turn-0 card: once the battle is actually under way it is stale, so
+      // the first |turn| takes it down.
+      if (event.type === 'turn' && this.hud && typeof this.hud.dismissLeadAdvisory === 'function') {
+        try { this.hud.dismissLeadAdvisory(); } catch (e) { this._error('lead-dismiss', e); }
       }
       // The end of the match: build the receipt from the counters the state manager kept.
       if (event.type === 'win' || event.type === 'tie') {
@@ -342,6 +368,26 @@
           if (best && self.hud.updateLLMReason) self.hud.updateLLMReason(best.name, readout.reason);
         }).catch(function () { /* the bridge already swallows errors */ });
       } catch (e) { this._error('llm', e); }
+    }
+
+    /**
+     * Compute the Turn-0 lead advisory and publish it (state.leadAdvisory + the HUD card).
+     * Defensive: a missing engine or an engine that throws leaves the previous value alone.
+     */
+    _computeLeadAdvisory() {
+      if (!this.engine || !this.state) return null;
+      const st = this.state.state || this.state;
+      if (!st) return null;
+      let advisory = null;
+      try {
+        advisory = typeof this.engine.leadAdvisory === 'function' ? this.engine.leadAdvisory(st) : null;
+      } catch (e) { this._error('lead-advisory', e); return null; }
+      if (!advisory) return null;
+      st.leadAdvisory = advisory;
+      if (this.hud && typeof this.hud.renderLeadAdvisory === 'function') {
+        try { this.hud.renderLeadAdvisory(advisory); } catch (e) { this._error('lead-hud', e); }
+      }
+      return advisory;
     }
 
     /** Publish the clock snapshot onto the battle state the solver and the HUD read. */

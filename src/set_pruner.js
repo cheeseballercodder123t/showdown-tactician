@@ -33,6 +33,13 @@
   const DMG_MAX_OBS = cfg('pruner.damageEvidence.maxObservations', 8);
   const DMG_MAX_SETS = cfg('pruner.damageEvidence.maxSetsTested', 64);
 
+  // Ability deduction (rule tables in src/util.js). The master switch plus one switch per rule
+  // family, read at LOAD time like the pruner's other tunables (config_check pins every one).
+  const ABILITY_DEDUCTION_ON = cfg('pruner.abilityDeduction.enabled', true);
+  const AB_DEDUCTION_STATUS = cfg('pruner.abilityDeduction.statusRules', true);
+  const AB_DEDUCTION_GROUND = cfg('pruner.abilityDeduction.groundRules', true);
+  const AB_DEDUCTION_ABSENCE = cfg('pruner.abilityDeduction.absenceRules', false);
+
   // The discrete half of reverse damage (ARCHITECTURE §6.1): damage is one of 16 integer rolls,
   // so a set that cannot produce the exact integer percentage the protocol printed is out even
   // when its RANGE covers it. This is a refinement only — the caller keeps the pool when every
@@ -947,6 +954,100 @@
       return null;
     }
 
+    /* ------------------------------------------------------- ability deduction */
+
+    /**
+     * _disprovedAbilities(mon, state) -> { ids: {abilityId: reason}, size: number }
+     *
+     * The negative-space ability rules, in the same spirit as the item rules: each one turns
+     * something the log PRINTED into an elimination, never a guess about the species. Three
+     * families, each individually switchable (pruner.abilityDeduction.*):
+     *
+     *   statusRules   the body is carrying a status, so no candidate may hold an ability that
+     *                 makes that status impossible (U.STATUS_IMMUNITY_ABILITIES is game data).
+     *                 Skipped when the status was stamped as landing under an ability-suppressing
+     *                 body (mon.statusSuppressed): Neutralizing Gas makes those abilities inert,
+     *                 so the status it allowed disproves nothing.
+     *   groundRules   the body took damage only a GROUNDED body can take, so no candidate may
+     *                 hold Levitate / Earth Eater. Gravity grounds everyone and negates Levitate,
+     *                 so the whole family is skipped while it is up. It takes a DIRECT hit: the
+     *                 state manager refuses to set `groundDisproved` on damage that carries a
+     *                 `[from]` clause (a burn tick is not a Ground move connecting) and refuses to
+     *                 stamp the aim when the attacker's KNOWN ability ignores abilities. Residual
+     *                 risk, stated rather than hidden: an UNREVEALED Mold Breaker attacker is
+     *                 indistinguishable from an ordinary one, so its Ground move still counts.
+     *   absenceRules  (ships OFF) the body switched in this turn and a switch-in trigger ability
+     *                 its set carries never announced itself. This is the one ABSENCE-of-evidence
+     *                 inference, which is why it is gated: Neutralizing Gas and friends silence the
+     *                 announcement, so it also requires that no suppression is visible.
+     *
+     * Returns a plain map whose keys are the doomed ability ids; the caller turns a hit into a
+     * per-set drop reason so the trail names the real ability, not its id.
+     */
+    _disprovedAbilities(mon, state) {
+      const banned = Object.create(null);
+      let size = 0;
+      if (!mon || !ABILITY_DEDUCTION_ON) return { ids: banned, size: 0 };
+      const field = (state && state.field) || {};
+      const ban = function (id, reason) {
+        if (!id || banned[id]) return;
+        banned[id] = reason;
+        size++;
+      };
+
+      if (AB_DEDUCTION_STATUS && !mon.statusSuppressed) {
+        const blocked = U.abilitiesBlockingStatus(mon.status);
+        if (blocked && blocked.size) {
+          const label = String(mon.status || '').toUpperCase();
+          blocked.forEach(function (id) {
+            ban(id, 'the body is carrying ' + label + ', which this ability would have prevented');
+          });
+        }
+      }
+
+      if (AB_DEDUCTION_GROUND && mon.groundDisproved && !field.gravity) {
+        U.GROUND_IMMUNE_ABILITIES.forEach(function (id) {
+          ban(id, 'it took damage only a grounded body can take with no Gravity up');
+        });
+      }
+
+      if (AB_DEDUCTION_ABSENCE && !this._abilitySuppressed(state)) {
+        const turn = state && typeof state.turn === 'number' ? state.turn : null;
+        if (turn !== null && mon.switchedInTurn === turn && !mon.revealedAbility) {
+          U.SWITCH_IN_TRIGGER_ABILITIES.forEach(function (id) {
+            ban(id, 'it switched in this turn without announcing itself');
+          });
+        }
+      }
+
+      return { ids: banned, size: size };
+    }
+
+    /**
+     * Is something on the field silencing abilities right now? Neutralizing Gas is the one the
+     * protocol lets us see: its own activation line is printed, so a revealed Neutralizing Gas on
+     * either active body means a MISSING announcement proves nothing. Used only by the gated
+     * absence rule.
+     *
+     * This scan IS the guard — there is no `state.field.abilitySuppressed` to read (an earlier
+     * version tested that field, which nothing in src/ ever wrote, so the branch could never
+     * fire). What the state manager keeps is the per-body STAMP of the moment a status landed
+     * (`mon.statusSuppressed`), which is what the status rule needs and a live scan cannot
+     * reconstruct.
+     */
+    _abilitySuppressed(state) {
+      const teams = [(state && state.myTeam) || [], (state && state.oppTeam) || []];
+      for (let t = 0; t < teams.length; t++) {
+        const team = teams[t];
+        if (!Array.isArray(team)) continue;
+        for (let i = 0; i < team.length; i++) {
+          const m = team[i];
+          if (m && m.isActive && U.toID(m.revealedAbility || '') === 'neutralizinggas') return true;
+        }
+      }
+      return false;
+    }
+
     /* ------------------------------------------------------------ main entry */
 
     /**
@@ -963,6 +1064,9 @@
       }
       state = state || { formatLocks: {}, field: {} };
       const locks = state.formatLocks || {};
+      // Ability deduction is computed ONCE per body (it depends only on the mon and the field),
+      // then tested per candidate set in the loop below.
+      const abilityBan = this._disprovedAbilities(mon, state);
 
       // 1. Rule evaluation first — it decides the item filters below.
       const choice = this.applyChoiceLockRule(mon, state);
@@ -1052,6 +1156,15 @@
             if (!isPossible) {
               drop = 'Revealed ability ' + mon.revealedAbility + ' != set ability ' + set.ability;
             }
+          }
+        }
+
+        // Ability deduction: an observed status or grounded-only damage disproves the set's
+        // ability outright (rule tables in src/util.js, switches in config.pruner.abilityDeduction).
+        if (!drop && abilityBan.size) {
+          const setAbilityId = U.toID(set.ability);
+          if (setAbilityId && abilityBan.ids[setAbilityId]) {
+            drop = 'Ability disproved (' + set.ability + '): ' + abilityBan.ids[setAbilityId];
           }
         }
 

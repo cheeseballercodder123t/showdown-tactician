@@ -41,3 +41,10 @@ replays*.json
 training_data*.json
 corpus/
 cross-candidates*.json
+
+# The ablation runner's own output. A sweep is a measurement of one machine's battles against the
+# three personas at one sample size, not a reviewable artifact of the extension — unlike
+# lib/trained-weights.json, which is a fitted model shipped WITH its gate verdict. The command and
+# what a sweep found are recorded in CHANGELOG.md; the JSON is there to be re-read locally.
+ablation-*.json
+ablation-*.log

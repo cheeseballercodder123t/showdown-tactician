@@ -13,6 +13,7 @@
     "e2e": "playwright test",
     "e2e:headed": "playwright test --headed",
     "arena": "node tools/run_arena.js",
+    "ablation": "node tools/run_ablation.js",
     "bench": "node tests/perf_bench.js",
     "bench:json": "node tests/perf_bench.js --json",
     "bench:mlp": "node tests/perf_bench.js --mlp",

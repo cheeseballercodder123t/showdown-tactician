@@ -159,6 +159,11 @@
         turn: 0,
         mySide: 'p1',
         oppSide: 'p2',
+        // Ladder ratings, straight off the protocol's `|player|p2|Name|avatar|1480` line. This is
+        // the opponent's own number, not an estimate: nothing in the engine invents it. Read by
+        // the Elo-adaptive switch prior (src/opponent_clock.js), which ships off until measured.
+        myRating: null,
+        opponentRating: null,
         myTeam: [],
         oppTeam: [],
         field: {
@@ -299,6 +304,20 @@
 
         revealedAbility: null,
         possibleAbilities: info ? info.abilities.slice() : [],
+        // Ability deduction (src/set_pruner.js). Every field here is something the protocol
+        // PRINTED, not an inference: `switchedInTurn` is the turn the body entered (the window a
+        // switch-in ability would have announced itself in), `groundAimedOnTurn` is the turn a
+        // non-status Ground move was aimed at it, and `statusTurn` is when a status landed.
+        // `groundDisproved` is set only once such a move actually CONNECTED (or grounded-only
+        // hazard damage landed), never on the click alone — a miss must prove nothing.
+        switchedInTurn: null,
+        groundAimedOnTurn: null,
+        groundDisproved: false,
+        // Set when a status lands while an ability-suppressing body is on the field: a burn that
+        // landed through Neutralizing Gas disproves nothing, and the Gas may be gone by the time
+        // the pruner reads this.
+        statusSuppressed: false,
+        statusTurn: null,
 
         speedFloor: 0,
         speedCeiling: 1012,
@@ -390,14 +409,38 @@
       return this;
     }
 
+    /**
+     * Is this the format the engine is built for? Named POSITIVELY, by allowlist.
+     *
+     * Showdown's LADDER calls it "[Gen 9] National Dex" — that is the literal `|init|` and `|tier|`
+     * text in test_log.txt, and there is no "... OU" anywhere on the wire — while the sim's id for
+     * the same format is "gen9nationaldex". All four of those names must be accepted. Everything
+     * else that mentions National Dex is a DIFFERENT tier (Ubers, UU, Doubles, Monotype, a NatDex
+     * OM) whose threats the set and usage data in this repo do not describe, so it must be gated
+     * off.
+     *
+     * This replaces a rule that enumerated the tiers to REJECT ("not uu/ru/nu/pu/doubles/...") and
+     * therefore failed OPEN on every sibling it had not thought of: `[Gen 9] National Dex Ubers`,
+     * `gen9nationaldexubers` and `[Gen 9] National Dex Almost Any Ability` all reported supported,
+     * so the engine would answer with confident ND-OU advice in a tier it was never meant for. An
+     * allowlist cannot forget a tier — anything that is not the format we support is not supported.
+     */
+    _isSupportedFormat(name) {
+      /* Normalize the decoration the protocol wraps a format name in: `[Gen 9] National Dex OU`
+       * and the sim id `gen9nationaldexou` both reduce to `gen9nationaldexou`. */
+      const norm = String(name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (!/^(gen\d*)?nationaldex(ou)?$/.test(norm)) return false;
+      /* The engine, its dex, its move data and its weights are gen 9; a NatDex format from another
+       * generation is a different game, so the generation marker has to agree when one is given. */
+      const gen = (norm.match(/^gen(\d+)/) || [])[1];
+      return gen === undefined || parseInt(gen, 10) === U.GEN;
+    }
+
     setFormat(formatName) {
       const name = String(formatName || '');
       const st = this.state;
       st.format = name || st.format;
-      const isNatDex = /national\s*dex/i.test(name);
-      const isTierBanned = /(uu|ru|nu|pu|zu|monotype|doubles|1v1|anything goes|hackmons|balanced hackmons|custom game|randombattle|challenge cup)/i.test(name);
-      st.formatSupported = !!isNatDex && !/national\s*dex\s*(doubles|uu|ru|nu|pu)/i.test(name) &&
-        (!isTierBanned || /\bou\b/i.test(name));
+      st.formatSupported = this._isSupportedFormat(name);
       if (!name) st.formatSupported = true; // unknown header: assume supported and decide later
       this._touch('format');
       return st.formatSupported;
@@ -699,7 +742,14 @@
       if (!event.side) return;
       if (!this._playerNames) this._playerNames = {};
       this._playerNames[event.side] = event.name || '';
-      if (event.rating) debug('rating', event.side, event.rating);
+      if (event.rating) {
+        const r = parseInt(event.rating, 10);
+        if (isFinite(r)) {
+          if (event.side === this.state.oppSide) this.state.opponentRating = r;
+          else if (event.side === this.state.mySide) this.state.myRating = r;
+        }
+        debug('rating', event.side, event.rating);
+      }
     }
 
     _onTeamsize(event) {
@@ -750,6 +800,12 @@
       }
       mon.isActive = true;
       mon.fainted = false;
+      // Ability deduction: stamp the turn this body entered. A switch-in ability (Intimidate, a
+      // weather/terrain surge) announces itself on this same turn or not at all, so the pruner
+      // only ever reads the absence within that window. The LEAD switches arrive BEFORE `|turn|1`
+      // (the server prints `|switch|p1a:`, `|switch|p2a:`, then `|turn|1`), so a stamp of 0 would
+      // never match the turn the decision is actually made on: attribute those to turn 1.
+      mon.switchedInTurn = st.turn > 0 ? st.turn : 1;
       if (isMegaDetails(details)) this._markMega(mon, tok.species);
 
       // rule 2: stint + boosts reset
@@ -888,13 +944,17 @@
         mon.hpPercent = parsed.hp;
       }
       mon.maxhp = 100;
+      let statusChanged = false;
       if (status !== undefined && status !== null && status !== '') {
         const st = normalizeStatus(status);
-        if (st && st !== mon.status) { mon.status = st; mon.statusTurns = 0; }
+        if (st && st !== mon.status) { mon.status = st; mon.statusTurns = 0; statusChanged = true; }
       } else if (parsed.status) {
         const st = normalizeStatus(parsed.status);
-        if (st && st !== mon.status) { mon.status = st; mon.statusTurns = 0; }
+        if (st && st !== mon.status) { mon.status = st; mon.statusTurns = 0; statusChanged = true; }
       }
+      // A status can also arrive on an hp field (`|switch|...|100/100|brn`), so the suppression
+      // stamp belongs here too, not only in _onStatus.
+      if (statusChanged && this._abilitiesSuppressed()) mon.statusSuppressed = true;
       if (parsed.fainted || mon.hp === 0) {
         mon.fainted = true;
         mon.hp = 0;
@@ -969,6 +1029,26 @@
         if (target && target !== mon) {
           target.knockOffTurn = this.state.turn;
           target.knockOffSawDamage = false;
+        }
+      }
+
+      // Ability deduction: remember that a non-status GROUND move was aimed at a target THIS
+      // turn. The move line says only that it was clicked, so the turn stamp is what the damage
+      // handler cross-checks before drawing any conclusion — a miss leaves a stamp the next turn
+      // cannot match, so it can never disprove Levitate.
+      if (moveId && event.targetSlot) {
+        const aimTarget = this._findBySlot(event.targetSlot);
+        const aimData = U.getMoveData(moveName);
+        // ...and the ATTACKER's ability, which decides whether the observation could ever prove
+        // anything: a Mold Breaker / Teravolt / Turboblaze Ground move connects straight through
+        // Levitate and Earth Eater, so aiming one is not evidence against them. Only a KNOWN
+        // ability is consulted (our own team's, or one already revealed); an unrevealed attacker
+        // is treated as not ignoring — see the residual note on the ground rule in
+        // src/set_pruner.js.
+        const attackerAbility = toID(mon.revealedAbility || mon.ability || '');
+        if (aimTarget && aimTarget !== mon && aimData && aimData.type === 'Ground' && !aimData.isStatus &&
+            !U.ABILITY_IGNORING_ABILITIES.has(attackerAbility)) {
+          aimTarget.groundAimedOnTurn = this.state.turn;
         }
       }
 
@@ -1051,6 +1131,25 @@
         this._creditDamage(event, mon, side, hpBefore, from);
       }
       if (kind === 'damage') {
+        // Ability deduction (src/set_pruner.js): this body took damage only a GROUNDED body can
+        // take, which disproves the airborne/absorbing abilities. Two sources: a Ground move that
+        // connected this turn (cross-checked against the stamp _onMove set), and hazard damage
+        // that skips airborne bodies (Spikes / Sticky Web — deliberately NOT Stealth Rock, which
+        // hits everything). Gravity grounds everyone, so under it the observation proves nothing
+        // and the flag is left alone; the pruner re-checks that guard before it eliminates.
+        // `from` is the protocol's own `[from] ...` clause, and a DIRECT hit does not carry one.
+        // That distinction is the whole rule: the damage line alone does not say what caused it,
+        // so a burn tick, sandstorm, Leech Seed, hazard or recoil landing in the same turn the
+        // Ground move was aimed would otherwise be read as "the Ground move connected" and
+        // eliminate Levitate on evidence that never touched it. Gravity grounds everyone and
+        // negates Levitate, so under it NEITHER observation proves anything — gated here as well
+        // as at prune time, because the flag is a permanent latch and a conclusion drawn under
+        // Gravity would outlive it.
+        const gravityUp = !!(this.state.field && this.state.field.gravity);
+        if (!gravityUp && !from && mon.groundAimedOnTurn === this.state.turn) mon.groundDisproved = true;
+        if (!gravityUp && /spikes|sticky web/i.test(from)) {
+          mon.groundDisproved = true;
+        }
         if (/stealth rock|spikes|sticky web/i.test(from)) {
           if (mon.itemRuledOut.indexOf('Heavy-Duty Boots') === -1) mon.itemRuledOut.push('Heavy-Duty Boots');
           mon.confirmedItem = mon.confirmedItem === 'Heavy-Duty Boots' ? null : mon.confirmedItem;
@@ -1177,6 +1276,27 @@
       this._addItemEvidence(attacker, 'Dealt ' + damagePercent + '% to ' + defender.species + ' with ' + moveName);
     }
 
+    /**
+     * Ability deduction (src/set_pruner.js). Is an ability-suppressing body on the field RIGHT
+     * NOW? Neutralizing Gas is the one the protocol lets us see (its own activation line is
+     * printed), and while it is up every OTHER ability is inert — so a status it allowed proves
+     * nothing about Water Veil, Thermal Exchange, Comatose or Purifying Salt. The pruner re-derives
+     * the same fact for the absence rule; this copy exists so it can be stamped at the instant a
+     * status lands, when the answer is still the one that mattered.
+     */
+    _abilitiesSuppressed() {
+      const teams = [this.state.myTeam, this.state.oppTeam];
+      for (let t = 0; t < teams.length; t++) {
+        const team = teams[t];
+        if (!Array.isArray(team)) continue;
+        for (let i = 0; i < team.length; i++) {
+          const m = team[i];
+          if (m && m.isActive && toID(m.revealedAbility || '') === 'neutralizinggas') return true;
+        }
+      }
+      return false;
+    }
+
     _onStatus(event) {
       const mon = this._findBySlot(event.slot);
       if (!mon) return;
@@ -1184,6 +1304,8 @@
       if (!st) return;
       mon.status = st;
       mon.statusTurns = 0;
+      mon.statusTurn = this.state.turn;
+      if (this._abilitiesSuppressed()) mon.statusSuppressed = true;
       if (st === 'tox') mon.toxicCounter = 1;
       if (st === 'slp') this._addItemEvidence(mon, 'Slept: offensive pressure delayed');
     }
