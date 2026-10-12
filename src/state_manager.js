@@ -142,6 +142,9 @@
       this.parser = null;
       this._listeners = { change: [], turn: [], request: [], speedfloor: [] };
       this._unsubscribe = null;
+      /* Connection-level state that a battle reset must NOT throw away. */
+      this._parsedTeam = null;   // the TeamParser output, replayed by reset()
+      this._sawInit = false;     // whether a battle has already been opened on this connection
       this.state = this._createState();
     }
 
@@ -369,6 +372,10 @@
 
     reset() {
       this.state = this._createState();
+      // The pasted team is CONNECTION-level truth (EVs/IVs/nature/item from TeamParser), not
+      // battle state, so it survives a reset. Without this a reconnect would leave us with no
+      // team at all and every "can I switch" answer would be wrong.
+      if (this._parsedTeam && this._parsedTeam.length) this.registerMyTeam(this._parsedTeam);
       this._touch('reset');
       return this;
     }
@@ -501,6 +508,10 @@
      */
     registerMyTeam(parsedMons) {
       const list = Array.isArray(parsedMons) ? parsedMons : [];
+      /* The parsed paste is CONNECTION truth, not battle state: `reset()` re-registers from
+       * this copy so a reconnect (a second `|init|`) does not cost us the EV/IV/nature data
+       * that the whole engine's damage and Speed maths depends on. */
+      this._parsedTeam = list.slice(0, 6);
       const st = this.state;
       st.myTeam = list.slice(0, 6).map(function (p, i) {
         const mon = this._newMon(p.species || p.name, st.mySide, i, {
@@ -661,6 +672,26 @@
     /* ------------------------------------------------------------ handlers */
 
     _onInit(event) {
+      /* A NEW BATTLE STARTS FROM A CLEAN SLATE.
+       *
+       * `|init|` is the protocol's "this battle begins here" marker, and it is not sent only
+       * once per page: Showdown re-sends it followed by the ENTIRE log from turn 1 whenever the
+       * socket reconnects mid-battle, and a rematch in the same room re-uses the connection.
+       * Replaying a log on top of the previous battle is not idempotent, and it failed in two
+       * separate ways (BUGS_AUDIT_REPORT.md B17):
+       *
+       *   1. `|clearpoke|` parses to `unknown` and was never handled, so the previous game's
+       *      previewed opponent roster survived. The engine then pruned its candidate pool
+       *      against a phantom Kingambit it had never seen in this battle.
+       *   2. `|-boost|`, `|-sidestart|`, Leech Seed counters and the Trick Room clock are all
+       *      RELATIVE or incremental, so replaying them compounded: +1 became +2, and the
+       *      hazards layer count doubled.
+       *
+       * Only a real `|init|` clears the board. `|format|` parses to the same event type but is
+       * a header line, so it must not.
+       */
+      if (this._sawInit && String(event.raw || '').indexOf('|init|') === 0) this.reset();
+      this._sawInit = true;
       if (event.format) this.setFormat(event.format);
     }
 

@@ -183,11 +183,17 @@ button[data-move].st-optimal {
 
 /* ----------------------------------------------------------------- drawer */
 
+/* The toggle is the only control that is always on screen, and toggleDrawer() gives it an
+ * `.active` state, so it is meant to open AND close the sheet. It could only open it: the panel
+ * below is one z-index higher (…003 vs …002) and spans left:0/right:0/bottom:0, so its box
+ * contains the toggle's box and it swallowed every tap — `document.elementFromPoint` at the
+ * toggle's centre returned .drawer-candidates, not the button. A control that disappears the
+ * moment it works is worse than no control, so the toggle now paints above the panel. */
 .team-drawer-toggle {
   position: fixed;
   left: 10px;
   bottom: calc(10px + env(safe-area-inset-bottom));
-  z-index: 2147483002;
+  z-index: 2147483004;
   width: var(--st-touch);
   height: var(--st-touch);
   min-width: var(--st-touch);
@@ -221,7 +227,10 @@ button[data-move].st-optimal {
   max-height: 68vh;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
-  padding: 14px 14px calc(14px + env(safe-area-inset-bottom));
+  /* The bottom padding reserves the toggle's corner. Without it, lifting the toggle above the
+   * panel would simply move the problem: the button would sit on top of whatever the sheet
+   * renders last (Save Team / Close), making THAT unreachable instead. */
+  padding: 14px 14px calc(14px + env(safe-area-inset-bottom) + var(--st-touch) + 8px);
   background: var(--st-panel);
   border: var(--st-border);
   border-radius: 16px 16px 0 0;

@@ -35,6 +35,7 @@ const SUITES = [
   'tests/mlp_check.js',
   'tests/weights_check.js',
   'tests/hud_check.js',
+  'tests/dom_check.js',
   'test_engine.js',
   'tests/run_tests.js',
   'tests/hardening_audit.js'

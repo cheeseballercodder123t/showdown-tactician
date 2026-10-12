@@ -194,6 +194,14 @@
         this.selectedBenchId = null;
         this._trAlerted = false;
         if (this.hud && typeof this.hud.dismissReceipt === 'function') this.hud.dismissReceipt();
+        // The candidate pools are seeded per side|slot|species and are only meaningful for the
+        // battle they were seeded in: after a reconnect Showdown replays the whole log, and a
+        // pool seeded while the previous game had already disproved a Choice item would make the
+        // new battle inherit that deduction. (The state manager clears the board itself — see
+        // BattleStateManager._onInit.)
+        if (this.pruner && typeof this.pruner.reset === 'function') {
+          try { this.pruner.reset(); } catch (e) { this._error('pruner-reset', e); }
+        }
         return undefined;
       }
       if (event.type === 'unknown') return undefined;
@@ -702,7 +710,32 @@
       const message = where + ': ' + (err && err.message ? err.message : String(err));
       this.stats.errors.push(message);
       if (this.stats.errors.length > 50) this.stats.errors.shift();
+      this._mirrorError(message);
       U.debug(message);
+    }
+
+    /**
+     * Publish the failure onto the root element.
+     *
+     * The boot object lives in the content script's ISOLATED world, so nothing outside it can
+     * read `stats.errors` — not the page, not an end-to-end test, and not a player who opens
+     * DevTools on the page rather than on the extension. U.debug() cannot cover this either:
+     * util.js's DEBUG flag is a module-level `let` that is false in every shipped build, so the
+     * one diagnostic hook in the codebase is inert in production and an internal failure is
+     * therefore completely silent.
+     *
+     * `data-st-injected` already proves the DOM is the shared surface both worlds can see, so
+     * the same trick carries the failure. Diagnostics only: it must never be the thing that
+     * throws, and a document with no dataset (the Node harness's stub) simply skips it.
+     */
+    _mirrorError(message) {
+      const doc = this.doc;
+      const el = doc && doc.documentElement;
+      if (!el || !el.dataset) return;
+      try {
+        el.dataset.stError = String(message).slice(0, 500);
+        el.dataset.stErrorCount = String(this.stats.errors.length);
+      } catch (e) { /* best effort only */ }
     }
   }
 

@@ -45,6 +45,42 @@
   var counters = { sent: 0, received: 0, polled: 0, dispatched: 0, errors: 0, ppSnapshots: 0, accuracy: 0 };
   window.__ST_INJECTED_DEBUG = counters;
 
+  /* The last line handed to the pipeline, and WHICH path handed it over.
+   *
+   * The poll path is the only one that can re-deliver something the socket path already
+   * delivered, so the skip in pollBattleLog has to know who went last. Comparing poll against
+   * poll cannot tell a socket duplicate from a genuine repeat in the log, and the version that
+   * did exactly that silently ate the genuine repeat: three identical consecutive lines in
+   * battle.log reached the parser once. The log is the authority on what happened, so a line
+   * is only ever skipped when the SOCKET was the last thing to deliver it.
+   */
+  var lastForwarded = { line: null, kind: null };
+
+  /* The last inbound event object we forwarded.
+   *
+   * ONE FRAME MUST BE FORWARDED ONCE, NO MATTER HOW MANY LISTENERS THE PAGE INSTALLS. A page
+   * that sets `socket.onmessage` AND calls `socket.addEventListener('message', ...)` ends up
+   * with two of our wrappers on the same socket, and both of them see the SAME MessageEvent.
+   * Forwarding it twice is not harmless: most Showdown lines are absolute (a damage line is
+   * idempotent), but the relative ones are not — `|-boost|p1a|atk|1` applied twice is +2, and
+   * `|turn|n` twice re-opens a decision window. Playwright's WebSocket mock installs its own
+   * 'message' listener, which is how this was caught in a real browser (BUGS_AUDIT_REPORT.md,
+   * B15); the same shape appears in the wild whenever two scripts share a socket.
+   *
+   * The event object IS the delivery's identity, so a single-slot reference is enough: both
+   * wrappers run synchronously inside the same dispatch, and no two frames reuse an event.
+   */
+  var lastInboundEvent = null;
+
+  function captureInbound(event) {
+    if (event && event === lastInboundEvent) return;
+    lastInboundEvent = event || null;
+    try {
+      counters.received++;
+      forwardBatch(typeof event.data === 'string' ? event.data : '', 'recv');
+    } catch (e) { counters.errors++; }
+  }
+
   /* ------------------------------------------------------------------ forwarding */
 
   function mirror(rawLine, kind) {
@@ -59,6 +95,8 @@
 
   function forward(rawLine, kind) {
     if (typeof rawLine !== 'string' || !rawLine) return;
+    lastForwarded.line = rawLine;
+    lastForwarded.kind = kind || 'unknown';
     try {
       counters.dispatched++;
       var payload = { rawLine: rawLine, kind: kind || 'unknown' };
@@ -133,10 +171,7 @@
       var wrappedSet = function (handler) {
         var socket = this;
         var wrapped = handler == null ? null : function (event) {
-          try {
-            counters.received++;
-            forwardBatch(typeof event.data === 'string' ? event.data : '', 'recv');
-          } catch (e) { counters.errors++; }
+          captureInbound(event);
           if (typeof handler === 'function') return handler.call(socket, event);
           if (handler && typeof handler.handleEvent === 'function') return handler.handleEvent(event);
           return undefined;
@@ -163,10 +198,7 @@
         socket.addEventListener = function (type, listener, options) {
           if (type === 'message' && typeof listener === 'function') {
             var wrapped = function (event) {
-              try {
-                counters.received++;
-                forwardBatch(typeof event.data === 'string' ? event.data : '', 'recv');
-              } catch (e) { counters.errors++; }
+              captureInbound(event);
               return listener.apply(this, arguments);
             };
             return nativeAdd.call(this, type, wrapped, options);
@@ -327,7 +359,6 @@
   /* ------------------------------------------------------------------ polling fallback */
 
   var pollCursor = 0;
-  var lastPolledLine = null;
 
   function pollBattleLog() {
     try {
@@ -341,9 +372,10 @@
         var line = log[pollCursor];
         if (typeof line !== 'string' || !line) continue;
         // The polling path is the only one that can duplicate a line, because the socket
-        // path may already have delivered it: skip an immediate repeat, otherwise emit.
-        if (line === lastPolledLine) continue;
-        lastPolledLine = line;
+        // path may already have delivered it. Only the SOCKET counts as "already delivered":
+        // two identical lines in the log are two things that happened, and dropping the
+        // second one corrupts the state for the rest of the battle.
+        if (line === lastForwarded.line && lastForwarded.kind !== 'poll') continue;
         counters.polled++;
         forward(line, 'poll');
       }

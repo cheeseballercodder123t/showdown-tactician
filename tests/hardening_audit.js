@@ -424,6 +424,110 @@ check('the healed mon is alive again, not fainted at 50%',
   !!deadMon && deadMon.fainted === false && deadMon.hpPercent === 50,
   JSON.stringify(deadMon && { fainted: deadMon.fainted, hp: deadMon.hpPercent }));
 
+/* ================================= 12. a second |init| starts a clean battle */
+
+section('12. a second |init| must start a clean battle (reconnect / rematch)');
+
+/* Showdown re-sends `|init|` followed by the ENTIRE log from turn 1 whenever the socket
+ * reconnects mid-battle, and a rematch in the same room re-uses the connection. Replaying a log
+ * on top of the previous battle is not idempotent, so the board has to be cleared first. */
+const HEADER = [
+  '|init|[Gen 9] National Dex',
+  '|player|p1|Me|1|1550',
+  '|player|p2|Foe|2|1480',
+  '|teamsize|p1|6',
+  '|teamsize|p2|6',
+  '|gametype|singles',
+  '|gen|9',
+  '|tier|[Gen 9] National Dex OU',
+  '|clearpoke'
+];
+
+const reconnectState = new ST.BattleStateManager({ debug: false });
+const reconnectParser = new ST.ProtocolParser();
+reconnectState.attachParser(reconnectParser);
+reconnectState.setFormat('[Gen 9] National Dex OU');
+reconnectState.registerMyTeam(ST.TeamParser.parsePokepaste(PASTE).pokemon);
+
+function feedReconnect(lines) { lines.forEach(function (l) { reconnectParser.feed(l); }); }
+
+feedReconnect(HEADER.concat([
+  '|poke|p1|Ursaluna, L50, M|item',
+  '|poke|p2|Iron Valiant, L50, F|item',
+  '|poke|p2|Landorus-Therian, L50, M|item',
+  '|start',
+  '|switch|p1a: Ursaluna|Ursaluna, L50, M|100/100',
+  '|switch|p2a: Iron Valiant|Iron Valiant, L50, F|100/100',
+  '|turn|1',
+  '|-boost|p2a: Iron Valiant|spa|2',
+  '|-sidestart|p2: Foe|move: Stealth Rock',
+  '|move|p2a: Iron Valiant|Moonblast|p1a: Ursaluna',
+  '|-damage|p1a: Ursaluna|40/100'
+]));
+
+const before = reconnectState.state;
+check('battle 1 left an opponent roster to leak', (before.oppTeam || []).length === 2,
+  'oppTeam=' + (before.oppTeam || []).length);
+check('battle 1 left our lead damaged', before.myTeam[0].hpPercent === 40,
+  'hp=' + before.myTeam[0].hpPercent);
+
+/* --- the reconnect: same connection, `|init|` again, a DIFFERENT opponent --- */
+feedReconnect(HEADER.concat([
+  '|poke|p1|Ursaluna, L50, M|item',
+  '|poke|p2|Kingambit, L50, M|item',
+  '|start',
+  '|switch|p1a: Ursaluna|Ursaluna, L50, M|100/100',
+  '|switch|p2a: Kingambit|Kingambit, L50, M|100/100',
+  '|turn|1'
+]));
+
+const after = reconnectState.state;
+eq('the phantom opponent roster is gone', (after.oppTeam || []).map(function (m) { return m.species; }), ['Kingambit']);
+eq('and the new opponent is the active one', after.active.opp && after.active.opp.species, 'Kingambit');
+eq('our pasted team survives the reset (it is connection truth, not battle state)',
+  (after.myTeam || []).length, 6);
+eq('including its item', after.myTeam[0].item, 'Flame Orb');
+eq('and its EV/IV truth', after.myTeam[0].fromPaste === true && !!after.myTeam[0].stats, true);
+eq('the previous battle\'s damage is gone', after.myTeam[0].hpPercent, 100);
+eq('the previous battle\'s boosts are gone',
+  after.oppTeam[0] && after.oppTeam[0].boosts ? after.oppTeam[0].boosts.spa : 'missing', 0);
+eq('and so are its hazards',
+  after.field && after.field.hazards && after.field.hazards.p2 ? after.field.hazards.p2.rocks : 'missing', false);
+eq('the format is still recognised', after.formatSupported, true);
+check('and it is still National Dex', /national\s*dex/i.test(after.format || ''), 'format=' + after.format);
+
+/* `|format|` parses to the same event type as `|init|` but is a room header, not a battle
+ * start: it must NOT wipe a battle in progress. Checked on its own pipeline so the assertion
+ * measures the |format| path and nothing else. */
+const fmtState = new ST.BattleStateManager({ debug: false });
+const fmtParser = new ST.ProtocolParser();
+fmtState.attachParser(fmtParser);
+HEADER.concat([
+  '|poke|p1|Ursaluna, L50, M|item',
+  '|poke|p2|Kingambit, L50, M|item',
+  '|start',
+  '|switch|p1a: Ursaluna|Ursaluna, L50, M|100/100',
+  '|switch|p2a: Kingambit|Kingambit, L50, M|100/100',
+  '|turn|1',
+  '|-boost|p2a: Kingambit|atk|1'
+]).forEach(function (l) { fmtParser.feed(l); });
+fmtParser.feed('|format|[Gen 9] National Dex OU');
+eq('a bare |format| does not clear the board', (fmtState.state.oppTeam || []).length, 1);
+eq('and does not clear the boosts either', fmtState.state.oppTeam[0].boosts.atk, 1);
+eq('but it still applies the format', /national\s*dex/i.test(fmtState.state.format || ''), true);
+
+/* And a THIRD init must behave like the second. */
+feedReconnect(HEADER.concat([
+  '|poke|p1|Ursaluna, L50, M|item',
+  '|poke|p2|Dragapult, L50, M|item',
+  '|start',
+  '|switch|p1a: Ursaluna|Ursaluna, L50, M|100/100',
+  '|switch|p2a: Dragapult|Dragapult, L50, M|100/100',
+  '|turn|1'
+]));
+eq('a third battle is clean too',
+  (reconnectState.state.oppTeam || []).map(function (m) { return m.species; }), ['Dragapult']);
+
 /* =========================================== 11. randomized invariant fuzz */
 
 section('11. randomized streams must not break any solver invariant');

@@ -8,6 +8,72 @@ provenance — why a number is what it is, and what was tried and rejected. Entr
 
 ### Added
 
+- **A real-browser end-to-end suite** (`tests/e2e/`, `playwright.config.js`, `npm run e2e`). 41
+  Playwright tests that load the actual MV3 extension into Chromium and drive a page: boot and
+  manifest integrity, HUD rendering and veto placement, session lifecycle, robustness against
+  missing/garbage DOM, hardening (the phone viewport, a 2,001-line log, a late team, storage yanked
+  mid-battle), a **real WebSocket** via `page.routeWebSocket`, and the options page. The page is a
+  fixture served by **intercepting the real hostname**, because the hostname is what the content
+  script matches on. The key constraint is documented in `tests/e2e/helpers.js`: a content script
+  lives in an isolated world, so `page.evaluate` cannot see `window.ST` — every assertion is shared
+  DOM, the MAIN-world bridge, or the console stream.
+- **`tests/dom_check.js`** — the HUD's DOM lifecycle against a stub that can actually find its own
+  buttons (the existing `hud_check.js` stub returns nothing from `querySelector*`, which is why every
+  button-level check there stubs `_findMoveButtons` and why `_decorateButton` had never once run
+  against a document). 35 checks.
+- **`tests/hardening_audit.js` §12** — a second `|init|` must start a clean battle.
+- **A new `e2e` CI job**, separate from `test` so the slow browser gate never blocks the fast one.
+  The launch helper adds `--no-sandbox` only when `CI` is set.
+- **`npm run e2e` / `npm run e2e:headed`**, and `test-results/`, `playwright-report/`, `blob-report/`
+  in `.gitignore`.
+
+### Fixed
+
+Seven defects found by the browser suite that no sandbox could have seen — full write-ups in
+[`BUGS_AUDIT_REPORT.md`](BUGS_AUDIT_REPORT.md), sweep 2:
+
+- **B17 — a second `|init|` never cleared the board.** `BattleStateManager.reset()` existed, was
+  correct, and was **never called from `src/`**, and `|clearpoke|` was never handled at all. Showdown
+  re-sends `|init|` followed by the entire log from turn 1 on a mid-battle reconnect (and a rematch
+  re-uses the connection), so the replay stacked on the previous battle: three battles left the
+  opponent roster as `Iron Valiant, Landorus-Therian, Kingambit, Dragapult`, Sp. Atk boosts read +2
+  instead of +1, and Stealth Rock was on a side the replay had not put it on. `_onInit` now resets on
+  a repeat `|init|` (keyed on the raw line, because `|format|` parses to the same event type but is a
+  room header), `reset()` re-registers the pasted team from a new `_parsedTeam` copy — the paste is
+  connection truth, not battle state — and `content.js` clears the pruner's per-battle pools too.
+- **B15 — an inbound socket frame was forwarded once per listener.** `injected.js` captures frames
+  through two independent wrappers (the `onmessage` accessor and a per-socket `addEventListener`), so
+  a page using both got every frame twice. Absolute lines are idempotent, but `|-boost|p1a|atk|1` is
+  not: +1 became +2. Both wrappers now share one `captureInbound(event)` guarded on the event object,
+  which is the delivery's identity. The page's own handlers are still called unconditionally.
+- **B14 — the poll's dedupe ate genuine repeats.** It skipped any line matching the poll's own last
+  delivery, so three identical consecutive lines in `battle.log` reached the parser once. It now
+  skips only when the **socket** was the last thing to deliver that text.
+- **B12 — the inline-style rollback recorded the HUD's own values.** The guard read `data-st-badge`
+  off the *button* while the attribute is set on the *badge*, so it was always true: the list grew by
+  one entry per render (31 for 30) and held styled values, which `clear()` then replayed *after* its
+  own correct reset — leaving `opacity: "0.5"` on a vetoed button after teardown.
+- **B16 — `clear()` reset `textDecoration` without recording the original**, destroying an inline
+  style it had not recorded. Same root-cause family as B12, fixed together.
+- **B13 — the "strip a stale badge" branch was dead code**, testing the same always-null attribute,
+  so a button the engine had no opinion about kept the previous turn's number.
+- **B11 — the team drawer's toggle was covered by the drawer it opens.** `.team-drawer` spans
+  `left:0; right:0; bottom:0` at `z-index: 2147483003`; `.team-drawer-toggle` sat at `left:10px;
+  bottom:10px` at `2147483002` — inside the panel's rectangle and one step below it. Proven with
+  `elementFromPoint`, which returned `DIV.drawer-candidates` at the toggle's centre. The toggle is now
+  the top of the ladder and the panel reserves its corner.
+
+### Changed (sweep 2)
+
+- **`src/content.js`** — `_error()` now mirrors every caught failure onto
+  `documentElement.dataset.stError` (plus a count). `stats.errors` lives in the isolated world, so
+  nothing outside it — not the page, not a test, and not a player who opens DevTools on the page
+  rather than on the extension — could read it, and `util.js`'s `DEBUG` flag is a module-level `let`
+  that is false in every shipped build. The browser suite asserts `internalError === null` throughout.
+- **`tests/injected_bridge.js`** 12 → 23 checks; **`tests/hardening_audit.js`** 46 → 64.
+
+### Added (earlier in this release)
+
 - **`src/mlp_residual.js` — an optional Wide & Deep residual head.** `score = linear + clamp(gain *
   MLP(x))` where the linear dot product stays the frozen base score and the head is a 128 → 16 → 1
   ReLU network held in `Float32Array`, bounded to ±150 (deliberately below `laplace.lethalBonus`,

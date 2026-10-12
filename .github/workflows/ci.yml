@@ -1,11 +1,12 @@
 # Showdown Tactician - .github/workflows/ci.yml
 #
-# WHY: seventeen suites and ~2,000 assertions existed with nothing running them on a push, so a
-# regression could land silently (the tree's own audit report is the reason to care: it found ten
-# real defects, each of which a suite now pins). This runs every suite, then the performance
-# benchmark for the record.
+# WHY: twenty Node suites and ~2,000 assertions existed with nothing running them on a push, so a
+# regression could land silently (the tree's own audit report is the reason to care: it found
+# eleven real defects, each of which a suite now pins). `test` runs every suite plus the
+# performance benchmark; `e2e` drives a real Chromium with the extension side-loaded.
 #
-# Zero dependencies: every suite is a plain `node` script, so there is no install step.
+# The Node job stays zero-dependency: every suite is a plain `node` script, so it needs no
+# install step. Only the browser job does.
 name: ci
 
 on:
@@ -37,3 +38,39 @@ jobs:
       # runner never fails the build — but the number lands in the log for the record.
       - name: Performance benchmark
         run: npm run bench
+
+  # The real-browser gate. Separate from `test` on purpose: the Node suites are zero-dependency
+  # and finish in ~30 s, while this one downloads Chromium and drives it with the extension
+  # side-loaded. It is the slow job, so it does not block the fast one.
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      # `--load-extension` needs a real (non-old-headless) Chromium; Playwright 1.64's bundled
+      # build satisfies that. The helper adds --no-sandbox when CI is set.
+      - name: Run the end-to-end suite
+        run: npm run e2e
+        env:
+          CI: 'true'
+
+      - name: Upload the failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-artifacts
+          path: test-results/
+          retention-days: 7
+          if-no-files-found: ignore

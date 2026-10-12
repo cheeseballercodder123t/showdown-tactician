@@ -1,18 +1,408 @@
 # Showdown Tactician — Bug-Hunt & Hardening Report
 
-**Scope.** A single fast-lane sweep of the whole engine: find real defects, prove each one with an
-automated assertion *before* fixing it, apply the smallest surgical fix, and leave a permanent
-regression suite behind. Ten defects were found and fixed, plus four of the audit's own assertions
-turned out to be wrong (they are reported too — a test that asserts a defect is worse than no test).
+**Scope.** Two fast-lane sweeps, run in order, each with the same protocol: find real defects, prove
+each one with an automated assertion *before* fixing it, apply the smallest surgical fix, and leave
+a permanent regression suite behind.
+
+* **Sweep 1 — engine correctness.** The whole solver read against its own contracts: ten defects
+  (B1–B10), all in the state manager, the sampler, the pruner and the damage cache. Everything was
+  verified through a DOM-less sandbox; **nothing touched a browser.**
+* **Sweep 2 — the real browser (this one).** Sweep 1's closing note listed "nothing in a real
+  browser" as its biggest hole, so sweep 2 built a Playwright harness that loads the actual MV3
+  extension into Chromium and drives a real page — and found **seven more defects** (B11–B17) that
+  no sandbox could ever have seen, because they live in the DOM, in CSS stacking, in the cross-realm
+  bridge, and in the page-lifecycle code the Node harness never runs.
 
 **Ground rules observed.**
 
-1. **Speed rule.** The eight existing suites were run once, at the end (plus `tests/rule_checks.js`
-   alone when one of its expectations had to change), and the full sweep was repeated once more in
-   the final pass. No suite was re-run "just in case".
+1. **Speed rule.** The Node suites were run once, at the end (plus the individual suite a fix
+   touched, while fixing it). The **full** browser suite was run **once**, on the frozen tree, at the
+   very end. No suite was re-run "just in case".
 2. **Per bug:** root cause first (no band-aids), then a reproducing assertion, then the minimal fix,
-   then verify green with zero regressions.
-3. Every fix is pinned by an assertion in the new suite, so the defect cannot come back silently.
+   then verify green with zero regressions. Every fix was checked against the pre-fix code by
+   stashing just that file, so "the test would have caught it" is measured, not asserted.
+3. Every fix is pinned by an assertion, so the defect cannot come back silently.
+
+---
+
+# Sweep 2 — the real browser
+
+## Artifacts
+
+| File | What it is |
+| --- | --- |
+| [`playwright.config.js`](playwright.config.js) | **New.** Separate from `npm test` on purpose: the Node suites are zero-dependency and finish in ~30 s, while this one downloads Chromium and drives it with the extension side-loaded. `workers: 1`, `fullyParallel: false` — each worker launches its own persistent Chromium, and two at once makes the timing-sensitive assertions flaky for no gain. |
+| [`tests/e2e/helpers.js`](tests/e2e/helpers.js) | **New.** Launch, storage seeding, protocol push, and the HUD snapshot. Contains the **observability contract** (below), which is the single most important thing sweep 2 learned. |
+| [`tests/e2e/fixtures/showdown.html`](tests/e2e/fixtures/showdown.html) | **New.** A stand-in for `play.pokemonshowdown.com`, served by *intercepting the real hostname* rather than by hitting the network — the hostname is what the content script matches on, so the URL has to stay real while the bytes come from a fixture. Reproduces only the surface the extension touches: `window.app.curRoom.battle`, a readable dex, `button[data-move]` markup, and a real `WebSocket`. |
+| `tests/e2e/01-boot.spec.js` … `07-options.spec.js` | **New.** 41 tests in seven specs: boot/manifest, HUD rendering, session lifecycle, robustness, hardening, the socket bridge, and the options page. |
+| [`tests/dom_check.js`](tests/dom_check.js) | **New.** 35 checks: the HUD's DOM lifecycle against a *faithful* stub (one that can actually find its own buttons). Pins B12, B13, B16. |
+| [`src/ui_overlay.js`](src/ui_overlay.js), [`styles/overlay.css`](styles/overlay.css), [`src/injected.js`](src/injected.js), [`src/state_manager.js`](src/state_manager.js), [`src/content.js`](src/content.js) | The five files sweep 2 changed. |
+| [`tests/injected_bridge.js`](tests/injected_bridge.js) | 12 → 23 checks. Pins B14 and B15 in the fast lane (0.1 s, no browser needed). |
+| [`tests/hardening_audit.js`](tests/hardening_audit.js) | 46 → 64 checks. New section 12 pins B17. |
+| [`.github/workflows/ci.yml`](.github/workflows/ci.yml), [`package.json`](package.json), [`.gitignore`](.gitignore) | A new `e2e` CI job (separate from `test`, so the slow browser gate never blocks the fast one), `npm run e2e`, and the Playwright output directories. |
+
+### The observability contract (why the specs assert what they assert)
+
+A content script runs in an **isolated world**. `page.evaluate` sees the page's MAIN world only, so
+`window.ST` and `window.__ST_BOOT__` are `undefined` from a test. Everything asserted is therefore
+one of:
+
+* **shared DOM** — the HUD nodes, the `data-st-*` attributes, `documentElement.dataset.stLine`;
+* **MAIN world** — `window.__ST_INJECTED__` and its counters, set by `src/injected.js`;
+* **the network/console stream** Playwright already taps.
+
+That is not a workaround. The shared DOM is precisely what a player sees, so asserting on it is a
+*stronger* end-to-end statement than reading an internal counter would be. One primitive had to be
+added for it: `content.js` now mirrors every caught failure onto `documentElement.dataset.stError`
+(and a count), because `stats.errors` lives in the isolated world and nothing outside it — not the
+page, not a test, and not a player who opens DevTools on the page rather than on the extension —
+could read it. `util.js`'s `DEBUG` flag cannot cover this either: it is a module-level `let` that is
+false in every shipped build. Every hostile spec in sweep 2 ends on `internalError === null`.
+
+## Summary
+
+| # | Defect | Where | Class | Status |
+| --- | --- | --- | --- | --- |
+| B11 | The team drawer's toggle button is **covered by the drawer it opens** — a one-way button | `styles/overlay.css` | unreachable control | fixed |
+| B12 | The inline-style rollback recorded the HUD's **own** values, so `clear()` restored the wrong thing and the list grew every render | `src/ui_overlay.js` | wrong teardown + unbounded growth | fixed |
+| B13 | The "strip a stale badge" branch was **dead code** (it read an attribute set on a different node) | `src/ui_overlay.js` | stale UI | fixed |
+| B14 | The poll's dedupe **ate genuine repeats** in the battle log — three identical lines reached the parser once | `src/injected.js` | lost protocol lines | fixed |
+| B15 | An inbound socket frame was forwarded **once per registered listener** — a page using both `onmessage` and `addEventListener` got every frame twice | `src/injected.js` | doubled, relative-effect corruption | fixed |
+| B16 | `clear()` reset `textDecoration` **without recording the original** (asymmetric with `opacity`) | `src/ui_overlay.js` | destroys page styling | fixed |
+| B17 | A second `\|init\|` (reconnect / rematch) **never cleared the board** — the previous battle's roster, boosts and hazards survived | `src/state_manager.js`, `src/content.js` | state corruption | fixed |
+
+Reproduction proof, measured by stashing only the file each fix touched:
+
+| Suite | Pre-fix | Post-fix |
+| --- | --- | --- |
+| `node tests/dom_check.js` | **7 failing** | 35/35 |
+| `node tests/injected_bridge.js` | **5 failing** | 23/23 |
+| `node tests/hardening_audit.js` (§12) | **5 failing** | 64/64 |
+| `playwright test -g "second |init|"` | **1 failing** (phantom roster) | 1 passed |
+
+---
+
+## B11 — The drawer's toggle is covered by the drawer it opens
+
+**Symptom.** The `TAC` button opens the team drawer. Once open, tapping it again does nothing: the
+drawer is a one-way door, and the only way back is to reload the page.
+
+**Root cause.** Two rules that were each individually reasonable:
+
+* `.team-drawer` is `position: fixed; left: 0; right: 0; bottom: 0; z-index: 2147483003` — it spans
+  the full width at the bottom of the viewport, which is correct for a mobile bottom sheet;
+* `.team-drawer-toggle` is `position: fixed; left: 10px; bottom: 10px; z-index: 2147483002`.
+
+The toggle sits **inside** the panel's rectangle and **one step below** it in the stacking order, so
+the panel swallows the tap. `toggleDrawer()` adds `.active` to the toggle and the button has an
+`aria-label` promising a toggle, so two-way operation was unambiguously the design.
+
+**Reproducing assertion.** With the drawer open, measure both rectangles and ask the browser what is
+actually at the toggle's centre:
+
+```js
+document.elementFromPoint(toggleCentre.x, toggleCentre.y)
+```
+
+Pre-fix: the drawer spans `{l:0, t:473, r:412, b:915}`, `elementFromPoint` returns
+`DIV.drawer-candidates`, and a real `page.click('.team-drawer-toggle')` on a real Chromium page
+times out. Post-fix: `elementFromPoint` returns the toggle, and the click closes the panel.
+
+**Fix.** Lift the toggle to the **top** of the z-index ladder (above the panel it opens), and reserve
+its corner in the panel so nothing else is put underneath it — a `padding-left` on the drawer's
+action row rather than a second overlap.
+
+**Verification.** `tests/e2e/03-session.spec.js` opens and closes the drawer with real clicks and
+also asserts that the panel's own controls stay hittable, so the fix cannot have traded one
+unreachable control for another.
+
+---
+
+## B12 — The rollback list recorded the HUD's own values
+
+**Symptom.** After `hud.clear()`, a button that had been vetoed kept `style.opacity === "0.5"` — the
+HUD dimmed it and then failed to un-dim it. The rollback list also grew by one entry per render:
+**31 entries after 30 renders.**
+
+**Root cause.** `_rememberStyle(el, prop)` pushed unconditionally, and its caller guarded it with
+
+```js
+const previous = btn.getAttribute ? btn.getAttribute(BADGE_ATTR) : null;
+if (previous === null) this._rememberStyle(btn, 'opacity');
+```
+
+`BADGE_ATTR` (`data-st-badge`) is set on the **badge node**, never on the button, so
+`getAttribute(BADGE_ATTR)` on a button is *always* null and the guard was always true. The list
+therefore ended up holding the HUD's own `"0.5"` as the "original" value, and `clear()` — which
+first resets `opacity` correctly and *then* replays the rollback list — put `"0.5"` straight back.
+
+**Reproducing assertion** (`tests/dom_check.js` §1–2): 30 renders must leave exactly **2** rollback
+entries (`opacity`, set every decorate, and `position`, set once when the badge is first appended),
+each holding the true original; and after `clear()` the opacity must be `''` in both orderings
+(clean-then-vetoed, and vetoed-last).
+
+**Fix.** `_rememberStyle` becomes idempotent — it records a property at most once per element — and
+the always-true guard is removed, because with idempotent recording it is both redundant and
+misleading.
+
+**Verification.** `dom_check.js` 35/35. On the pre-fix code the suite reports **7 failures**, all in
+§1–2.
+
+---
+
+## B13 — The stale-badge branch was dead code
+
+**Symptom.** A button the engine has no opinion about (a move it did not rank) kept the badge from
+the previous turn, so the player read a stale number.
+
+**Root cause.** The branch that was supposed to strip it tested the same always-null attribute as
+B12:
+
+```js
+const stale = btn.getAttribute ? btn.getAttribute(BADGE_ATTR) : null;
+if (stale && btn.querySelector && btn.querySelector('.elo-helper-badge')) { … }
+```
+
+`stale` is never truthy, so the whole branch never ran. The comment above it ("strip any badge we
+left behind") described behaviour that did not exist.
+
+**Reproducing assertion** (`dom_check.js` §3): decorate a button, then decorate it with `null` and
+require the badge to be gone from the tree, the confidence class to be gone from the button, and the
+inline opacity to be gone.
+
+**Fix.** Drop the attribute test and key the strip on the node that actually exists: look for
+`.elo-helper-badge` and remove it.
+
+**Verification.** `dom_check.js` §3 green; `tests/hud_check.js` and the E2E
+`a button the engine has no opinion about loses its badge` both stay green.
+
+---
+
+## B14 — The poll dedupe ate genuine repeats
+
+**Symptom.** Three identical consecutive lines in `battle.log` reached the parser **once**. So did
+two. Any protocol line that legitimately repeats its predecessor was silently dropped.
+
+**Root cause.** `pollBattleLog` skipped a line whenever it matched the line the **poll itself** had
+last delivered. That is not what its comment claimed — the stated purpose was to skip something the
+**socket** had already delivered, because the socket path and the poll path both read the same
+events. Comparing poll against poll cannot tell a socket duplicate from a genuine repeat, and the
+log is the authority on what happened: two identical lines in `battle.log` are two things that
+happened.
+
+**Reproducing assertion** (`tests/injected_bridge.js`): push three identical `|-unboost|` lines and
+require `polled` to advance by 3; push two identical `|upkeep` lines and require 2; require a poll
+with nothing new to forward nothing; and — the other direction — require a line the **socket** just
+delivered **not** to be re-delivered by the poll that then reads it out of the log.
+
+**Fix.** Track the last delivery as `{ line, kind }` and skip only when the **socket** was the last
+thing to deliver that exact text. The poll resumes on the next genuinely new line.
+
+**Verification.** `injected_bridge.js` 23/23. Pre-fix it fails **three** ways — including "the poll
+does not deliver it again", which proves the old guard did not even do its own job: it was wrong in
+both directions.
+
+---
+
+## B15 — An inbound socket frame was forwarded once per listener
+
+**Symptom.** In a real Chromium page, a single inbound WebSocket frame was processed **twice**. A
+three-line frame produced six forwarded protocol events and `counters.received` advanced by 2 for one
+delivery. Most Showdown lines are absolute (a `|-damage|` applied twice is idempotent), but the
+relative ones are not: `|-boost|p1a|atk|1` applied twice is **+2**, and `|turn|n` twice re-opens a
+decision window.
+
+**Root cause.** `injected.js` captures inbound frames through **two** independent wrappers — the
+`WebSocket.prototype.onmessage` accessor (for `socket.onmessage = fn`) and a per-socket
+`addEventListener('message', …)` wrapper. They are two separate registrations, and a page that uses
+both gets both wrappers on the same socket, so both see the **same** `MessageEvent` and both forward
+it. This was caught because Playwright's WebSocket mock installs its own `'message'` listener; the
+same shape appears in the wild whenever two scripts share a socket, which is exactly the situation
+on `play.pokemonshowdown.com`.
+
+**Reproducing assertion** (`tests/injected_bridge.js`): register both styles on one socket, hand both
+wrappers the **same** event object, and require `dispatched` to advance by exactly 1 while *both*
+page handlers still run; then hand the same wrapper two **distinct** events carrying identical text
+and require both to be forwarded, so the guard is keyed on identity and not on content. In the
+browser, `tests/e2e/06-socket.spec.js` asserts the same thing against a real WebSocket.
+
+**Fix.** A single `captureInbound(event)` used by both wrappers, guarded by a one-slot reference to
+the last event object. The event *is* the delivery's identity, and both wrappers run synchronously
+inside the same dispatch, so one slot is sufficient and no allocation is needed. The page's own
+handlers are still delegated unconditionally — the guard suppresses the *forwarding*, never the
+page's callback.
+
+**Verification.** `injected_bridge.js` 23/23 (pre-fix: 2 failures), `06-socket.spec.js` 2/2, and the
+E2E's frame-delivery count drops from 6 to the correct 3.
+
+---
+
+## B16 — `clear()` destroyed an inline style it had not recorded
+
+**Symptom.** `clear()` reset `btn.style.textDecoration` directly, but only `opacity` and `position`
+were ever recorded in the rollback list. A page (or another extension) that had set an inline
+`text-decoration` on a move button lost it permanently the first time the HUD tore down.
+
+**Root cause.** An asymmetry inside `_decorateButton`/`clear()`: the veto path sets **two** inline
+properties but remembered only one. This is the same root-cause family as B12 — the rollback
+bookkeeping and the styling it is supposed to undo had drifted apart — which is why the two are
+fixed together rather than one at a time.
+
+**Reproducing assertion** (`dom_check.js` §2, veto-last ordering): a vetoed render must strike the
+button through, and `clear()` must return `textDecoration` to its original (`''`) rather than to the
+HUD's own value.
+
+**Fix.** Record `textDecoration` through the same idempotent `_rememberStyle` path as `opacity`, so
+the rollback list is a complete description of what the HUD changed.
+
+**Verification.** `dom_check.js` 35/35; `clear()`'s existing caller-facing contract in
+`tests/run_tests.js` ("hud: clear is safe") is unaffected.
+
+---
+
+## B17 — A second `|init|` never cleared the board
+
+**Symptom.** After a mid-battle reconnect, the engine reasoned about a **phantom opponent**. Three
+battles replayed on one connection left the opponent roster as
+`["Iron Valiant", "Landorus-Therian", "Kingambit", "Dragapult"]` — every opponent from every game,
+accumulated. Sp. Atk boosts read `+2` instead of `+1`, and Stealth Rock was on the opponent's side
+when the replay had not put it there.
+
+**Root cause.** Two independent gaps on the same path:
+
+1. **`|init|` did not reset the state manager.** `BattleStateManager.reset()` existed and was
+   correct, but **nothing in `src/` ever called it** — the `|init|` handler in `content.js` reset the
+   clock, the bench selection, the Trick Room alert and the receipt, and stopped there.
+2. **`|clearpoke|` was never handled at all.** It parses to `{ type: 'unknown' }` and no handler
+   existed, so the previewed opponent roster was never cleared.
+
+Both matter because `|init|` is not sent once per page: Showdown **re-sends it followed by the
+entire log from turn 1** whenever the socket reconnects mid-battle, and a rematch in the same room
+re-uses the connection. Replaying a log on top of the previous battle is not idempotent — `|-boost|`,
+`|-sidestart|` and Leech Seed counters are relative or incremental, so they compound.
+
+**Reproducing assertion.** Two places, because the two halves fail differently:
+
+* `tests/hardening_audit.js` §12 feeds two (then three) full battles through one state manager and
+  requires: the phantom roster to be gone, the new opponent to be active, **our pasted team to
+  survive** (6 mons, item, EV/IV truth, `fromPaste`), the previous battle's damage/boosts/hazards to
+  be gone, the format to still be recognised, and a bare `|format|` line **not** to clear the board.
+* `tests/e2e/05-hardening.spec.js` does the same on a real page and reads the drawer's opponent
+  readout, which is the only HUD surface that shows the *whole* roster rather than the active body.
+  The first version of this spec asserted only on the banner and **passed on the pre-fix code** —
+  the banner shows the active mon, which the replay sets correctly. Asserting on the roster is what
+  makes it a real test.
+
+**Fix.**
+
+* `BattleStateManager._onInit` resets on a **repeat** `|init|`. The reset is keyed on the raw line
+  starting with `|init|`, because `|format|` parses to the same event type but is a room header and
+  must not wipe a battle in progress.
+* `reset()` re-registers the pasted team. The paste is **connection-level** truth (EVs/IVs/nature/
+  item from TeamParser), not battle state — without this the reset would leave the engine with no
+  team and every "can I still switch" answer would be wrong. `registerMyTeam` keeps a copy in
+  `_parsedTeam` precisely so `reset()` can replay it.
+* `content.js`'s `|init|` handler also clears the pruner's candidate pools, which are seeded per
+  `side|slot|species` and are only meaningful for the battle they were seeded in.
+
+**Verification.** `hardening_audit.js` 64/64 (pre-fix §12: **5 failures**),
+`05-hardening.spec.js` 7/7 (pre-fix reconnect test: **1 failure**), and the whole Node suite green.
+
+---
+
+## Test corrections (sweep 2)
+
+Six of sweep 2's own first-draft assertions were wrong. They were rewritten rather than "made to
+pass", and each rewrite is what the sections above now pin:
+
+1. **`dom_check.js`'s stub document could not find its own buttons.** Its `querySelectorAll` answered
+   one selector and returned `[]` for everything else, so `clear()` skipped its entire button loop
+   and the suite quietly "passed" a teardown it never performed. That is the stub-that-cannot-fail
+   problem in reverse, and it is the same class of blind spot that let B12/B13/B16 survive: the
+   header of `hud_check.js` had already admitted that its stub returns nothing from `querySelector*`,
+   which is why every button-level check there stubs `_findMoveButtons` and why `_decorateButton`
+   had never once been run against a document.
+2. **"30 renders leave exactly 1 rollback entry"** — my expectation, not the code. **2** is correct:
+   `opacity` (every decorate) and `position` (once, when the badge is appended).
+3. **"the veto badge's text is `VETO`"** — it is the percentage. The veto is carried by the
+   `conf-veto` class and the `title`, and the stylesheet makes it visually distinct (transparent
+   fill, red border, line-through). The assertion was rewritten to check the class and the title.
+4. **The options Reset test failed for the wrong reason.** Playwright dismisses dialogs by default,
+   so `window.confirm` returned `false` and the reset correctly did nothing. The test now registers a
+   dialog handler and asserts **both** paths: a dismissed confirm must change nothing at all
+   (form *and* storage), and an accepted one must reset everything. That is a stronger test than the
+   original.
+5. **`extensionUrl` produced `null/options/options.html`.** `chrome-extension:` is not a "special"
+   scheme, so Node's WHATWG URL parser reports `.origin` as the **string** `"null"`. The extension id
+   has to be read out of the raw URL instead.
+6. **The E2E reconnect test passed on pre-fix code.** See B17 — it asserted on the banner, which the
+   replay sets correctly regardless.
+
+## Verification evidence
+
+The single browser run, on the frozen tree, at the end:
+
+```
+npm run e2e  ->  exit 0   41 passed (46.3s)
+```
+
+The Node gate, same tree:
+
+```
+npm test     ->  exit 0   ALL 20 SUITES PASSED (31.8s)
+                          tests/injected_bridge.js   23/23
+                          tests/dom_check.js         35/35
+                          tests/hardening_audit.js   64/64  (40-battle fuzz clean)
+                          tests/mlp_check.js         48/48
+                          tests/blackbox_guard.js    50,616 stat values
+```
+
+Pre-fix reproduction, one file stashed at a time:
+
+```
+git stash push -- src/ui_overlay.js    && node tests/dom_check.js        -> 7 failures
+git stash push -- src/injected.js      && node tests/injected_bridge.js  -> 5 failures
+git stash push -- src/state_manager.js && node tests/hardening_audit.js  -> 5 failures (§12)
+git stash push -- src/state_manager.js && playwright test -g "second |init|" -> 1 failure
+```
+
+**Zero regressions.** No pre-existing expectation had to change for any sweep-2 fix; the only test
+edits were to assertions that were themselves wrong, all listed above.
+
+## What sweep 2 did **not** prove
+
+* **Only Chromium.** The manifest ships `browser_specific_settings` with a Gecko id and
+  `strict_min_version`, but every browser test runs Playwright's bundled Chromium. The `chrome.*` /
+  `browser.*` surface, and Firefox's MV3 extension loading, are untested.
+* **The page is a fixture, not the real site.** It is served by intercepting the real hostname, but
+  it reproduces only the surface the extension touches. An upstream layout or protocol change would
+  not be caught here — it would show up as a live regression on the real site.
+* **The action popup.** `options/options.html` is registered as *both* `options_ui` (open in tab) and
+  `action.default_popup`. Only the tab form is tested. In particular, `Reset` uses a blocking
+  `window.confirm`, which a popup that loses focus may not survive — plausible, but **not
+  reproduced**, so it is logged rather than patched.
+* **The LLM path.** No API key is ever set, so `src/llm_client.js` is never exercised end to end;
+  only its "skipped while blank" behaviour is implied.
+* **`bench/bench.html`** has no automated coverage at all.
+* **Device performance.** The "S24 FE" viewport is emulated — size and device pixel ratio only, not
+  the CPU. `tests/perf_bench.js` remains the only timing evidence.
+* **Deliberately logged, not fixed:**
+  * `MobileHUD.clear()` has **no caller in `src/`**. It is correct (and now pinned by
+    `dom_check.js`), but nothing invokes it. It was considered as the hook for B17 and rejected:
+    `clear()` also removes the drawer and its toggle and sets `_bound = false`, so calling it on
+    `|init|` would need `bindDrawer()` straight after and would blank the team-status readout. The
+    stale HUD text self-heals on the `|request|` that always follows a replay, so the state manager
+    — where the corruption actually was — is the right place to fix it.
+  * A room switch that swaps `window.app.curRoom.battle` **without** an `|init|` leaves stale HUD
+    text. Unreachable in practice: a real room switch is a page navigation, and the poll's cursor
+    reset already handles the shrunk log. Logged, not patched.
+  * The `dataset.stLine` mirror is a **fallback**, not a second delivery path: `content.js` only
+    reads it when the CustomEvent carries no usable detail. Verified — there is no double-application
+    from the two-channel design.
+
+---
+
+# Sweep 1 — engine correctness
 
 ## Artifacts
 
@@ -23,7 +413,7 @@ turned out to be wrong (they are reported too — a test that asserts a defect i
 | [`tests/rule_checks.js`](tests/rule_checks.js) | One expectation had to be corrected: it was passing *because* of defect **B9** (see "Test corrections"). |
 | [`README.md`](README.md), [`ARCHITECTURE.md`](ARCHITECTURE.md) | Document the new suite (and "eight suites" → "nine"). |
 
-## Summary
+## Summary (sweep 1)
 
 | # | Defect | Where | Class | Status |
 | --- | --- | --- | --- | --- |
@@ -305,7 +695,7 @@ and a following `|-heal|…|50/100` must clear the latch.
 
 ---
 
-## Test corrections (assertions that were wrong, not the code)
+## Test corrections (sweep 1 — assertions that were wrong, not the code)
 
 Four of the audit's own first-draft assertions failed for the wrong reason. They were rewritten
 rather than "made to pass", and each rewrite is what the section above now pins:
@@ -329,7 +719,7 @@ rather than "made to pass", and each rewrite is what the section above now pins:
 
 ---
 
-## Verification evidence
+## Verification evidence (sweep 1)
 
 Reproduced **before** any fix (`node tests/hardening_audit.js`, pre-fix code):
 
@@ -369,10 +759,12 @@ node tests/hardening_audit.js  -> exit 0   46/46, 40-battle fuzz clean
 **Zero regressions:** only one pre-existing expectation moved, and it is the `rule_checks.js`
 assertion that encoded B9 (documented above).
 
-## What this sweep did **not** prove
+## What sweep 1 did **not** prove
 
-* **Nothing in a real browser.** There is still no Playwright/device run: every check uses the
-  DOM-less sandbox, stub DOMs or replays. The UI/HUD rendering path remains unverified live.
+* **Nothing in a real browser.** There was still no Playwright/device run when sweep 1 closed: every
+  check used the DOM-less sandbox, stub DOMs or replays, and the UI/HUD rendering path was unverified
+  live. **Sweep 2 closed exactly this gap** — and found seven defects in it, three of them in the
+  HUD's DOM handling alone. The lesson is recorded at the top of this document.
 * **Reachable but unvalidated leads** were deliberately left alone rather than "fixed blind":
   `laplace_core._oppActive` prefers `world.team[0]` before the state's own active body during a
   faint→replacement window; `simulate()` / `_mutableSim` are unreachable dead code; the

@@ -175,10 +175,34 @@
       return node;
     }
 
+    /**
+     * Remember an inline property's ORIGINAL value so clear() can put it back.
+     *
+     * Recorded exactly once per (element, property). Recording on every call looked harmless
+     * and was not: clear() replays this list in order, so an entry captured on a later call
+     * holds a value WE wrote (a veto's `opacity: 0.5`), and that replay overwrote the true
+     * original — a cleared button stayed struck through. The list also grew by one entry per
+     * button per render, for the life of the battle.
+     *
+     * Compaction keeps the list bounded by the LIVE DOM. Showdown throws its control bar away
+     * and rebuilds it constantly, so without this every turn would strand four detached button
+     * nodes here forever. A node that has left the document has nothing left to restore, so
+     * dropping its entry loses nothing.
+     */
     _rememberStyle(el, prop) {
       if (!el || !el.style) return;
-      const prev = el.style[prop];
-      this._touched.push({ el: el, prop: prop, previous: prev });
+      for (let i = 0; i < this._touched.length; i++) {
+        const t = this._touched[i];
+        if (t.el === el && t.prop === prop) return;
+      }
+      if (this._touched.length > 256) {
+        this._touched = this._touched.filter(function (t) {
+          // `isConnected` is undefined in the Node harness's stub elements, where nothing is
+          // ever detached — so an absent flag must count as "still live", not as "gone".
+          return !t.el || t.el.isConnected === undefined || t.el.isConnected;
+        });
+      }
+      this._touched.push({ el: el, prop: prop, previous: el.style[prop] });
     }
 
     _findMoveButtons() {
@@ -268,7 +292,6 @@
       const vetoed = !!(action && action.isVetoed);
       const conf = action && typeof action.confidence === 'number' ? action.confidence : 0;
       const cls = action ? this.confidenceClass(conf, vetoed) : '';
-      const previous = btn.getAttribute ? btn.getAttribute(BADGE_ATTR) : null;
 
       // Always reset our own classes so a stale turn cannot leak into the next one.
       const allCls = [BADGES.high.cls, BADGES.mid.cls, BADGES.low.cls, BADGES.veto.cls, 'st-optimal'];
@@ -279,7 +302,8 @@
         btn.removeAttribute('title');
       }
       if (btn.style) {
-        if (previous === null) this._rememberStyle(btn, 'opacity');
+        this._rememberStyle(btn, 'opacity');
+        this._rememberStyle(btn, 'textDecoration');
         btn.style.opacity = vetoed ? '0.5' : '';
         if (vetoed && btn.style) btn.style.textDecoration = 'line-through';
         else if (btn.style) btn.style.textDecoration = '';
@@ -290,11 +314,13 @@
 
       if (!action) {
         // No engine opinion for this button: strip any badge we left behind.
-        const stale = btn.getAttribute ? btn.getAttribute(BADGE_ATTR) : null;
-        if (stale && btn.querySelector && btn.querySelector('.elo-helper-badge')) {
-          const node = btn.querySelector('.elo-helper-badge');
-          if (node && node.remove) node.remove();
-        }
+        //
+        // The guard used to read data-st-badge off the BUTTON, but that attribute is set on the
+        // BADGE (see below), so the test was never true and the branch never ran. A button the
+        // engine has no opinion about — a move the request no longer lists, a label that does
+        // not resolve to an action — kept whatever badge an earlier turn had put on it.
+        const stale = btn.querySelector ? btn.querySelector('.elo-helper-badge') : null;
+        if (stale && stale.remove) stale.remove();
         return;
       }
 

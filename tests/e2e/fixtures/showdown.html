@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>[Gen 9] National Dex OU</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #f4f4f4; font-family: Verdana, sans-serif; }
+  .battle { padding: 8px; }
+  .battle-log { height: 200px; overflow: auto; background: #fff; border: 1px solid #ccc; font-size: 12px; white-space: pre-wrap; }
+  .battle-controls { margin-top: 8px; }
+  .movemenu { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  button.movebutton { min-height: 56px; font-size: 15px; border: 1px solid #999; background: #fff; border-radius: 6px; }
+  button.switchbutton { min-height: 44px; width: 100%; margin-top: 6px; }
+</style>
+</head>
+<body>
+<div class="battle">
+  <div class="battle-log" id="log"></div>
+  <div class="battle-controls" id="controls">
+    <div class="movemenu" id="movemenu"></div>
+    <button class="switchbutton" name="chooseSwitch" data-pos="2">Switch</button>
+  </div>
+</div>
+<script>
+/* A stand-in for play.pokemonshowdown.com. It reproduces ONLY the surface the extension
+ * touches: window.app.curRoom.battle (log, per-side rosters with moveSlots, a readable dex)
+ * and Showdown's own control bar markup (button[data-move] / .movebutton).
+ *
+ * Everything the test drives goes through window.__mock, so no test has to know this shape. */
+(function () {
+  'use strict';
+
+  var battle = {
+    log: [],
+    p1: { pokemon: [] },
+    p2: { pokemon: [] },
+    dex: { moves: { get: function (id) { return { id: id, accuracy: 100 }; } } }
+  };
+
+  window.app = { curRoom: { battle: battle } };
+
+  var DEFAULT_MOVES = [
+    ['headlongrush', 'Headlong Rush'],
+    ['closecombat', 'Close Combat'],
+    ['icespinner', 'Ice Spinner'],
+    ['rapidspin', 'Rapid Spin']
+  ];
+
+  function renderMenu(moves) {
+    var menu = document.getElementById('movemenu');
+    while (menu.firstChild) menu.removeChild(menu.firstChild);
+    for (var i = 0; i < moves.length; i++) {
+      var b = document.createElement('button');
+      b.className = 'movebutton';
+      b.setAttribute('name', 'chooseMove');
+      b.setAttribute('value', '1');
+      b.setAttribute('data-move', moves[i][0]);
+      b.textContent = moves[i][1];
+      menu.appendChild(b);
+    }
+    return menu.querySelectorAll('button[data-move]').length;
+  }
+
+  function setMoveSlots(sideKey, roster) {
+    var out = [];
+    for (var i = 0; i < roster.length; i++) {
+      var slots = [];
+      var moves = roster[i].moves || [];
+      for (var k = 0; k < moves.length; k++) {
+        slots.push({ id: moves[k][0], move: moves[k][1], pp: moves[k][2], maxpp: moves[k][3] });
+      }
+      out.push({ name: roster[i].name, moveSlots: slots });
+    }
+    battle[sideKey].pokemon = out;
+    return out.length;
+  }
+
+  window.__mock = {
+    battle: battle,
+    defaultMoves: DEFAULT_MOVES,
+    renderMenu: renderMenu,
+    setMoves: function (moves) { return renderMenu(moves); },
+    setMoveSlots: setMoveSlots,
+    logLine: function (line) {
+      battle.log.push(line);
+      var el = document.getElementById('log');
+      if (el) el.appendChild(document.createTextNode(line + '\n'));
+      return battle.log.length;
+    },
+    logLines: function (lines) {
+      for (var i = 0; i < lines.length; i++) this.logLine(lines[i]);
+      return battle.log.length;
+    },
+    /* A REAL browser WebSocket, so the MAIN-world capture in src/injected.js is exercised
+     * against Chromium's own implementation instead of a stub. The socket is only created when
+     * a test asks for it, which is AFTER the extension has had a chance to wrap the
+     * constructor — that ordering is the whole point of the test. */
+    openSocket: function (url) {
+      var s = new WebSocket(url);
+      window.__mock.socket = s;
+      window.__mock.socketReceived = [];
+      s.onmessage = function (e) { window.__mock.socketReceived.push(e.data); };
+      s.onerror = function () { window.__mock.socketErrored = true; };
+      return true;
+    },
+    socketSend: function (text) {
+      if (!window.__mock.socket) return false;
+      window.__mock.socket.send(text);
+      return true;
+    },
+    socketState: function () {
+      var s = window.__mock.socket;
+      return {
+        present: !!s,
+        /* injected.js patches each instance it constructs. */
+        patched: !!(s && s.__stPatched),
+        /* ...and the page must still be holding a genuine WebSocket. */
+        nativeProto: !!(s && Object.getPrototypeOf(s) === WebSocket.prototype),
+        constructorWrapped: !!WebSocket.__stWrapped,
+        received: (window.__mock.socketReceived || []).slice(),
+        errored: !!window.__mock.socketErrored
+      };
+    },
+    /* Showdown throws its whole control bar away and rebuilds it every turn. */
+    rebuildControlBar: function () {
+      var controls = document.getElementById('controls');
+      var parent = controls.parentNode;
+      var fresh = controls.cloneNode(false);
+      parent.replaceChild(fresh, controls);
+      var menu = document.createElement('div');
+      menu.className = 'movemenu';
+      menu.id = 'movemenu';
+      fresh.appendChild(menu);
+      var sw = document.createElement('button');
+      sw.className = 'switchbutton';
+      sw.setAttribute('name', 'chooseSwitch');
+      fresh.appendChild(sw);
+      renderMenu(DEFAULT_MOVES);
+      return fresh.querySelectorAll('button[data-move]').length;
+    }
+  };
+
+  renderMenu(DEFAULT_MOVES);
+})();
+</script>
+</body>
+</html>

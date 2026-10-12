@@ -27,12 +27,18 @@ Five minutes to a working mental model:
    * **Rule 2 — frozen ground truth.** `test_engine.js` pins five canonical damage rolls.
    * **Rule 4 — one config.** Every tunable lives in [`src/config.js`](src/config.js);
      `tests/config_check.js` inventories all of them and proves live mutation flows through.
-3. **Run everything:** `npm test` (19 suites, ~2,000 checks, no dependencies). Individual suites
+3. **Run everything:** `npm test` (20 suites, ~2,100 checks, no dependencies). Individual suites
    are plain `node tests/<name>.js`. CI runs the same command on every push.
-4. **Measure it:** `npm run bench` replays the real 30-turn log and reports the per-turn decision
+4. **Then the real browser:** `npm run e2e` (41 Playwright tests, ~46 s) loads the actual MV3
+   extension into Chromium and drives a page. It is deliberately **separate** from `npm test`: the
+   Node suites are zero-dependency and finish in ~30 s, the browser suite needs a Chromium download.
+   See [`tests/e2e/helpers.js`](tests/e2e/helpers.js) for the observability contract — a content
+   script's isolated world is invisible to `page.evaluate`, so everything asserted is shared DOM,
+   the MAIN-world bridge, or the console stream.
+5. **Measure it:** `npm run bench` replays the real 30-turn log and reports the per-turn decision
    cost; `npm run bench:serve` then open the printed URL on the phone for ground-truth numbers
    (see [Performance](#performance)).
-5. **History lives in [`CHANGELOG.md`](CHANGELOG.md).** This README is declarative — what is true
+6. **History lives in [`CHANGELOG.md`](CHANGELOG.md).** This README is declarative — what is true
    now; the changelog and the commit log carry how it got that way.
 
 ## Performance
@@ -162,12 +168,22 @@ options/options.html|js    mobile settings page (provider, key, team, Elo scaler
 tests/run_tests.js         end-to-end verification suite (218 checks)
 tests/rule_checks.js       deduction-rule checks driven through real protocol lines (23 checks)
 tests/util_smoke.js        util.js in isolation: dex access, item naming, type math, Speed maths (43 checks)
-tests/injected_bridge.js   the MAIN-world WebSocket bridge against a fake WebSocket/DOM (12 checks)
+tests/injected_bridge.js   the MAIN-world WebSocket bridge against a fake WebSocket/DOM, including
+                           the poll dedupe and one-frame-one-forward capture (23 checks)
 tests/config_check.js      RULE 4: the config inventory, the frozen 128D layout, live mutation (71 checks)
 tests/blackbox_guard.js    RULE 1: 50,616 stat values diffed against @smogon/calc + a scan for handwritten math (28 checks)
 tests/parser_fuzz.js       RULE 3: the real 30-turn log replayed, every prefix, and junk lines (44 checks)
-tests/hardening_audit.js   the bug-hunt regression suite: 10 defects reproduced first, then fixed,
-                           plus a 40-battle seeded invariant fuzz (48 checks)
+tests/hardening_audit.js   the bug-hunt regression suite: 11 defects reproduced first, then fixed,
+                           plus a 40-battle seeded invariant fuzz (64 checks)
+tests/dom_check.js         the HUD's DOM lifecycle against a faithful stub: the inline-style rollback
+                           is recorded once, clear() restores the ORIGINALS, badges are reused not
+                           stacked, the veto contract holds, detached buttons are compacted (35 checks)
+tests/e2e/                 the real-browser suite (Playwright): helpers.js, a mock Showdown fixture
+                           served by intercepting the real hostname, and seven specs covering boot,
+                           the HUD, the session, robustness, hardening, the socket bridge and the
+                           options page (41 tests)
+playwright.config.js       the browser suite's config — workers: 1, because each worker launches its
+                           own persistent Chromium with the extension side-loaded
 tests/upgrades_check.js    the mixed-strategy solver against matrices with an analytic equilibrium,
                            the newer vetoes, the deliberation clock and the reverse damage rule (118 checks)
 tests/chaos_sync_check.js  the monthly chaos-sync tool + the usage overlay it writes (70 checks)
@@ -187,8 +203,10 @@ test_engine.js             RULE 2: five canonical ground-truth damage scenarios 
 test_log.txt               the 30-turn ExtramePatriot vs LUIZ_LFN battle as a raw protocol stream
 bench/bench.html           standalone on-device benchmark page (loads the engine, times a turn,
                            prints the device's own numbers) — the ground truth for Performance
-package.json               npm scripts: `test`, `test:fast`, `bench`, `bench:json`, `bench:serve`
-.github/workflows/ci.yml   runs `npm test` + the benchmark on every push and PR
+package.json               npm scripts: `test`, `test:fast`, `e2e`, `e2e:headed`, `bench`,
+                           `bench:json`, `bench:serve`
+.github/workflows/ci.yml   runs `npm test` + the benchmark on every push and PR, plus a separate
+                           `e2e` job that installs Chromium and runs the browser suite
 .github/workflows/chaos-sync.yml  the monthly usage-overlay cron
 CHANGELOG.md               how the engine got here, newest first
 tools/gen_abilities.js     regenerates lib/species-abilities.js from tools/pokedex.json
