@@ -42,9 +42,17 @@ const SUITES = [
   'tests/dom_check.js',
   'test_engine.js',
   'tests/run_tests.js',
-  'tests/hardening_audit.js'
+  'tests/hardening_audit.js',
+  // The arena. `arena_check.js` drives the real @pkmn/sim engine, which is a devDependency the
+  // other suites deliberately do not need: without `npm install` it prints a skip and exits 0
+  // (the CI test job has no install step, so that is the path CI takes). `tactical_puzzles.js`
+  // needs no sim — it replays harvested protocol prefixes through the repo's own pipeline — and
+  // ships with zero puzzles, so it is green until a `--harvest` run writes a real defect into it.
+  'tests/tactical_puzzles.js',
+  'tests/arena_check.js'
 ];
 
+// Skipped by --fast only: these are the two that dominate the wall clock.
 const SLOW = ['tests/weights_check.js', 'tests/hud_check.js'];
 const fast = process.argv.indexOf('--fast') !== -1;
 const list = fast ? SUITES.filter(function (s) { return SLOW.indexOf(s) === -1; }) : SUITES;

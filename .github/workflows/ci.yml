@@ -1,12 +1,14 @@
 # Showdown Tactician - .github/workflows/ci.yml
 #
-# WHY: twenty Node suites and ~2,000 assertions existed with nothing running them on a push, so a
-# regression could land silently (the tree's own audit report is the reason to care: it found
+# WHY: twenty-six Node suites and 2,021 assertions existed with nothing running them on a push, so
+# a regression could land silently (the tree's own audit report is the reason to care: it found
 # eleven real defects, each of which a suite now pins). `test` runs every suite plus the
-# performance benchmark; `e2e` drives a real Chromium with the extension side-loaded.
+# performance benchmark; `e2e` drives a real Chromium with the extension side-loaded; `arena`
+# installs the devDependencies and drives the headless adversarial league.
 #
 # The Node job stays zero-dependency: every suite is a plain `node` script, so it needs no
-# install step. Only the browser job does.
+# install step. The browser job and the arena job do — and the arena suite is the reason the
+# `test` job can stay install-free: without @pkmn/sim it prints an honest skip.
 name: ci
 
 on:
@@ -38,6 +40,38 @@ jobs:
       # runner never fails the build — but the number lands in the log for the record.
       - name: Performance benchmark
         run: npm run bench
+
+  # The headless arena. It needs @pkmn/sim (a devDependency), which the `test` job deliberately
+  # does not install — there `tests/arena_check.js` prints its skip. This job installs, runs the
+  # arena's own suite, and then drives the CLI for real: two seeded full games plus one crucible
+  # splice, so the orchestrator, the player personas, the replay fast-forward and the report
+  # renderer are all exercised end to end rather than only unit-tested.
+  #
+  # Both runs are seeded, so a failure here is a real regression rather than RNG noise. Losses are
+  # data, not failures: the CLI exits 0 for a win, a loss and a tie alike (a non-zero exit means a
+  # setup error), which is what makes it safe to gate a build on.
+  arena:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run the arena suite
+        run: node tests/arena_check.js
+
+      - name: Smoke two full games against the anchor persona
+        run: node tools/run_arena.js --battles 2 --agent anchor --mode full --seed 7 --quiet
+
+      - name: Smoke a crucible splice against the chaos persona
+        run: node tools/run_arena.js --battles 1 --agent chaos --mode crucible --seed 7 --quiet
 
   # The real-browser gate. Separate from `test` on purpose: the Node suites are zero-dependency
   # and finish in ~30 s, while this one downloads Chromium and drives it with the extension

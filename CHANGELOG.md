@@ -8,6 +8,46 @@ provenance — why a number is what it is, and what was tried and rejected. Entr
 
 ### Added
 
+- **The headless adversarial league arena** (`tools/run_arena.js`, `tools/headless_arena/`,
+  `npm run arena`). A second execution path that runs the engine against the real `@pkmn/sim` battle
+  engine instead of protocol lines this repository typed by hand — the one thing `tests/` can never
+  do is surprise the deduction. Four mechanisms: **an adversarial league** of three personas (a meta
+  anchor on curated samples, an anti-Trick-Room clock staller that banks the 5-turn timer on
+  Protect/Bunker and immunity loops, and an ε-greedy low-ladder chaos agent, ε = 0.15); **crucible
+  splicing**, which fast-forwards a real replay to its highest-leverage volatile turn (a faint, a
+  hazard or screen going up, a >50% HP swing), hands both sides to the live agents there, and
+  reports the fidelity of that handover rather than assuming it; **adversarial set mutation**
+  (off-meta item swaps, Speed-EV creep, coverage injection — each mutation applied, validated
+  through the sim's own `TeamValidator`, and rolled back when illegal); and the **blunder
+  harvester**, which finds the turn whose evaluation suffered the largest negative drop and
+  synthesizes a regression puzzle from it. `engine_bridge.js` is the only route from arena code into
+  engine code, and it loads the shipped scripts through `tests/harness.js`, so the arena drives the
+  program that ships rather than a copy. Zero custom math anywhere in `tools/`: the sim resolves the
+  battle and owns legality, the engine only picks.
+- **The format is `gen9nationaldex`, which IS [Gen 9] National Dex OU** — it carries the NatDex OU
+  banlist, with the lower ND tiers deriving from it. `gen9nationaldexou` (what the brief asked for)
+  does not exist in the sim: `Dex.formats.get` hands back a Condition for it, not a Format, so a
+  driver asking for that id plays nothing while looking like it worked.
+- **`tests/tactical_puzzles.js`** — the harvested-vaccine registry *and* its runner. A puzzle
+  replays its raw protocol prefix through the real parser → state manager → engine pipeline and
+  asserts the engine did not rank the losing line first while a viable alternative is available. It
+  ships with zero puzzles, and a harvested vaccine is **red on purpose**: the engine is
+  deterministic, so replaying the prefix reproduces the ranking that lost, and the puzzle turns green
+  only when the underlying defect is actually fixed. Both call shapes from the brief work:
+  `generatePuzzleCode(analysis)` for the scanned path, and the terse
+  `generatePuzzleCode(blunderTurnNumber, matchReport)`, which derives the prefix, the line it played
+  and the alternatives from the report's own log — a switch is pinned by species name, which is what
+  the engine's ranking prints for one.
+- **`tests/arena_check.js`** — 125 checks over the arena: the runner's report shape, a splice that
+  hands over without desync, every persona choosing a legal action on every decision frame, mutation
+  that never produces illegal stats, and generated puzzle code that is syntactically valid. It skips
+  with a plain message when `@pkmn/sim` is absent, so `npm test` stays install-free for every other
+  suite.
+- **`npm run arena` and an `arena` CI job.** The job installs the devDependencies, runs the suite,
+  and drives two seeded full games plus one crucible splice through the CLI, so the orchestrator, the
+  personas, the replay fast-forward and the report renderer are exercised end to end. Both runs are
+  seeded, and losses are data rather than failures: the CLI exits 0 for a win, a loss and a tie
+  alike, so it is safe to gate a build on.
 - **A real-browser end-to-end suite** (`tests/e2e/`, `playwright.config.js`, `npm run e2e`). 41
   Playwright tests that load the actual MV3 extension into Chromium and drive a page: boot and
   manifest integrity, HUD rendering and veto placement, session lifecycle, robustness against
@@ -28,6 +68,45 @@ provenance — why a number is what it is, and what was tried and rejected. Entr
   in `.gitignore`.
 
 ### Fixed
+
+Seven defects the arena found while it was being built (not an audit sweep, but each is a real bug
+with a suite pinning it now):
+
+- **The blunder harvester could never harvest anything.** It read the engine's decisions out of
+  `report.fullLog` — the omniscient public stream — and the sim never publishes `|request|` on that
+  stream, so no decision frame was ever in it: every analysis returned "the log contains no decision
+  frame for p1", `scoreTimeline` walked an empty timeline, and `run_arena --harvest` could not append
+  a puzzle for any game it was ever given. The runner now reports `p1Log`/`p2Log` (each seat's own
+  stream: the public lines plus that seat's private frames, in order), the harvester reads the side it
+  is analyzing, and the suite pins the split against a REAL battle and a real timeline — the
+  synthetic self-check fixture had requests inside `fullLog`, which is precisely why it never
+  noticed.
+
+- **The arena crashed on every normal win.** `writeEnd()` on a player stream reaches
+  `Battle.destroy()` through a promise, so the throw arrives as an *unhandled rejection* no
+  surrounding `try/catch` can see — and the sim destroys its own battle on `|win|`, so the abort
+  path, which runs for every completed game, threw on the one path every game takes. `_abort()` now
+  ends streams only for a game that has not already ended.
+- **The repo's own `TeamParser.packTeam()` output is not a legal packed team for `@pkmn/sim`.** It
+  joins sets with newlines where the sim splits on `]`, and writes display names where the sim reads
+  ids, which surfaces as `invalid happiness`. Teams now reach the sim through `Teams.import(paste)` →
+  `Teams.pack(sets)`, and the personas carry pastes for exactly that reason.
+- **A choice written to `players.pX.write()` must be BARE** — `move 1`, not `>p1 move 1`. That stream
+  prepends `>pX ` itself, so a prefixed choice is an invalid choice and the driver stalled at turn 0.
+- **Two shipped sample teams were illegal, and the self-check exited 0 anyway.** Both carried a
+  Dragapult the sim's dex tags **ND Uber**, which `gen9nationaldex` bans; `teams.js` printed the
+  verdicts and still reported success. Replaced with validator-verified sets (Iron Moth and Raging
+  Bolt), and the self-check now prints every diagnostic first and then **exits non-zero on an illegal
+  shipped sample** — a sample that cannot be played is worse than no sample.
+- **The mutator's coverage injection was dead.** It read `species.learnset`, which does not exist in
+  `@pkmn/sim` 0.10.11 — the learnsets live at `Dex.data.Learnsets[id].learnset` (1,288 species), so
+  every coverage mutation was rejected for a move that could not be proven. The class now draws from
+  a ranked pool (uncovered damaging type first, then power, then status) built from that table.
+- **`mutateTeam` rejected legal teams carrying a Gen-6 legendary.** Its parse materialized an empty
+  `ivs: {}` for a set that never declared IVs, and the validator reads an empty table as **zero** IVs
+  while an absent key means the default 31 — so Ting-Lu became "must have at least three perfect IVs
+  because it's a legendary in Gen 6 or later", reported as an illegal *input*, and no mutation ran at
+  all on two shipped samples. The table is now carried only when it actually says something.
 
 Seven defects found by the browser suite that no sandbox could have seen — full write-ups in
 [`BUGS_AUDIT_REPORT.md`](BUGS_AUDIT_REPORT.md), sweep 2:

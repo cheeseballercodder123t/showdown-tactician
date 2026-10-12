@@ -27,8 +27,12 @@ Five minutes to a working mental model:
    * **Rule 2 — frozen ground truth.** `test_engine.js` pins five canonical damage rolls.
    * **Rule 4 — one config.** Every tunable lives in [`src/config.js`](src/config.js);
      `tests/config_check.js` inventories all of them and proves live mutation flows through.
-3. **Run everything:** `npm test` (20 suites, ~2,100 checks, no dependencies). Individual suites
-   are plain `node tests/<name>.js`. CI runs the same command on every push.
+3. **Run everything:** `npm test` (26 suites, 2,039 checks, no runtime dependencies). Individual
+   suites are plain `node tests/<name>.js`. CI runs the same command on every push. Two of the
+   suites belong to the headless arena: `tests/tactical_puzzles.js` needs no install at all, and
+   `tests/arena_check.js` prints an honest skip when `@pkmn/sim` is absent (`npm install` adds it —
+   it is a devDependency, never shipped). The arena's own CLI is `npm run arena`;
+   see [The headless adversarial arena](#the-headless-adversarial-arena).
 4. **Then the real browser:** `npm run e2e` (41 Playwright tests, ~46 s) loads the actual MV3
    extension into Chromium and drives a page. It is deliberately **separate** from `npm test`: the
    Node suites are zero-dependency and finish in ~30 s, the browser suite needs a Chromium download.
@@ -242,6 +246,26 @@ tools/train_mlp_residual.js     fits the optional residual head on the frozen li
                            reviewable artifact, with the verdict) and lib/mlp-residual.js (the data
                            module the extension loads). `--no-early-stop` is a diagnostic only
 .github/workflows/chaos-sync.yml  monthly cron: download the dump, resync the overlay, commit it
+tools/run_arena.js         the adversarial league CLI: N battles against the three personas (full games
+                           or crucible splices), optional set-mutation fuzzing, and `--harvest`,
+                           which turns every loss into a regression puzzle
+tools/headless_arena/sim_runner.js        the @pkmn/sim BattleStream wrapper; the sim resolves the
+                           battle, the engine only picks
+tools/headless_arena/replay_splicer.js   fast-forwards a real replay to its highest-leverage
+                           volatile turn and hands both sides to the live agents there, reporting
+                           the fidelity of the handover instead of assuming it
+tools/headless_arena/league_agents.js     the three adversarial personas (meta anchor, anti-Trick-Room
+                           clock staller, low-ladder chaos)
+tools/headless_arena/mutator.js           adversarial item / EV / coverage mutation, every mutation
+                           applied, validated and rolled back if illegal
+tools/headless_arena/blunder_harvester.js the loss -> puzzle synthesizer and its safe appender
+tools/headless_arena/teams.js             the five curated sample teams, validated against the sim's own
+                           TeamValidator; its self-check now exits non-zero on an illegal sample
+tools/headless_arena/engine_bridge.js     a DOM-free session that runs the REAL parser -> state manager
+                           -> engine pipeline over protocol lines, and translates a frame into a
+                           legal sim choice
+tests/arena_check.js       the arena's own suite (125 checks; skips without @pkmn/sim)
+tests/tactical_puzzles.js  the harvested-vaccine registry and runner; ships with zero puzzles
 ARCHITECTURE.md            frozen interface contract every module binds to
 ```
 
@@ -252,7 +276,7 @@ node test_engine.js           #  57 checks: RULE 2 — five ground-truth damage 
 node tests/run_tests.js       # 218 checks: the whole pipeline in a DOM-less sandbox
 node tests/rule_checks.js     #  23 checks: the deductions, replayed from raw protocol lines
 node tests/util_smoke.js      #  43 checks: dex access, item naming, type math, Speed maths
-node tests/injected_bridge.js #  12 checks: the MAIN-world WebSocket bridge (fake WebSocket/DOM)
+node tests/injected_bridge.js #  23 checks: the MAIN-world WebSocket bridge (fake WebSocket/DOM)
 node tests/config_check.js    #  71 checks: RULE 4 — the config is the only home for a heuristic
 node tests/blackbox_guard.js  #  28 checks: RULE 1 — no handwritten math, 50,616 stats diffed
 node tests/parser_fuzz.js     #  44 checks: RULE 3 — the real log, all its prefixes, junk lines
@@ -270,6 +294,8 @@ node tests/profile_check.js   #  80 checks: the opponent profiler (deviation, la
 node tests/entropy_check.js   #  48 checks: the scouting entropy and its assumed-response model
 node tests/wincon_check.js    #  56 checks: the win-condition bounty (refusals, payout)
 node tests/endgame_check.js   #  45 checks: the bounded endgame search and its honest rails
+node tests/arena_check.js     # 125 checks: the arena — runner, splicer, agent legality, mutator, harvester
+node tests/tactical_puzzles.js #   0 puzzles: the vaccine registry, green until a --harvest run writes a defect
 ```
 
 The first suite loads every script in manifest order inside a DOM-less sandbox (so a load-order
@@ -304,6 +330,64 @@ every prefix of it and ~40 malformed lines, and asserts the state neither throws
 from eroding: the first holds a 129-path inventory of every value the modules read and the
 frozen 128D weight layout, the second diffs tens of thousands of stats against the library and
 statically refuses to let a handwritten formula back into `src/`.
+
+## The headless adversarial arena
+
+`npm test` verifies the engine against protocol lines this repository typed by hand. That cannot
+produce a surprise: the same person chose the lines and wrote the deduction. The arena is the
+second, independent execution path. It drives the real `@pkmn/sim` battle engine, lets the engine
+answer live decision frames, and reports what happened.
+
+```
+npm run arena -- --battles 20                     # full games against all three personas
+npm run arena -- --battles 20 --mode crucible     # splice real replays from the crucible turn on
+npm run arena -- --battles 20 --mutate --harvest   # fuzz the sets and write a puzzle per loss
+node tools/headless_arena/teams.js                # self-check: are the five sample teams legal?
+```
+
+The format is pinned to **`gen9nationaldex`, which IS [Gen 9] National Dex OU** — it carries the
+NatDex OU banlist (the lower ND tiers derive from it). `gen9nationaldexou` does not exist in the
+sim: `Dex.formats.get('gen9nationaldexou')` hands back a Condition, not a Format, so a driver that
+asks for it silently plays nothing. The arena runs the one format the extension plays on.
+
+Four mechanisms, each with its own reason to exist:
+
+* **The league** (`league_agents.js`) replaces self-play with three adversaries the engine cannot
+  have been tuned for: a standard meta anchor on curated sample teams, an anti-Trick-Room clock
+  staller that spends a 5-turn Trick Room timer on Protect/Bunker and immunity loops, and a
+  low-ladder chaos agent on ε-greedy (ε = 0.15) play. Self-play echoes the engine's blind spots
+  back at it; these three are blind in different places.
+* **Crucible splicing** (`replay_splicer.js`) skips the opening. It scans a real replay for the
+  highest-leverage volatile turn ≥ 8 — a faint, a hazard or screen going up, a >50% HP swing —
+  replays the recorded actions through the sim up to that turn, and at that turn hands both sides to
+  the live agents, so the game branches into a new timeline from a state a human actually reached.
+  The handover is not assumed: the splicer builds the state it expected, compares it against the
+  state it produced, and reports a fidelity score plus any recorded action the sim rejected.
+* **Set mutation** (`mutator.js`) is fog-of-war stress. At a per-Pokémon rate it swaps the item the
+  pruner expects for an off-meta one, creeps the Speed EVs, or injects an unexpected coverage move —
+  each mutation applied, then validated through the sim's own `TeamValidator`, and rolled back when
+  the result is illegal. Nothing here invents a set the validator would reject.
+* **The blunder harvester** (`blunder_harvester.js`) turns a loss into a permanent regression test.
+  It finds the Critical Blunder Turn — the turn whose evaluation score suffered the largest negative
+  drop — and synthesizes a puzzle for `tests/tactical_puzzles.js`: the raw protocol prefix up to that
+  decision frame, the line the engine should not have played, and the alternatives it should have
+  considered. `appendVaccineToFile` duplicate-checks, compile-checks and appends it atomically. It
+  also answers the terse call the brief names — `generatePuzzleCode(turnNumber, matchReport)` — which
+  derives the same fields from the report's log for a caller that already knows the turn.
+* **The report carries two different logs, and the difference is load-bearing.** `fullLog` is the
+  omniscient public stream (what a spectator or a replay sees), and the sim never publishes
+  `|request|` on it, so it holds no decision frame at all. `p1Log`/`p2Log` are each seat's own
+  stream: the public lines PLUS that side's private frames, in the order a client saw them. Anything
+  that replays the engine's own decisions — the harvester, and the `logPrefix` it emits, which has to
+  end ON a decision frame — reads the side log. Reading the public log alone yields a harvester that
+  returns a well-formed verdict while harvesting nothing, which is exactly what it did until the
+  suite pinned the split against a real battle.
+
+**A harvested vaccine is deliberately RED.** The engine is deterministic, so replaying the prefix
+reproduces the ranking that lost the game: the puzzle fails until the engine is actually fixed, and
+`npm test` fails with it. That is the point — a vaccine is a written record of a known defect, not a
+passing test. Zero puzzles ship, which is why `tests/tactical_puzzles.js` is green today; after a
+`--harvest` run, expect it to be red until the named defect is fixed.
 
 ## The four rules this engine is built on
 
@@ -848,7 +932,9 @@ https://play.pokemonshowdown.com/data/pokedex.json` before regenerating.
    `lib/species-abilities.js`, `lib/species-aliases.js`, `tests/` and `tools/` are additional
    too: the generated dex patches are what make the candidate sets valid, and the test
    suites (plus `test_engine.js` and `test_log.txt`) are the only way to verify any of this
-   without a real battle. `src/config.js` is additional as well — the brief wanted the
+   without a real battle. `tools/headless_arena/` is additional on the same terms: it is the one
+   path here that verifies the engine against a real battle engine instead of hand-typed lines.
+   `src/config.js` is additional as well — the brief wanted the
    heuristics tunable, and one config object is the only way to keep them from scattering.
    `src/opponent_clock.js`, `src/sets_usage.js` and `.github/workflows/chaos-sync.yml` are the
    same story for the telemetry and data-sync work.
@@ -972,8 +1058,21 @@ the current turn, so it says which line to click now, not how the stall resolves
   over the same 128 inputs are all different bets, and any of them would have to clear the same
   hold-out and bootstrap gate before it could touch the engine.
 * Nothing here has been verified in a real browser. The parser, state manager, engines and HUD
-  are covered by the seventeen Node suites and stub DOMs; no suite can prove how Showdown's live
+  are covered by the twenty-six Node suites and stub DOMs; no suite can prove how Showdown's live
   control bar renders or how the extension behaves on an actual Android device.
+* The arena produces evidence about three shapes, not a ladder rating. It runs `@pkmn/sim` 0.10.11
+  with a seeded RNG, not the live Showdown server, and its three personas are heuristics — a one-ply
+  greedy scorer, a Protect-loop clock stall and ε-greedy noise — so a win rate against them says how
+  the engine handles those shapes and nothing about how it would place on the ladder. Crucible mode
+  replays a recording's own actions through the current sim, so a replay recorded against a
+  different sim revision desyncs visibly: the splicer reports the fidelity score and substitutes the
+  first legal choice rather than hiding the divergence.
+* The arena needs `@pkmn/sim`, a devDependency, and its suite takes the skip path without an
+  `npm install` — so CI's fast gate verifies everything EXCEPT the arena, which is what the separate
+  `arena` job in CI is for. The skip says exactly what it did not verify.
+* A harvested vaccine is a failing suite entry until the defect behind it is fixed, and the
+  harvester writes into a committed file. `--harvest` is therefore a mutating operation on the
+  repository: run it deliberately, and commit the vaccine together with the fix that turns it green.
 * `tests/hardening_audit.js` is the bug-hunt regression suite: ten defects found by the audit
   (symptoms, root causes, fixes and the verification evidence are in `BUGS_AUDIT_REPORT.md`),
   each pinned by an assertion that fails on the code as it was, plus a 40-battle seeded fuzz

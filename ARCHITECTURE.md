@@ -945,3 +945,89 @@ Guards, each pinned by `tests/quiescence_check.js`:
 Stated approximations (they are repeated at the call site): no speed order is modelled, so both
 second actions land and "who moves first" is never claimed; their Protect is not re-checked on the
 second turn; their damaging replies keep the pre-existing symmetric treatment.
+
+## 7. The headless arena (`tools/headless_arena/`, `tools/run_arena.js`)
+
+A second execution path for the same engine, and the only one that runs a real battle engine. It
+exists because §1–§6 are verified against protocol lines this repository typed by hand: nothing in
+`tests/` can surprise the deduction. The arena is not a second implementation of anything — it is a
+driver, and the engine underneath it is the shipped one.
+
+**The boundary is one module.** `tools/headless_arena/engine_bridge.js` is the ONLY route from arena
+code into engine code. It loads the extension's own scripts through `tests/harness.js` — the same
+loader `tests/run_tests.js` uses, so the arena exercises the program that ships, not a copy — feeds
+the session protocol lines, and reads back a ranking. `EngineSession.topChoice()` is the engine's
+answer and `choiceForRanked(entry)` turns a ranked line into a bare `@pkmn/sim` choice string. No
+arena module computes damage, stats or type effectiveness, and none of them owns a name table: the
+sim resolves the battle, its `TeamValidator` rules on legality, and its `|request|` payloads are the
+only source of what is legal this turn. RULE 1 holds inside `tools/` exactly as it does inside
+`src/`.
+
+Frozen surfaces — what the suites pin, and what the CLI calls:
+
+| module | surface |
+| --- | --- |
+| `sim_runner.js` | `new HeadlessBattleRunner(format)`, `initBattle(p1Pack, p2Pack, seed)`, `await runGame(p1Agent, p2Agent, maxTurns)`, `report()`, `close()`, `playBattle({...})` |
+| `replay_splicer.js` | `new ReplaySplicer(opts)`, `findCrucibleTurn(lines)`, `spliceAndResume(lines, turn, p1Agent, p2Agent, opts)`, `scan`, `extractTeams`, `extractTurnChoices`, `stateBeforeTurn`, `compareState`, `readReplayFile` |
+| `league_agents.js` | `createLeague(ids)`, `byId(id)`, `ALL_AGENTS`, `StandardMetaAnchor` / `AntiTrickRoomExploiter` / `LowLadderChaos` |
+| `mutator.js` | `mutateTeam(packed, rate, { seed }) -> { packed, sets, changes, rejected, seed, mutationRate, inputErrors }`, `new SetMutator(opts)` |
+| `blunder_harvester.js` | `analyzeLoss(matchReport, sessionOrOptions)`, `generatePuzzleCode(analysis, options)`, `appendVaccineToFile(code, targetFile)`, `puzzleNameOf`, `SENTINEL` |
+| `engine_bridge.js` | `SIM_FORMAT_ID`, `createSession(opts)`, `EngineSession`, `choiceForRanked`, `teamPreviewOrder`, `loadHarness`, `loadSim` |
+| `run_arena.js` | `parseArgs(argv)`, `main(argv)`, `createEngineAgent`, `renderSummary`, `SetupError` |
+
+**An agent** is anything with `chooseAction(request, { side, turn, request, log, runner })` returning
+a choice string. The runner normalizes it, falls back to the first legal option when an agent
+returns nothing legal, and walks a bounded retry ladder on a `[Invalid choice]` re-request — every
+substitution is recorded, so an agent that is secretly unplayable cannot look like an agent that
+went 40-0.
+
+**`MatchReport`** is `{ winner, turnCount, fullLog, p1Log, p2Log, p1Choices, p2Choices, swingTurn,
+timedOut, aborted, reason, errors, substitutions, seed, format, maxTurns }`. `swingTurn` is the turn
+with the largest HP swing and is `null` when nothing cleared the threshold.
+
+The two kinds of log are not interchangeable, and the difference is load-bearing. `fullLog` is the
+omniscient public stream — exactly what a spectator or a replay sees, which is why the splicer's
+state comparisons and `computeSwingTurn` read it. `p1Log`/`p2Log` are each seat's own stream: the
+public lines PLUS that seat's private frames (`|request|`, `|error|`), in the order a client saw
+them, i.e. a strict superset. Any consumer that replays the engine's own DECISIONS must use the side
+log, because the sim never publishes `|request|` on the omniscient stream: reading `fullLog` gives an
+empty decision timeline, which is a silent failure, not an error. `spliceAndResume` returns that
+report with one added key, `spliced`:
+`{ turn, reason, seed, playedBack, handoverReached, fidelity: { score, matched, mismatched, fields },
+diverged, divergenceReason, desyncs, teamsSource }` — the fidelity object is the handover's own
+evidence, and a caller that ignores it is trusting a splice it never checked.
+
+Five facts about the sim's stream protocol. Each was measured against 0.10.11 and each is pinned in
+`tests/arena_check.js`, because getting any one of them wrong still looks like a battle:
+
+* The format id is `gen9nationaldex` — **that IS [Gen 9] National Dex OU** (the NatDex OU banlist;
+the lower ND tiers derive from it). `gen9nationaldexou` does not exist in the sim:
+`Dex.formats.get()` returns a Condition for it, not a Format, and a driver that asks for it plays
+nothing while reporting success-shaped silence.
+* A team reaches the sim through `Teams.import(paste)` → `Teams.pack(sets)`. The repo's own
+`TeamParser.packTeam()` output is NOT accepted: it joins sets with `\n` where the sim splits on `]`,
+and writes display names where the sim reads ids (which surfaces as `invalid happiness`).
+`league_agents.js` therefore carries PASTES (personas own paste strings, not sample names) and the
+bridge does the conversion.
+* A choice written to `players.pX.write(...)` must be BARE — `move 1`, `switch 3`, `team 123456`.
+That stream prepends `>pX ` itself, and a prefixed choice is an invalid choice.
+* `writeEnd()` on a player stream reaches `Battle.destroy()` through a promise, so a late throw
+arrives as an unhandled rejection that no surrounding `try/catch` can see. `_abort()` therefore
+ends streams only for a game that has NOT already ended: the sim destroys its own battle on `|win|`,
+and re-ending it there crashed every normal win.
+* **`|request|` is private.** The omniscient stream carries the battle and nothing else, so a log
+built from it contains no decision frame; each player stream carries the public log plus that seat's
+own frames. `headless_arena/blunder_harvester.js` reads `sourceLines(report, side)` for this reason,
+and its self-check fixture (a synthetic log that keeps requests inside `fullLog`) cannot catch the
+mistake — only the live check against a real battle can, and that is where it is pinned.
+
+**The vaccine contract.** `tests/tactical_puzzles.js` is both the registry and the runner. A puzzle
+is `{ logPrefix, forbiddenMove, validTopMoves }`; running it replays `logPrefix` through the real
+pipeline and requires that the engine ranked something, that `forbiddenMove` is NOT the top live
+line, and that at least one `validTopMoves` entry appears. Generated code is appended ABOVE the
+runner marker near the bottom of that file, so hand-written puzzles go above it too. Because the
+engine is deterministic, a freshly harvested vaccine fails: it is a written record of a known
+defect and goes green only when the engine is fixed. Do not delete a red vaccine to fix the suite.
+
+`--harvest` mutates a committed file, so it is a deliberate operation: run it, then commit the
+vaccine together with the fix that turns it green (or with a note recording that it is still red).
