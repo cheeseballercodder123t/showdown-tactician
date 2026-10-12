@@ -42,11 +42,12 @@ const H = require('./harness.js');
 /* ------------------------------------------------------------------ args */
 
 function parseArgs(argv) {
-  const out = { json: false, repeat: 7, device: null, assert: null, quiet: false };
+  const out = { json: false, repeat: 7, device: null, assert: null, quiet: false, mlp: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--json') out.json = true;
     else if (a === '--quiet') out.quiet = true;
+    else if (a === '--mlp') out.mlp = true;
     else if (a === '--repeat') out.repeat = Math.max(1, parseInt(argv[++i], 10) || 7);
     else if (a === '--device') out.device = argv[++i];
     else if (a === '--assert') out.assert = parseFloat(argv[++i]);
@@ -321,6 +322,92 @@ function timeBoard(engine, board, runs, repeat) {
   };
 }
 
+/* ------------------------------------------------------------------- mlp */
+/*
+ * The residual head is OFF by default, so every number above is the shipped cost. `--mlp` measures
+ * what turning it on would cost instead of guessing.
+ *
+ * The micro-benchmark underneath is the number that actually matters. The head is a pure function
+ * of the leaf vector called once per `evaluate()`, and `_payoff` makes up to 432 of those in a
+ * single turn, so `us_per_delta x payoffCalls` IS the added turn cost — a per-turn timing on top
+ * just confirms it against the real call graph. When no artifact ships, a head of the same SHAPE is
+ * injected: the cost depends on 128x16x1 and nothing else, so the measurement stays valid even
+ * though the weights would not.
+ */
+function synthMlpSpec(dim, hidden, seed) {
+  let s = (seed >>> 0) || 1;
+  const rnd = function () { s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0; return s / 4294967296; };
+  const mean = [], sd = [], w1 = [], b1 = [], w2 = [];
+  for (let j = 0; j < dim; j++) { mean.push(rnd() * 0.5); sd.push(0.25 + rnd() * 0.5); }
+  for (let i = 0; i < hidden * dim; i++) w1.push((rnd() * 2 - 1) * 0.05);
+  for (let k = 0; k < hidden; k++) { b1.push(0); w2.push((rnd() * 2 - 1) * 0.5); }
+  return { dim: dim, hidden: hidden, gain: 150, standardize: { mean: mean, sd: sd }, w1: w1, b1: b1, w2: w2, b2: 0 };
+}
+
+function measureMlp(engine, myTeam, worst) {
+  if (!ST.ResidualMLP) return { available: false };
+  const cfgBefore = ST.configSnapshot();
+  const artifactBefore = ST.MLP_RESIDUAL;
+  const dim = 128, hidden = 16;
+  const shipped = !!ST.MLP_RESIDUAL;
+  ST.MLP_RESIDUAL = shipped ? artifactBefore : synthMlpSpec(dim, hidden, 20261011);
+  ST.configMerge({ evaluator: { mlp: { enabled: true, dim: dim, hidden: hidden, clamp: 150 } } });
+
+  const head = ST.ResidualMLP.fromConfig();
+  if (!head) {
+    ST.MLP_RESIDUAL = artifactBefore;
+    ST.configMerge({ evaluator: { mlp: cfgBefore.evaluator.mlp } });
+    return { available: false, reason: 'the head refused to load' };
+  }
+
+  // micro: the cost of one delta() in isolation
+  const probe = new Float32Array(dim);
+  for (let j = 0; j < dim; j++) probe[j] = (j % 7) / 7;
+  for (let i = 0; i < 2000; i++) head.delta(probe);          // warm V8 up first
+  const N = 300000;
+  const t0 = performance.now();
+  for (let i = 0; i < N; i++) head.delta(probe);
+  const usPerDelta = (performance.now() - t0) / N * 1000;
+
+  // the real call graph: the same worst-case board, ALTERNATING off/on so thermal drift and a
+  // noisy neighbour cancel instead of landing on one side of the comparison.
+  const board = worstCaseBoard(myTeam);
+  const setHead = function (on) {
+    ST.MLP_RESIDUAL = on ? (shipped ? artifactBefore : synthMlpSpec(dim, hidden, 20261011)) : artifactBefore;
+    ST.configMerge({ evaluator: { mlp: { enabled: on, dim: dim, hidden: hidden, clamp: 150 } } });
+  };
+  const offP50 = [], onP50 = [], offP95 = [], onP95 = [];
+  const ROUNDS = 3;
+  for (let r = 0; r < ROUNDS; r++) {
+    setHead(false);
+    const o = timeBoard(engine, board, 5, ARGS.repeat);
+    offP50.push(o.stats.p50); offP95.push(o.stats.p95);
+    setHead(true);
+    const n = timeBoard(engine, board, 5, ARGS.repeat);
+    onP50.push(n.stats.p50); onP95.push(n.stats.p95);
+  }
+  const med = function (a) { const s = a.slice().sort(function (x, y) { return x - y; }); return s[Math.floor(s.length / 2)]; };
+
+  ST.MLP_RESIDUAL = artifactBefore;
+  ST.configMerge({ evaluator: { mlp: cfgBefore.evaluator.mlp } });
+
+  return {
+    available: true,
+    source: shipped ? 'the shipped artifact' : 'a synthetic head of the same shape (no artifact on this checkout)',
+    params: head.describe().params,
+    usPerDelta: usPerDelta,
+    payoffCalls: worst.payoffCalls,
+    projectedAddedMs: usPerDelta * worst.payoffCalls / 1000,
+    boardRounds: ROUNDS,
+    boardOffP50: med(offP50),
+    boardOnP50: med(onP50),
+    boardOffP95: med(offP95),
+    boardOnP95: med(onP95),
+    boardAddedP50: med(onP50) - med(offP50),
+    boardAddedP95: med(onP95) - med(offP95)
+  };
+}
+
 /* ------------------------------------------------------------------ main */
 
 function main() {
@@ -353,6 +440,9 @@ function main() {
   // ---- worst case -----------------------------------------------------------------------------
   const worst = timeBoard(engine, worstCaseBoard(myTeam), 7, ARGS.repeat);
 
+  // ---- the optional residual head (only when asked: it is off by default) ----------------------
+  const mlp = ARGS.mlp ? measureMlp(engine, myTeam, worst) : null;
+
   // ---- report ---------------------------------------------------------------------------------
   const devices = ['s24fe', 'pixel8', 'midrange'];
   const projection = devices.map(function (d) {
@@ -367,6 +457,7 @@ function main() {
       calibration: { ms: round2(cal.ms), score: Math.round(cal.score) },
       realBoards: { turns: turnRows.length, stats: mapStats(realStats), perTurn: turnRows },
       worstCase: { stats: mapStats(worst.stats), payoffCalls: worst.payoffCalls, myActions: worst.myActions, worlds: worst.worlds },
+      residualHead: mlp,
       projection: projection.map(function (p) {
         return {
           device: p.device,
@@ -405,6 +496,23 @@ function main() {
   console.log('  (ideal = Geekbench-6 single-core scaling only; realistic also applies a x' +
     DEVICES.s24fe.penalty + ' thermal/browser penalty)');
   console.log('');
+  if (mlp) {
+    console.log('=== the optional residual head (128 -> 16 -> 1 ReLU) ===');
+    if (!mlp.available) {
+      console.log('  not measured: ' + (mlp.reason || 'unavailable'));
+    } else {
+      console.log('  weights: ' + mlp.source + '  (' + mlp.params + ' parameters)');
+      console.log('  one delta() call in isolation: ' + mlp.usPerDelta.toFixed(3) + ' us  x  ' + mlp.payoffCalls +
+        ' _payoff calls/turn  =  +' + mlp.projectedAddedMs.toFixed(2) + ' ms/turn projected (an OPTIMISTIC floor)');
+      console.log('  same board, alternating off/on over ' + mlp.boardRounds + ' rounds:  off p50 ' +
+        round2(mlp.boardOffP50) + ' / p95 ' + round2(mlp.boardOffP95) + ' ms   on p50 ' +
+        round2(mlp.boardOnP50) + ' / p95 ' + round2(mlp.boardOnP95) + ' ms   (+' +
+        round2(mlp.boardAddedP50) + ' ms p50, +' + round2(mlp.boardAddedP95) + ' ms p95)');
+      console.log('  the in-situ figure is the honest one: in the real call graph the head\'s buffers are');
+      console.log('  not cache-hot, so it costs more than the isolated loop suggests.');
+    }
+    console.log('');
+  }
   console.log('  NOTE: only bench/bench.html on the device is ground truth. These are projections.');
   return finish(worst, realStats, cal);
 }

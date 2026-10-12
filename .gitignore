@@ -23,3 +23,14 @@ dist/
 build/
 *.zip
 *.crx
+
+# The empirical-weight corpus. It is thousands of third-party ladder logs, it is not part of the
+# extension, and it is NOT reproducible from a checkout (the replay search window moves as new
+# battles are played) — so it is never committed. The tools that produce it write these names:
+#   tools/fetch_replays.js       --out replays*.json
+#   tools/extract_training_data.js --out training_data*.json
+# Only the reviewable artifacts (lib/trained-weights.json, lib/mlp-residual.json) are tracked.
+replays*.json
+training_data*.json
+corpus/
+cross-candidates*.json

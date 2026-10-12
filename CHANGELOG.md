@@ -8,6 +8,67 @@ provenance — why a number is what it is, and what was tried and rejected. Entr
 
 ### Added
 
+- **`src/mlp_residual.js` — an optional Wide & Deep residual head.** `score = linear + clamp(gain *
+  MLP(x))` where the linear dot product stays the frozen base score and the head is a 128 → 16 → 1
+  ReLU network held in `Float32Array`, bounded to ±150 (deliberately below `laplace.lethalBonus`,
+  so a residual can never outvote a forced kill). Off unless `config.evaluator.mlp.enabled` is true;
+  disabled is bit-identical to having no head at all, verified over all 30 turns of `test_log.txt`
+  plus 400 randomised boards. `fromConfig()` fails safe to `null` for a disabled toggle, an absent
+  artifact or a dimension mismatch, so it can never half-apply.
+- **`tools/train_mlp_residual.js` — the offline fitter and its gate.** Fits the head on the frozen
+  linear model's own **residuals** (`y − sigmoid(a + b·raw)`, the logistic loss's negative gradient),
+  never on the label, so it can only learn what the linear half got wrong. It reuses `splitIndices`
+  and `auc` from `tools/fit_weights.js` with the same per-battle row counts, so the battle-level
+  hold-out is literally the linear fit's, and significance is a paired bootstrap over battles. Writes
+  `lib/mlp-residual.json` (the artifact, carrying the verdict) and the generated
+  `lib/mlp-residual.js`.
+- **`tests/mlp_check.js`** — the head's contract: fail-safe off, the clamp, the NaN guard, that the
+  evaluator adds exactly `delta(vector)` and nothing else, that the generated module carries weights
+  *iff* the gate passed, and that the trainer's vectorised forward pass is **bit-identical** to the
+  class that ships (it was not, at first — see below).
+- **`tests/perf_bench.js --mlp`** (`npm run bench:mlp`) — measures what enabling the head would cost
+  rather than guessing, alternating the worst-case board off/on so drift cancels: **+2.1 ms p50 /
+  +3.6 ms p95** per turn (~7–10% of the worst case). An isolated `delta()` loop says 3.8 µs a call,
+  a +1.6 ms floor over 432 `_payoff` calls, and is optimistic.
+
+### Changed
+
+- **`src/evaluator_128d.js` — `evaluate()`/`evaluateVector()` gained the optional residual.** The
+  `enabled` read is not cached (a runtime `configMerge` is honoured immediately); only the
+  constructed head is. `evaluateVector` now also records `lastScore`, which it did not before.
+- **`manifest.json`, `tests/harness.js`, `bench/bench.html`** — the two new scripts are registered in
+  all three load orders, and `tests/mlp_check.js` now asserts that `MANIFEST_ORDER` and
+  `manifest.json` agree in both directions.
+- **`.gitignore`** — the corpus (`replays*.json`, `training_data*.json`, `corpus/`) is explicitly
+  ignored. It is thousands of third-party logs and is not reproducible from a checkout.
+
+### Measured and REJECTED
+
+- **The residual head does not clear its gate, so it is not enabled.** Rebuilt corpus: **3,521
+  battles → 107,024 labelled turn rows** (the shipped corpus is not reproducible — the
+  rating-sorted replay window moves). The frozen linear score holds **AUC 0.7145** on its
+  battle-level hold-out, against the **0.7049** the shipped vector scored on the original corpus, so
+  the two are comparable. Adding the head: **0.7144**, paired bootstrap median **−0.0001**, 95% CI
+  **[−0.0011, +0.0009]**, ahead in **40.8%** of resamples. Five further configurations (80 and 300
+  epochs, `l2` 1e-2 and 1e-1, a 4-unit net) also failed; the best posted +0.0012 with a CI straddling
+  zero, and two of them had the selector choose **gain 0**. `config.evaluator.mlp.enabled` stays
+  `false` and `lib/mlp-residual.js` ships as `null`.
+- **The first run of the fitter was a false positive, and the bug is worth recording.** It selected
+  the gain by maximising the *training-half* AUC and reported train AUC 0.8616 against a held-out
+  0.6757 — a head that looked like a large win and was a large loss. Rows are consecutive turns of
+  ONE battle and share its label, so the effective sample size is the battle count (~2,800), not the
+  row count (~85,000). The fix is a second grouped split *inside* the training half, early-stopping
+  on its MSE and choosing the gain on its AUC; on this corpus the inner-validation minimum is at
+  **epoch 0**, so further training only ever overfits. The naive version is kept behind
+  `--no-early-stop` as a diagnostic, and the sweep above uses it to show the negative result is
+  about the features rather than about stopping too soon.
+- **The trainer's fast path was not bit-identical to the shipped class.** `headOutputs` trained on
+  raw dims while the class standardises, and it did not round its input to Float32 the way a
+  `Float32Array` store does. `tests/mlp_check.js` caught it (22 of 30 rows differed in the 7th
+  significant digit) and both paths now share one `standardizeMatrix`.
+
+### Added (earlier in this pass)
+
 - **`tests/perf_bench.js` — the turn-cost benchmark.** The audit left "10 ms on an S24 FE"
   unmeasured and `lastReadout.elapsedMs` unread. This replays the real 30-turn `test_log.txt`
   through the pipeline and times `evaluateTurn` on every turn, plus a synthetic worst case, and
@@ -19,7 +80,8 @@ provenance — why a number is what it is, and what was tried and rejected. Entr
   `hardwareConcurrency`). This is the only ground truth for the mobile target.
 - **`package.json` + `.github/workflows/ci.yml`.** There was no way to run the suites together and
   nothing ran them on a push, so a regression could be committed silently. `npm test`
-  (`tests/run_all.js`) runs all 17 suites; CI runs it on every push and PR.
+  (`tests/run_all.js`) runs every suite; CI runs it on every push and PR. (There were 17 when this
+  entry was written; `tests/invariants_check.js` and `tests/mlp_check.js` brought it to 19.)
 - **`tests/invariants_check.js`.** Pins the two `Object.create` prototype-clone tricks the engine
   leans on: `evaluateTurn` must not mutate its input state, `_leafState`'s clones must not write
   through to their source, and `simulate()` / `_mutableSim` must leave the source alone. Also

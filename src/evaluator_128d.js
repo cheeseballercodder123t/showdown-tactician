@@ -59,8 +59,27 @@
       // one entry, and which body wins depends on iteration order). Enriching that key changes
       // scores, so it is left exactly as-is.
       this._offMemo = new Map();
+      // The optional residual head (src/mlp_residual.js). Resolved lazily and cached, because
+      // `evaluate()` is the hot path (`_payoff` calls it up to 432 times per turn) and the head
+      // must stay OFF — bit-identically off, not "plus zero" — unless the config enables it. A
+      // runtime `configMerge` that flips the toggle is honoured on the next call: the `enabled`
+      // read is not cached, only the constructed head is.
+      this._mlp = null;
       this.lastRaw = 0;
       this.lastScore = 0;
+    }
+
+    /**
+     * The residual head, or null when it must not run. Null for a disabled toggle, an absent
+     * generated artifact, or a dimension mismatch (see ResidualMLP.fromConfig). `enabled` is read
+     * every call so a runtime configMerge takes effect immediately, as it does elsewhere.
+     */
+    _mlpLayer() {
+      if (cfg('evaluator.mlp.enabled', false) !== true) return null;
+      if (!this._mlp && ST.ResidualMLP && typeof ST.ResidualMLP.fromConfig === 'function') {
+        this._mlp = ST.ResidualMLP.fromConfig();
+      }
+      return this._mlp;
     }
 
     /** Bound a memo so a pathological corpus cannot grow it without limit. */
@@ -399,26 +418,35 @@
 
     /* ------------------------------------------------------------- scoring */
 
-    /** evaluate(state) -> scalar in [-1000, 1000]. */
+    /** evaluate(state) -> scalar in [-1000, 1000], plus the bounded residual when it is enabled. */
     evaluate(state) {
       const v = this.extractVector(state);
       const w = this.weights;
       let raw = 0;
       for (let i = 0; i < DIM; i++) raw += v[i] * w[i];
       this.lastRaw = raw;
-      const score = cfg('evaluator.scale', 1000) * Math.tanh(raw / cfg('evaluator.tanhDenominator', 420));
+      let score = cfg('evaluator.scale', 1000) * Math.tanh(raw / cfg('evaluator.tanhDenominator', 420));
+      // Wide & Deep: the frozen linear dot product is the score, the head is a bounded correction.
+      // When the head is off this branch is not taken at all, so a disabled head is bit-identical
+      // to the pre-change evaluator (tests/mlp_check.js pins exactly that).
+      const mlp = this._mlpLayer();
+      if (mlp) score += mlp.delta(v);
       this.lastScore = score;
       return score;
     }
 
-    /** Evaluate a raw vector (used by the simulator and tests). */
+    /** Evaluate a raw vector (used by the simulator and tests). Applies the same residual. */
     evaluateVector(vec) {
       if (!vec) return 0;
       const w = this.weights;
       let raw = 0;
       for (let i = 0; i < DIM && i < vec.length; i++) raw += vec[i] * w[i];
       this.lastRaw = raw;
-      return cfg('evaluator.scale', 1000) * Math.tanh(raw / cfg('evaluator.tanhDenominator', 420));
+      let score = cfg('evaluator.scale', 1000) * Math.tanh(raw / cfg('evaluator.tanhDenominator', 420));
+      const mlp = this._mlpLayer();
+      if (mlp) score += mlp.delta(vec);
+      this.lastScore = score;
+      return score;
     }
 
     vectorToArray(vec) {

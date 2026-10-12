@@ -27,7 +27,7 @@ Five minutes to a working mental model:
    * **Rule 2 — frozen ground truth.** `test_engine.js` pins five canonical damage rolls.
    * **Rule 4 — one config.** Every tunable lives in [`src/config.js`](src/config.js);
      `tests/config_check.js` inventories all of them and proves live mutation flows through.
-3. **Run everything:** `npm test` (18 suites, ~2,000 checks, no dependencies). Individual suites
+3. **Run everything:** `npm test` (19 suites, ~2,000 checks, no dependencies). Individual suites
    are plain `node tests/<name>.js`. CI runs the same command on every push.
 4. **Measure it:** `npm run bench` replays the real 30-turn log and reports the per-turn decision
    cost; `npm run bench:serve` then open the printed URL on the phone for ground-truth numbers
@@ -63,6 +63,14 @@ limits" section for what is not yet fixed.
 > Methodology note: do **not** benchmark through `tests/harness.js`. Its `vm` sandbox is a separate
 > V8 context and inflates the same board from ~40 ms to ~119 ms. `tests/perf_bench.js` loads into
 > the main realm for exactly this reason.
+
+The optional residual head is **off**, so it costs nothing in the numbers above. `npm run bench:mlp`
+measures what turning it on *would* cost instead of guessing, by alternating the worst-case board
+off/on so thermal drift lands on neither side: **+2.1 ms p50 / +3.6 ms p95** per turn (about 7–10%
+of the worst case). An isolated `delta()` loop reports 3.8 µs a call, i.e. a +1.6 ms floor over the
+432 `_payoff` calls — the in-situ figure is the honest one, because there the head's buffers are not
+cache-hot. It is not enabled because it did not clear its accuracy gate — see the weight-pipeline
+section.
 
 ## Install (desktop Chromium, for development)
 
@@ -122,6 +130,8 @@ lib/calc-data.min.js       vendored @smogon/calc dex (1406 species incl. Megas, 
 lib/calc.min.js            vendored @smogon/calc mechanics (exposes window.calc)
 lib/species-abilities.js   GENERATED: restores the hidden/secondary abilities the calc bundle drops
 lib/species-aliases.js     GENERATED: species aliases (Aegislash) + cosmetic formes the calc lacks
+lib/mlp-residual.js        GENERATED: the trained residual head's tensors. Ships as `null` because the
+                           gate rejected the head — see "the residual head" in the weight-pipeline section
 styles/overlay.css         portrait HUD styling (dark translucent, 48px touch targets)
 src/config.js              RULE 4: every heuristic weight, threshold and model id in one object
 src/util.js                the DEX boundary: reads calc's species/move/item tables + Stats.calcStat; never computes damage
@@ -135,6 +145,8 @@ src/set_pruner.js          deterministic negative deductions against candidate s
 src/calc_engine.js         damage wrapper with a per-turn memo cache
 src/trick_room.js          TR lifecycle + inverted speed priority queue
 src/evaluator_128d.js      128D dense state vector + dot-product score
+src/mlp_residual.js        the optional 128->16->1 ReLU residual head (bounded +-150) added on top of
+                           that dot product; off unless config.evaluator.mlp.enabled is true
 src/tempo_vector.js        10D momentum vector + Protect/Bunker policy mask
 src/opponent_clock.js      opponent deliberation telemetry: turn latency minus the learned noise floor
 src/veto_guard.js          the twelve hard blunder vetoes (immunity, rhythm, TR, speed, contact, Sucker Punch,
@@ -196,6 +208,11 @@ tools/fit_weights.js       IRLS logistic regression over those rows -> weights +
                            appends interaction terms to the fitted matrix (measured, not adopted)
 tools/select_cross_features.js  screens products of the aggregate dims on the TRAINING half and
                            writes the candidate list `--crosses` reads — a selector, not a verdict
+tools/train_mlp_residual.js     fits the optional residual head on the frozen linear model's own
+                           residuals and then applies the identical battle-level hold-out plus a
+                           paired bootstrap over battles; writes lib/mlp-residual.json (the
+                           reviewable artifact, with the verdict) and lib/mlp-residual.js (the data
+                           module the extension loads). `--no-early-stop` is a diagnostic only
 .github/workflows/chaos-sync.yml  monthly cron: download the dump, resync the overlay, commit it
 ARCHITECTURE.md            frozen interface contract every module binds to
 ```
@@ -610,6 +627,68 @@ does not consume the vector in isolation.
   live weights are the artifact spec at four decimals with those dims zeroed, and `fitScale` is
   applied by the evaluator.
 
+### The residual head (Wide & Deep): fitted, gated, and NOT adopted
+
+`src/mlp_residual.js` adds an optional non-linear correction on top of the frozen linear score —
+`score = linear + clamp(gain * MLP(x))`, a 128 → 16 → 1 ReLU network held in `Float32Array`, bounded
+to ±150. The linear dot product is never replaced; the head can only nudge it, and the bound sits
+below `laplace.lethalBonus` (260) so a residual can never outvote a forced kill. It is **off**:
+`config.evaluator.mlp.enabled` is `false` because it did not clear the gate.
+
+**What was measured.** `tools/train_mlp_residual.js` fits the head on the *residuals* of the frozen
+linear model — `r_i = y_i - sigmoid(a + b·raw_i)`, the logistic loss's own negative gradient, with
+the calibration fitted on the training half only — never on the label directly, so the head can only
+learn what the linear half got wrong. It then applies the identical discipline the linear vector was
+adopted under: `splitIndices` and `auc` are imported from `tools/fit_weights.js` and called with the
+same per-battle row counts, so every 5th **battle** is held out exactly as before, and significance
+is a paired bootstrap over battles.
+
+The corpus is a **fresh** one, because the shipped corpus is not reproducible — it is 3,712
+third-party logs and the rating-sorted window moves as new battles are played. Rebuilt with the
+recipe in `tools/fetch_replays.js`'s header it is **3,521 battles → 107,024 labelled turn rows**
+(2,913 from the elite window, 94 from the 1600–1749 band, 514 from 1300–1599), and the frozen linear
+score lands at **AUC 0.7145** on its battle-level hold-out — against the **0.7049** the shipped
+vector scored on the original corpus, so the two are directly comparable.
+
+| on the held-out battles | AUC |
+| --- | --- |
+| frozen linear score (the shipped evaluator) | **0.7145** |
+| + residual head | 0.7144 |
+
+Paired bootstrap over the held-out battles: median **−0.0001**, 95% CI **[−0.0011, +0.0009]**, ahead
+in **40.8%** of resamples. Five further configurations were tried — fully trained to 80 and to 300
+epochs, `l2` at 1e-2 and 1e-1, and a 4-unit net — and **none** cleared the gate. The best of them
+posted **+0.0012** with a CI straddling zero, and two of them had the selector itself choose **gain
+0**, i.e. the head contributed nothing at all. This is the same shape of result as the cross-product
+screen above and for the same reason: the 128D vector's own dims carry no transferable non-linear
+signal that a small head can find on this corpus.
+
+**Why the first run looked like a win, and why that was wrong.** The first version of the tool chose
+the gain by maximising the **training-half** AUC and reported train AUC 0.8616 against a held-out
+0.6757 — a head that looked like a large gain and was in fact a large loss. Rows are consecutive
+turns of ONE battle and share its label, so the effective sample size is the **battle count**
+(~2,800), not the row count (~85,000): a selector reading the rows the network was fitted to cannot
+tell a correction that generalises from one that memorised the battle. The tool now takes a second
+grouped split *inside* the training half, early-stops on its MSE, and chooses the gain on its AUC.
+Under that honest protocol the head is worth nothing measurable — and on this corpus the inner
+validation's minimum is at **epoch 0**, so further training only ever overfits.
+
+**What it would cost.** `npm run bench:mlp` measures the head rather than guessing, alternating the
+worst-case board off/on so drift cancels: **+2.1 ms p50 / +3.6 ms p95** per turn, roughly 7–10% of
+the worst case. An isolated `delta()` loop reports 3.8 µs per call — a +1.6 ms floor over the 432
+`_payoff` calls, and an optimistic one, since in the real call graph the head's buffers are not
+cache-hot.
+
+**What ships.** The artifact (`lib/mlp-residual.json`) is written either way, because it *is* the
+evidence: the fitted coefficients, the split, the AUCs and the bootstrap. The generated data module
+(`lib/mlp-residual.js`) carries the tensors **only when the gate passes**; on a rejection it is
+written as `null`, so a rejected head costs the content script nothing and cannot be switched on by
+a stray config edit. `tests/mlp_check.js` pins that invariant, along with the fail-safe (a missing
+or mismatched artifact turns the head *off* rather than half-applying), the clamp, and the fact that
+`tools/train_mlp_residual.js`'s vectorised forward pass is **bit-identical** to the class that ships.
+Adopting a passing head is a deliberate one-line edit to `evaluator.mlp.enabled` — the trainer never
+rewrites `src/config.js`, the same rule `tools/fit_weights.js` follows.
+
 ## The two dex gaps the generated files fix
 
 The vendored `@smogon/calc` bundle is necessary but not sufficient:
@@ -693,6 +772,14 @@ https://play.pokemonshowdown.com/data/pokedex.json` before regenerating.
   evaluator's chip-damage terms instead.
 * The LLM feature sends a compact board summary to the configured provider. Without a key
   nothing leaves the browser.
+* **The residual head is fitted and rejected, not missing.** `tools/train_mlp_residual.js` can fit a
+  128 → 16 → 1 ReLU correction and gate it, and on the corpus it was run against the head was worth
+  nothing measurable (delta −0.0001, 95% CI [−0.0011, +0.0009], ahead in 40.8% of resamples) and
+  five further configurations also failed — see "the residual head" in the weight-pipeline section.
+  So `config.evaluator.mlp.enabled` is `false` and `lib/mlp-residual.js` ships as `null`. This is a
+  negative result about the 128D feature set on this corpus, not a proof that no non-linear
+  correction exists: a different feature set, or a corpus large enough for the ~2,800-battle
+  effective sample size to support 2,081 parameters, could change it.
 * The 128D weights are an adopted fit from real battle logs (see the weight-pipeline section),
   while every tempo/veto/clock threshold is still a hand-tuned default; they all live in
   `src/config.js`, and `tests/config_check.js` freezes the vector while `tests/weights_check.js`

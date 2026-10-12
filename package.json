@@ -12,6 +12,8 @@
     "test:fast": "node tests/run_all.js --fast",
     "bench": "node tests/perf_bench.js",
     "bench:json": "node tests/perf_bench.js --json",
+    "bench:mlp": "node tests/perf_bench.js --mlp",
+    "train:mlp": "node tools/train_mlp_residual.js",
     "bench:serve": "node -e \"const h=require('http'),f=require('fs'),p=require('path');const root=process.cwd();const mime={'.html':'text/html','.js':'text/javascript','.json':'application/json','.css':'text/css'};h.createServer((q,s)=>{let u=decodeURIComponent(q.url.split('?')[0]);if(u==='/')u='/bench/bench.html';const fp=p.join(root,u);f.readFile(fp,(e,d)=>{if(e){s.writeHead(404);return s.end('404');}s.writeHead(200,{'content-type':mime[p.extname(fp)]||'application/octet-stream'});s.end(d);});}).listen(8137,()=>console.log('bench: http://127.0.0.1:8137/bench/bench.html'));\""
   }
 }
