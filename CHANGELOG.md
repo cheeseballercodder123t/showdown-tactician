@@ -134,8 +134,10 @@ provenance — why a number is what it is, and what was tried and rejected. Entr
   six bodies is scored against every opposing body through the SAME leaf evaluator the in-battle
   decisions use, and the card shows the best and the riskiest lead. It is a MEASUREMENT, not a
   heuristic, so it ships ON (`hud.leadAdvisory.enabled`).
-- **Three new suites** — `tests/ability_check.js` (40), `tests/tuning_check.js` (45) and
-  `tests/preview_check.js` (31) — registered in `tests/run_all.js` and documented in the README list.
+- **Three new suites** — `tests/ability_check.js`, `tests/tuning_check.js` and
+  `tests/preview_check.js` — registered in `tests/run_all.js` and documented in the README list. Each
+  has grown since it was added and the entries above record why, so the README list (not this bullet)
+  is the place to read their current check counts.
   The 36-matchup lead advisory measures at ~1.6 ms on the development machine (50 runs).
 
 - **The config-flag ablation runner** (`tools/run_ablation.js`, `npm run ablation`), plus the
