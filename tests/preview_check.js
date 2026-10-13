@@ -174,6 +174,53 @@ const ADVISORY = {
   eq('and the node is cleared', hud._nodes.leadAdvisory, null);
 }
 
+/* The card is the one injected node the HUD holds BOTH a bulk-selector sweep and a handle for, so
+ * the two ways it can leak are pinned here — and both are asserted against the DOM the card really
+ * lives in, because the stub document's querySelectorAll returns nothing and would hide the
+ * selector half of the first defect. */
+function advisoryCards(doc) {
+  return (doc.body.children || []).filter(function (c) {
+    return c && String(c.className || '').indexOf('st-lead-advisory') !== -1;
+  });
+}
+
+{
+  // THE ORPHAN. `clear()` is documented as "remove every injected node", but its bulk selector
+  // named every injected class EXCEPT the advisory card's, and it then rebuilt `_nodes` with
+  // `leadAdvisory: null` — so the card stayed mounted with no handle left to remove it (nothing
+  // reads the DOM for it), while the next battle mounted a SECOND one.
+  const doc = H.createFakeDocument();
+  const hud = new ST.MobileHUD({ doc: doc, state: null });
+  hud.renderLeadAdvisory(ADVISORY);
+  eq('the card is mounted once', advisoryCards(doc).length, 1);
+  hud.clear();
+  eq('clear() removes the advisory card', advisoryCards(doc).length, 0);
+  eq('...and drops its handle with it', hud._nodes.leadAdvisory, null);
+  hud.renderLeadAdvisory(ADVISORY);
+  eq('re-rendering after clear() mounts exactly ONE card, never a second',
+    advisoryCards(doc).length, 1);
+  hud.dismissLeadAdvisory();
+  eq('...and the re-mounted card can still be taken down', advisoryCards(doc).length, 0);
+}
+
+{
+  // THE EMPTY BOX. `leads` being non-empty is not the same question as "is there anything to
+  // show": both rows are skipped when the entries carry no `species`, which used to leave the
+  // heading alone in the box — the one thing the method's contract says it will not draw.
+  const UNUSABLE = { leads: [{ favorability: 50 }, { score: 1 }], best: { favorability: 50 }, risky: {} };
+  const doc = H.createFakeDocument();
+  const hud = new ST.MobileHUD({ doc: doc, state: null });
+  eq('an advisory with no usable row dismisses instead of drawing an empty box',
+    hud.renderLeadAdvisory(UNUSABLE), null);
+  eq('...and mounts nothing at all', advisoryCards(doc).length, 0);
+  hud.renderLeadAdvisory(ADVISORY);
+  eq('a valid card still mounts',
+    hud._nodes.leadAdvisory && String(hud._nodes.leadAdvisory.className), 'st-lead-advisory');
+  eq('...and an unusable one takes it down rather than leaving the old pair up',
+    hud.renderLeadAdvisory(UNUSABLE), null);
+  eq('...leaving no card behind', advisoryCards(doc).length, 0);
+}
+
 {
   // The broker: a teampreview line computes and publishes; the first |turn| takes the card down.
   const doc = H.createFakeDocument();

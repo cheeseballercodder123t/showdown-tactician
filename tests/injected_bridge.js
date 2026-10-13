@@ -171,6 +171,52 @@ dual._om(twinA);
 dual._om(twinB);
 eq('two identical frames on distinct events are both forwarded', dbg.dispatched - dualDispatched, 2);
 
+/* ------------------------------------------------------------------ a multi-line frame
+ *
+ * The page APPENDS every line it receives to battle.log as well as delivering it on the socket, so
+ * after a multi-line frame the poll finds the frame's EARLIER lines "new" — the old dedupe only
+ * remembered the LAST line of the frame — and hands all of them over a second time. Re-delivery
+ * is silent for absolute lines and wrong for relative ones: `|-boost|p1a|atk|1` twice is +2, a
+ * `|pp|` is decremented twice, and `|turn|n` twice double-ticks the Trick Room / weather / Protect
+ * clocks. The socket path now remembers the run it delivered and the poll claims it positionally
+ * at the cursor, so this frame must reach the pipeline exactly once while a genuine repeat in the
+ * log still gets through.
+ */
+const frameLines = ['|turn|5', '|move|p2a: Ursaluna|Headlong Rush|p1a: Dragapult', '|-boost|p2a: Ursaluna|atk|1'];
+battle.log.push.apply(battle.log, frameLines);
+let mlDispatched = dbg.dispatched;
+sock._om({ data: frameLines.join('\n') });
+eq('a three-line frame reaches the pipeline once', dbg.dispatched - mlDispatched, 3);
+
+let mlPolled = dbg.polled;
+flush();
+eq('and the poll does not hand the same frame over again', dbg.polled - mlPolled, 0);
+
+mlPolled = dbg.polled;
+battle.log.push('|turn|6');
+flush();
+eq('a genuinely new line still reaches the pipeline after a claimed frame', dbg.polled - mlPolled, 1);
+
+mlPolled = dbg.polled;
+battle.log.push('|turn|6');
+flush();
+// A ZERO here is the bug this guards against: the claimed run must not have eaten the next
+// entry, even though it is byte-identical to a line the pipeline has already seen.
+eq('...and a genuine repeat of it is not eaten', dbg.polled - mlPolled, 1);
+
+/* A frame the client does NOT mirror into battle.log must not stall the claim for later frames:
+ * the batch is dropped after one attempt, never retried forever. */
+mlPolled = dbg.polled;
+mlDispatched = dbg.dispatched;
+const unlogged = '|request|{"rqid":9}';
+sock._om({ data: unlogged });
+eq('a frame the log never mirrors is still forwarded', dbg.dispatched - mlDispatched, 1);
+const afterUnlogged = ['|turn|7', '|-damage|p2a: Ursaluna|62/100'];
+battle.log.push.apply(battle.log, afterUnlogged);
+sock._om({ data: afterUnlogged.join('\n') });
+flush();
+eq('and it does not block the next frame from being claimed', dbg.polled - mlPolled, 0);
+
 console.log('checks passed: ' + passed + '  failed: ' + failures.length);
 failures.forEach(function (f) { console.log('  x ' + f); });
 process.exit(failures.length ? 1 : 0);

@@ -89,6 +89,94 @@ ok('Intimidate is a switch-in trigger', U.SWITCH_IN_TRIGGER_ABILITIES.has('intim
 ok('Drizzle is a switch-in trigger', U.SWITCH_IN_TRIGGER_ABILITIES.has('drizzle'));
 ok('Electric Surge is a switch-in trigger', U.SWITCH_IN_TRIGGER_ABILITIES.has('electricsurge'));
 
+/* The setup tables. Every move CLASSIFIED as setup must be PRICED, or the quiescence tier spends
+ * the turn it exists to protect as if the click were a no-op — the blind spot the tier was built to
+ * close. (The other direction of the pairing, every SETUP_BOOSTS key being a SETUP_MOVES member, is
+ * pinned in tests/quiescence_check.js; this is the direction that a move added to one table alone
+ * would break.) */
+const BOOST_STAT_KEYS = ['atk', 'def', 'spa', 'spd', 'spe', 'accuracy', 'evasion'];
+const unpriced = [];
+U.SETUP_MOVES.forEach(function (id) {
+  const spec = U.setupBoosts(id);
+  if (!spec || !Object.keys(spec).length) unpriced.push(id);
+});
+eq('every setup move is priced (no SETUP_MOVES entry is a no-op)', unpriced, []);
+eq('a setup spec uses only stats this table models',
+  Object.keys(U.SETUP_BOOSTS).reduce(function (bad, id) {
+    Object.keys(U.SETUP_BOOSTS[id]).forEach(function (k) {
+      if (k !== 'hpCostPct' && BOOST_STAT_KEYS.indexOf(k) === -1) bad.push(id + '.' + k);
+    });
+    return bad;
+  }, []), []);
+
+/* These eight are real, legal Gen 9 setup clicks and each one used to be priced as a free hit: the
+ * tier read the move as "not setup" and handed the opponent a free turn on our attack. The expected
+ * specs are the Gen 9 effects; `setupBoosts` hands the keys back in BOOST_KEYS order, which is the
+ * order these literals use. */
+eq('Fillet Away: +2 Atk / +2 SpA / +2 Spe for half the user\'s max HP',
+  U.setupBoosts('Fillet Away'), { atk: 2, spa: 2, spe: 2, hpCostPct: 50 });
+eq('Coil: +1 Atk / +1 Def / +1 accuracy', U.setupBoosts('Coil'), { atk: 1, def: 1, accuracy: 1 });
+eq('Hone Claws: +1 Atk / +1 accuracy', U.setupBoosts('Hone Claws'), { atk: 1, accuracy: 1 });
+eq('Cosmic Power: +1 Def / +1 SpD', U.setupBoosts('Cosmic Power'), { def: 1, spd: 1 });
+eq('Autotomize: +2 Spe', U.setupBoosts('Autotomize'), { spe: 2 });
+eq('No Retreat: +1 to all five stats', U.setupBoosts('No Retreat'),
+  { atk: 1, def: 1, spa: 1, spd: 1, spe: 1 });
+eq('Meditate: +1 Atk', U.setupBoosts('Meditate'), { atk: 1 });
+eq('Sharpen: +1 Atk', U.setupBoosts('Sharpen'), { atk: 1 });
+const ADDED_SETUP = ['filletaway', 'coil', 'honeclaws', 'cosmicpower', 'autotomize', 'noretreat',
+  'meditate', 'sharpen'];
+eq('each new id is in SETUP_MOVES as well as SETUP_BOOSTS',
+  ADDED_SETUP.filter(function (id) { return !U.SETUP_MOVES.has(id); }), []);
+// isSetup is what the caller actually reads, but only a move the vendored dex HOLDS can answer it,
+// so this asserts where the dex resolves the id and stays silent where it has no entry at all.
+eq('and the dex reports isSetup for each new move it holds',
+  ADDED_SETUP.filter(function (id) {
+    const d = U.getMoveData(id);
+    return !!d && !d.isSetup;
+  }), []);
+
+/* The deliberate exclusions, pinned so a later table edit cannot quietly re-add one. */
+eq('Curse is not modelled (its effect depends on the user\'s type)',
+  ['curse'].filter(function (id) { return U.SETUP_MOVES.has(id) || !!U.setupBoosts(id); }), []);
+eq('Double Team and Minimize are not modelled (Evasion Clause)',
+  ['doubleteam', 'minimize'].filter(function (id) { return U.SETUP_MOVES.has(id); }), []);
+eq('Acupressure is not modelled (the boosted stat is random)',
+  ['acupressure'].filter(function (id) { return U.SETUP_MOVES.has(id); }), []);
+eq('Geomancy is not modelled (it spends a turn charging)',
+  ['geomancy'].filter(function (id) { return U.SETUP_MOVES.has(id); }), []);
+
+/* `shelter` sat in PROTECT_MOVES *and* in the pruner's UNPREDICTABLE_DAMAGE list at the same time,
+ * and those two readings cannot both be true: as a shield it credits a blocked attack against a
+ * move that blocks nothing, and as a conditional-power DAMAGING move it is dropped from damage
+ * evidence for a move that deals no damage. It belongs in neither, so it is pinned out of both.
+ * The pruner's list is not exported, so it is read out of the source the pruner module loads — and
+ * that also pins the invariant `shelter` broke: no move may be BOTH a shield and a conditional
+ * damaging move. */
+eq('shelter is gone from the protection list', U.PROTECT_MOVES.has('shelter'), false);
+const shelterData = U.getMoveData('Shelter');
+ok('...so the dex does not read Shelter as a protection move',
+  !shelterData || shelterData.isProtect === false,
+  JSON.stringify(shelterData && shelterData.isProtect));
+const prunerSrc = require('fs').readFileSync(
+  require('path').join(__dirname, '..', 'src', 'set_pruner.js'), 'utf8');
+const unpredictable = (function () {
+  const block = prunerSrc.match(/UNPREDICTABLE_DAMAGE\s*=\s*new Set\(\[([\s\S]*?)\]\)/);
+  if (!block) return null;
+  const out = [];
+  const re = /'([^']+)'/g;
+  let hit;
+  while ((hit = re.exec(block[1]))) out.push(hit[1]);
+  return out;
+})();
+ok('the pruner\'s conditional-power list is readable from source',
+  !!unpredictable && unpredictable.length > 20,
+  unpredictable ? String(unpredictable.length) : 'null');
+ok('shelter is gone from the conditional-power list too',
+  !!unpredictable && unpredictable.indexOf('shelter') === -1);
+ok('no protection move is also a conditional-power damaging move',
+  !!unpredictable && unpredictable.every(function (id) { return !U.PROTECT_MOVES.has(id); }),
+  (unpredictable || []).filter(function (id) { return U.PROTECT_MOVES.has(id); }).join(', '));
+
 /* ------------------------------------------------------- 1. status disproves an ability */
 
 console.log('\n=== 1. a status condition disproves the abilities that block it ===');
@@ -415,6 +503,118 @@ console.log('\n=== 4. unsound evidence: the rules that must NOT eliminate ===');
   mon.candidateSets = [set('wv', 'Water Veil'), set('guts', 'Guts')];
   eq('and the burn DOES eliminate Water Veil',
     new ST.ArchetypePruner().prune(mon, b.st).map(function (s) { return s.id; }), ['guts']);
+}
+
+{
+  // 4g. The Knock Off latch, same shape as the ground rule: the AIM stamp comes from the move line,
+  // so the DAMAGE that confirms it must come from the move itself. Without the `[from]` test a
+  // Knock Off into a Protect or a miss, plus the target's burn tick that same turn, reads as
+  // "Knock Off connected" — and _resolveKnockOffs then calls the item irremovable or absent, which
+  // is a HARD verdict that prunes the pool to itemless / Z / Mega sets.
+  const aimed = boot();
+  feed(aimed, [
+    '|switch|p1a: Great Tusk|Great Tusk, L50, M|100/100',
+    '|switch|p2a: Probe|Probe, L50, M|100/100',
+    '|turn|1',
+    '|move|p1a: Great Tusk|Knock Off|p2a: Probe',
+    '|-miss|p1a: Great Tusk|p2a: Probe',
+    '|-damage|p2a: Probe|94/100|[from] brn'
+  ]);
+  eq('a residual tick is not Knock Off connecting', aimed.st.oppTeam[0].knockOffSawDamage, false);
+
+  const hit = boot();
+  feed(hit, [
+    '|switch|p1a: Great Tusk|Great Tusk, L50, M|100/100',
+    '|switch|p2a: Probe|Probe, L50, M|100/100',
+    '|turn|1',
+    '|move|p1a: Great Tusk|Knock Off|p2a: Probe',
+    '|-damage|p2a: Probe|70/100'
+  ]);
+  eq('the aim itself is still stamped (the move was clicked)', hit.st.oppTeam[0].knockOffTurn, 1);
+  eq('...and a Knock Off that connects still sets the damage fact',
+    hit.st.oppTeam[0].knockOffSawDamage, true);
+}
+
+{
+  // 4h. The Speed FLOOR. `U.maxSpeedForSet` is a set-static ceiling — it knows the set's item and
+  // ability but not the weather, the terrain, Tailwind or a Speed stage — so a weather-doubled body
+  // moves first through a ceiling the rule computes as too low, and every real set of theirs is
+  // eliminated although the order is entirely consistent with them. The observation is now refused
+  // rather than guessed. Fixture: Kingdra (base Speed 85), a Timid 252-Speed Swift Swim set whose
+  // clean ceiling is under the floor, and a Brave no-Speed Sniper set that is genuinely too slow.
+  const mkSet = function (id, ability, speEvs, nature) {
+    return {
+      id: id, species: 'Kingdra', ability: ability, item: 'Leftovers', moves: ['Surf'], weight: 1,
+      level: 100, nature: nature,
+      evs: { hp: 4, atk: 0, def: 0, spa: 252, spd: 0, spe: speEvs },
+      ivs: { hp: 31, atk: 31, def: 31, spa: 31, spd: 31, spe: 31 }
+    };
+  };
+  const SLOW = mkSet('slow', 'Sniper', 0, 'Brave');
+  const SWIM = mkSet('swim', 'Swift Swim', 252, 'Timid');
+  const FLOOR = 250;
+  eq('fixture: the Swift Swim set can reach the floor but the slow one cannot',
+    [U.maxSpeedForSet(SWIM) >= FLOOR, U.maxSpeedForSet(SLOW) < FLOOR], [true, true]);
+
+  const kindgra = function () {
+    const b = boot();
+    feed(b, [
+      '|switch|p1a: Great Tusk|Great Tusk, L50, M|100/100',
+      '|switch|p2a: Kingdra|Kingdra, L50, M|100/100',
+      '|turn|1'
+    ]);
+    const mon = b.st.oppTeam[0];
+    const pruner = new ST.ArchetypePruner();
+    // Seed the pool from OUR sets, which is what _seedPool prefers over the shared database.
+    mon.candidateSets = [SWIM, SLOW];
+    pruner.prune(mon, b.st);
+    return { b: b, mon: mon, pruner: pruner };
+  };
+  const fire = function (x, value) {
+    return x.pruner.handleSpeedFloorEvent(
+      { side: 'p2', species: 'Kingdra', value: value, reason: 'test' }, x.b.st);
+  };
+
+  // The clean board: the rule works exactly as before, dropping only the set that cannot reach it.
+  const clean = kindgra();
+  eq('fixture: a clean board has no weather', clean.b.st.field.weather, '');
+  const cleanRes = fire(clean, FLOOR);
+  eq('a clean board still raises the floor', clean.mon.speedFloor, FLOOR);
+  eq('...and the truly-too-slow set is eliminated',
+    clean.mon.candidateSets.map(function (s) { return s.id; }), ['swim']);
+  eq('...which the result reports', [cleanRes.pruned, cleanRes.dropped], [true, 1]);
+
+  // The same observation under rain, where Swift Swim doubles that body: it must survive.
+  const rainy = kindgra();
+  rainy.b.st.field.weather = 'rain';
+  const rainyRes = fire(rainy, FLOOR);
+  eq('under rain the observation is REFUSED rather than converted', rainyRes.unsound, true);
+  eq('...so no floor is raised', rainy.mon.speedFloor, 0);
+  eq('...and nothing is eliminated',
+    rainy.mon.candidateSets.map(function (s) { return s.id; }).sort(), ['slow', 'swim']);
+  eq('...and the refusal is not a pruning result', [rainyRes.pruned, rainyRes.dropped], [false, 0]);
+
+  // Heavy rain is still rain (the family, not the raw string), and Tailwind is the same kind of
+  // explanation for the order, so both refuse too.
+  const heavy = kindgra();
+  heavy.b.st.field.weather = 'heavyrain';
+  eq('heavy rain reads as the rain family', fire(heavy, FLOOR).unsound, true);
+  const tail = kindgra();
+  tail.b.st.field.tailwind.p2 = true;
+  eq('their Tailwind refuses the conversion as well', fire(tail, FLOOR).unsound, true);
+  const boosted = kindgra();
+  boosted.mon.boosts.spe = 1;
+  eq('a positive Speed stage refuses it too', fire(boosted, FLOOR).unsound, true);
+
+  // And the sound case is still sound: a body whose ability cannot double its Speed under the
+  // weather that is up keeps its floor (this is the ``narrow guard'' check — the rule is not simply
+  // switched off whenever a weather is running).
+  const sand = kindgra();
+  sand.b.st.field.weather = 'sandstorm';
+  const sandRes = fire(sand, FLOOR);
+  eq('a weather that cannot double THIS body keeps the rule alive', sandRes.unsound, undefined);
+  eq('...and it still eliminates the too-slow set',
+    sand.mon.candidateSets.map(function (s) { return s.id; }), ['swim']);
 }
 
 /* ------------------------------------------------------------------- summary */

@@ -309,6 +309,184 @@ function sectionRollbackIsCompacted() {
   check('and keeps the live ones', s.hud._touched.length > 200, 'kept ' + s.hud._touched.length);
 }
 
+/**
+ * A document double whose execCommand behaves like a REAL one: it copies the CURRENT SELECTION, so
+ * a field that was never attached to the tree and never selected copies nothing at all. That is the
+ * only way these checks can fail — a stub that answers `true` unconditionally is exactly the "a stub
+ * which cannot fail cannot test" trap this file exists to avoid.
+ */
+function clipboardDoc(opts) {
+  const o = opts || {};
+  const doc = {
+    _selected: null,
+    _copied: null,
+    createElement: function (tag) {
+      const el = makeEl(tag);
+      el.select = function () { doc._selected = el; };
+      el.focus = function () { el._focused = true; };
+      return el;
+    },
+    body: makeEl('body'),
+    documentElement: makeEl('html'),
+    querySelector: function () { return null; },
+    querySelectorAll: function () { return []; },
+    getElementById: function () { return null; },
+    addEventListener: function () { }
+  };
+  if (!o.noExec) {
+    doc.execCommand = function () {
+      if (o.execFails) return false;
+      if (!doc._selected || doc._selected.parentNode !== doc.body) return false;
+      doc._copied = doc._selected.value;
+      return true;
+    };
+  }
+  return doc;
+}
+
+/**
+ * The receipt's Copy button. Its clipboard fallback reported success while copying NOTHING:
+ * `execCommand('copy')` acts on the document's current selection, and the textarea it built was
+ * never attached and never selected, so the button put whatever the page already had selected on
+ * the clipboard and told the caller it worked.
+ */
+function sectionReceiptCopyActuallyCopies() {
+  section('7. the receipt Copy button copies, or reports that it did not');
+
+  const doc = clipboardDoc({});
+  const boot = new ST.TacticianBoot({ doc: doc });
+  const out = boot._copyReceipt('Tactician receipt');
+  eq('the fallback really puts the text on the clipboard', doc._copied, 'Tactician receipt');
+  eq('...and reports the text back to the caller', out, 'Tactician receipt');
+  check('...having selected the field it built', !!doc._selected && doc._selected.value === 'Tactician receipt');
+  eq('...and leaves no textarea behind in the document', doc.body.children.length, 0);
+
+  const refused = clipboardDoc({ execFails: true });
+  const boot2 = new ST.TacticianBoot({ doc: refused });
+  eq('a refused copy is reported as a failure, not as success', boot2._copyReceipt('x'), null);
+  eq('...and nothing reached the clipboard', refused._copied, null);
+
+  const noExec = clipboardDoc({ noExec: true });
+  const boot3 = new ST.TacticianBoot({ doc: noExec });
+  eq('no execCommand at all means no copy and no false success', boot3._copyReceipt('x'), null);
+
+  eq('an empty payload is never a success', boot._copyReceipt(''), null);
+}
+
+/**
+ * The evaluation latch is per-BATTLE. `_onRequest` returns the cached ranking WITHOUT evaluating
+ * when `state.turn === this.lastEvaluateTurn`, so a second battle that reaches the same turn number
+ * — a game that ended on turn 1, a rematch in the same room, a reconnect replay — used to skip its
+ * whole evaluation and leave the previous battle's ranking and readout on the HUD.
+ */
+function sectionInitResetsTheEvaluationLatch() {
+  section('8. a new battle re-evaluates instead of reusing the last ranking');
+
+  const boot = new ST.TacticianBoot({ doc: makeDoc() });
+  let evaluations = 0;
+  // Silence the parts of the decision path a bare boot cannot draw, so the count below measures the
+  // EVALUATION and nothing else.
+  boot.hud = null;
+  boot.llm = null;
+  boot._renderScreenExtras = function () { };
+  boot._maybeAlertTR = function () { };
+  boot.engine.evaluateTurn = function () { evaluations++; return []; };
+
+  const battle = [
+    '|init|[Gen 9] National Dex',
+    '|player|p1|Me|1|1500',
+    '|player|p2|Foe|2|1470',
+    '|teamsize|p1|6',
+    '|teamsize|p2|6',
+    '|turn|1',
+    '|request|{"rqid":1}'
+  ];
+  battle.forEach(function (l) { boot.handleLine(l, 'recv'); });
+  eq('the first battle evaluates its decision turn', evaluations, 1);
+  eq('...and latches the turn it evaluated', boot.lastEvaluateTurn, 1);
+
+  // A SECOND battle on the same connection, whose first decision turn has the SAME number.
+  battle.forEach(function (l) { boot.handleLine(l, 'recv'); });
+  eq('the second battle evaluates that same turn number again', evaluations, 2);
+
+  // And the field itself, since the behaviour above depends on |init| clearing it.
+  boot.lastEvaluateTurn = 9;
+  boot.pendingReadout = { stale: true };
+  boot._afterEvent({ type: 'init' }, 0);
+  eq('|init| clears the evaluation latch', boot.lastEvaluateTurn, -1);
+  eq('|init| clears the readout the HUD would otherwise re-render', boot.pendingReadout, null);
+}
+
+/**
+ * A9. bindDrawer() has two exits: it BUILDS the drawer, or it ADOPTS one that is already in
+ * the document (a second content-script injection, a reload with the nodes still mounted).
+ * The layout signals were installed inside the build branch only, so the adopting exit kept
+ * a HUD whose band never re-measured: no re-anchor on resize, and — on the new client, where
+ * `.battle-log .battle-controls` is a static node inside the scrollable log — a bottom band
+ * that drifts back over the move bar the first time the player scrolls. That is the exact
+ * failure the listeners exist to prevent, so the adopting exit must bind them too.
+ */
+function sectionAdoptedDrawerStillBindsLayoutSignals() {
+  section('9. an adopted drawer still binds the layout signals');
+  // A document that RECORDS what was subscribed to. makeDoc's listener is a no-op, which is
+  // fine for the sections above (they assert on rendering) and useless here: this check is
+  // about the subscription itself, so the stub has to be able to fail.
+  const listeners = [];
+  const doc = makeDoc();
+  doc.addEventListener = function (type, fn, opts) { listeners.push({ type: type, capture: !!(opts && opts.capture) }); };
+  // makeDoc's querySelectorAll searches only the button registry, so a node the HUD MOUNTED
+  // into the body is invisible to it. A browser searches the whole document — and the case
+  // this section is about is precisely "the node is already in the document" — so this doc's
+  // search is re-pointed at the body subtree. Without that, adoption is unreachable in the
+  // stub and the section would pass no matter what bindDrawer does.
+  doc.querySelectorAll = function (sel) {
+    const parts = String(sel).split(',').map(function (p) { return p.trim(); });
+    const out = [];
+    const walk = function (el) {
+      for (let i = 0; i < parts.length; i++) {
+        if (matchesSelector(el, parts[i])) { out.push(el); break; }
+      }
+      (el.children || []).forEach(walk);
+    };
+    (doc.body.children || []).forEach(walk);
+    return out;
+  };
+  doc.querySelector = function (sel) { const all = doc.querySelectorAll(sel); return all.length ? all[0] : null; };
+  // Everything the HUD mounts lands in doc.body, so that subtree is the document for this check.
+  const drawersIn = function () {
+    const out = [];
+    const walk = function (el) {
+      if (String(el.className || '').split(/\s+/).indexOf('team-drawer') !== -1) out.push(el);
+      (el.children || []).forEach(walk);
+    };
+    (doc.body.children || []).forEach(walk);
+    return out;
+  };
+
+  const first = new ST.MobileHUD({ doc: doc });
+  first.bindDrawer();
+  const built = drawersIn();
+  check('the first HUD builds a drawer', built.length === 1);
+  listeners.length = 0;
+
+  // A second HUD over the same document: its _qs finds the first one's drawer and adopts it.
+  const second = new ST.MobileHUD({ doc: doc });
+  second.bindDrawer();
+  const after = drawersIn();
+  eq('adoption does not build a second drawer', after.length, 1);
+  eq('the adopted node is the first HUD\'s drawer', after[0] === built[0], true);
+  const scrolls = listeners.filter(function (l) { return l.type === 'scroll'; });
+  check('the adopting HUD subscribed to scroll', scrolls.length >= 1);
+  eq('and it subscribed with capture (scroll does not bubble)',
+    scrolls.length ? scrolls[0].capture : null, true);
+
+  // Idempotence, on the same instance and across instances: no listener pile-up.
+  second.bindDrawer();
+  second.bindDrawer();
+  const scrollsAfter = listeners.filter(function (l) { return l.type === 'scroll'; }).length;
+  eq('re-binding does not add another scroll listener', scrollsAfter, scrolls.length);
+}
+
 function main() {
   console.log('Showdown Tactician — HUD node lifecycle (real elements)\n');
   sectionRollbackIsRecordedOnce();
@@ -317,6 +495,9 @@ function main() {
   sectionBadgeIsReused();
   sectionVetoContract();
   sectionRollbackIsCompacted();
+  sectionReceiptCopyActuallyCopies();
+  sectionInitResetsTheEvaluationLatch();
+  sectionAdoptedDrawerStillBindsLayoutSignals();
 
   section('summary');
   console.log('checks passed: ' + passed);

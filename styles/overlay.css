@@ -48,6 +48,19 @@ button[data-move].st-optimal {
   box-shadow: 0 0 0 2px var(--st-high) inset, 0 0 12px rgba(34, 197, 94, 0.35);
 }
 
+/* Showdown fixes its own `.movebutton` at `height: 40px`, and the lethal bar below is
+ * `display: block` INSIDE the button. With the box pinned at 40 px the bar cannot fit, so it
+ * hangs below the button — measured 24 px of overspill on the classic client (scrollHeight 64
+ * vs a 40 px box) and 16 px on the new one — and lands on top of the move button in the row
+ * below, with a 141x19 px overlap onto the sibling. Let a button that carries one grow to
+ * contain it. `min-height` keeps an undecorated button exactly Showdown's own size, so nothing
+ * shifts when the HUD has no opinion to show. Specificity (0,1,1) beats `.movebutton` (0,1,0),
+ * so no !important is needed. */
+button[data-st-lethal] {
+  height: auto;
+  min-height: 40px;
+}
+
 /* ------------------------------------------------------------- move badges */
 
 .elo-helper-badge {
@@ -79,7 +92,8 @@ button[data-move].st-optimal {
   background: transparent;
   color: var(--st-veto);
   border: 1px solid var(--st-veto);
-  text-decoration: line-through;
+  /* The button already strikes its .move-name/.movebutton-name (see the rule above the badges
+   * block); striking the badge text too makes "VETO" read as a typo, not a veto. */
 }
 .elo-helper-badge.st-optimal::after {
   content: "★";
@@ -103,7 +117,12 @@ button[data-move].st-optimal {
 
 .tactician-banner {
   position: fixed;
-  top: 0;
+  /* The banner sits just above the arena, not at the viewport's `top: 0`. Showdown's mobile
+   * layout reserves 0..~56 px for the topbar + room-tab bar, and painting the status strip
+   * over that range hides the menu and the active-room tab. `_syncChipBand` publishes the
+   * measured top of `.battle` (the room's battle container) into `--st-battle-top`; on
+   * lobbies and in the test harness the var is unset and the banner falls back to 0 px. */
+  top: var(--st-battle-top, 0px);
   left: 0;
   right: 0;
   z-index: 2147483000;
@@ -134,7 +153,7 @@ button[data-move].st-optimal {
   position: fixed;
   left: 8px;
   right: 8px;
-  bottom: calc(var(--st-touch) + 18px);
+  bottom: calc(var(--st-touch) + 18px + var(--st-band-lift, 0px));
   z-index: 2147483001;
   box-sizing: border-box;
   padding: 8px 12px;
@@ -405,12 +424,25 @@ button[data-st-lethal="none"] .st-lethal-bar {
 
 /* =============================================================== bench sandbox */
 /* The opponent's bench as tappable pills. Fixed above the move bar, horizontally scrollable,
- * one 48px touch target per mon, safe-area aware for gesture-navigation phones. */
+ * one 48px touch target per mon, safe-area aware for gesture-navigation phones.
+ *
+ * `bottom` carries `--st-band-lift`: on the new client Showdown's own control bar is a
+ * `position: static` node inside the scrollable battle log (client2.css:
+ * `.battle-log .battle-controls { top: 0; position: static }`), so it lands in the bottom
+ * third of the screen — 688..792 of 891, measured live — instead of the classic client's
+ * 297..402. ui_overlay.js measures the bar and publishes the lift needed to park this strip
+ * above it; on the classic client (and in lobbies, where there is no bar) the var is 0px and
+ * the strip stays exactly where it was.
+ *
+ * `pointer-events: none` on the strip with `auto` on the pills is the belt to that braces:
+ * the strip is a live element pinned to the viewport bottom, so if it ever DOES overlap a
+ * move button it must not be the element that receives the tap. The gradient is cosmetic
+ * and can overlap; the touch target is not. */
 .st-bench-strip {
   position: fixed;
   left: 0;
   right: 0;
-  bottom: calc(var(--st-touch) + 8px);
+  bottom: calc(var(--st-touch) + 8px + var(--st-band-lift, 0px));
   z-index: 40;
   display: flex;
   gap: 8px;
@@ -421,6 +453,7 @@ button[data-st-lethal="none"] .st-lethal-bar {
   border-top: var(--st-border);
   scrollbar-width: none;
   -webkit-overflow-scrolling: touch;
+  pointer-events: none;
 }
 
 .st-bench-strip::-webkit-scrollbar { display: none; }
@@ -437,6 +470,10 @@ button[data-st-lethal="none"] .st-lethal-bar {
   font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
+  /* The strip itself is tap-transparent (see above); the pills are the things you actually
+   * want to hit. Horizontal drag on a pill still scrolls the strip, because the scroll
+   * gesture routes from the touch target to its nearest scrollable ancestor. */
+  pointer-events: auto;
 }
 
 .st-bench-pill:active { background: rgba(30, 41, 59, 0.95); }
@@ -469,6 +506,10 @@ button[data-st-lethal="none"] .st-lethal-bar {
   pointer-events: none;
 }
 
+:root[data-st-band-anchored] .st-badge-row {
+  top: calc(var(--st-battle-top, 0px) + 46px);
+}
+
 .st-unmask-badge {
   display: inline-block;
   max-width: 100%;
@@ -486,13 +527,16 @@ button[data-st-lethal="none"] .st-lethal-bar {
 .st-unmask-badge.st-lockout { border-color: rgba(148, 163, 184, 0.6); color: #e2e8f0; }
 
 /* =============================================================== match receipt */
-/* The post-match summary sheet. Sits above the bench strip so the receipt is never hidden
- * behind it, and below the TR chip's alert level, which must stay the loudest element. */
+/* The post-match summary sheet. It only mounts on `|win|`/`|tie|`, by which point Showdown's
+ * own control bar is gone, so it shares the bench strip's `--st-band-lift` rather than
+ * competing for the strip's slot — the two are never on screen together in real use, and the
+ * shared var means a receipt that does arrive early still clears the bar instead of hiding it.
+ * Above the TR chip's alert level, which must stay the loudest element. */
 .st-receipt-card {
   position: fixed;
   left: 8px;
   right: 8px;
-  bottom: calc(var(--st-touch) + 16px);
+  bottom: calc(var(--st-touch) + 16px + var(--st-band-lift, 0px));
   z-index: 60;
   padding: 12px 14px;
   border: var(--st-border);
@@ -557,6 +601,17 @@ button[data-st-lethal="none"] .st-lethal-bar {
   pointer-events: none;
 }
 
+/* On a real battle the banner drops to `--st-battle-top` (just above the arena) so it stops
+ * painting over the topbar / room-tab bar. The chip band re-anchors with it by preserving the
+ * SAME offsets the original layout had to the (now-displaced) banner top: the gold pill sits
+ * 18 px under the banner so the bottom of the pill peeks out from behind the dark strip just
+ * like it did at the viewport top, and the deduction badges keep their 46 px gap. The
+ * attribute is only ever set by js/_syncChipBand, so lobbies and the test harness keep the
+ * viewport-top layout unchanged. */
+:root[data-st-band-anchored] .st-overlord-gauge {
+  top: calc(var(--st-battle-top, 0px) + 18px);
+}
+
 /* Portrait phone: keep the new chrome compact so it never eats the battlefield. */
 @media (orientation: portrait) {
   .st-lethal-bar { font-size: 10.5px; padding: 2px 4px; }
@@ -565,9 +620,10 @@ button[data-st-lethal="none"] .st-lethal-bar {
   .st-receipt-card { max-height: 46vh; overflow-y: auto; }
 }
 
-/* Very tall screens (2340px class): lift the strip clear of the taller move bar. */
+/* Very tall screens (2340px class): lift the strip clear of the taller move bar. The extra
+ * clearance is on top of, not instead of, `--st-band-lift`. */
 @media (min-height: 2000px) {
-  .st-bench-strip { bottom: calc(var(--st-touch) + 16px); }
+  .st-bench-strip { bottom: calc(var(--st-touch) + 16px + var(--st-band-lift, 0px)); }
 }
 
 /* A receipt that animates in is the only motion this block introduces; honour the preference. */
@@ -600,7 +656,11 @@ button[data-st-lethal="none"] .st-lethal-bar {
   right: 8px;
   top: calc(var(--st-chip-bottom, 104px) + 2px);
   z-index: 38;
-  max-height: 40vh;   /* a real cap for pathological content, never a mid-glyph crop the UI assumed */
+  /* A real cap for pathological content, never a mid-glyph crop the UI assumed — AND bounded by
+   * the viewport: a gauge that starts low (a tall badge row) and is allowed 40vh would hang its
+   * last line off the bottom of the screen and get clipped there. `min()` keeps whichever of the
+   * two is smaller, so the block always ends on screen. */
+  max-height: min(40vh, calc(100vh - var(--st-chip-bottom, 104px) - 8px));
   overflow: hidden;
   padding: 5px 10px;
   border: 1px solid rgba(148, 163, 184, 0.5);
@@ -635,7 +695,9 @@ button[data-st-lethal="none"] .st-lethal-bar {
   right: 8px;
   top: calc(var(--st-chip-bottom, 104px) + 2px + var(--st-pp-gauge-h, 58px) + 2px);
   z-index: 37;
-  max-height: 34vh;
+  /* Mirror of the PP-gauge guard: a cap on the sentinel's height AND a viewport bound so a tall
+   * PP gauge above it can't push the last sentinel row off the screen. */
+  max-height: min(34vh, calc(100vh - var(--st-chip-bottom, 104px) - var(--st-pp-gauge-h, 58px) - 10px));
   overflow: hidden;
   padding: 6px 10px;
   border: var(--st-border);

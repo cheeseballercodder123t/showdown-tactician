@@ -216,6 +216,12 @@
     sampleWorld(state, db, seedOverride) {
       const previousDb = this.database;
       if (db) this.database = db;
+      // The swap above points the sampler at the CALLER's database for the duration of this
+      // sample, so it has to be undone on the way out of EVERY exit — including the throwing one.
+      // Restoring on the happy path only meant an exception from `_pick` / `_monFromSet` /
+      // `_violationsFor` left the sampler bound to a database it does not own for the rest of the
+      // session. (The body below is not re-indented so the fix stays a three-line diff.)
+      try {
       // An explicit seed wins, then an injected rng, then the state itself. Nothing falls back
       // to Math.random(), so the same position always samples the same K worlds.
       let seed;
@@ -288,8 +294,10 @@
       world.weight = violations.length ? (1 / (1 + violations.length)) : 1;
       this.stats.sampled++;
       if (violations.length) this.stats.rejected++;
-      this.database = previousDb;
       return world;
+      } finally {
+        this.database = previousDb;
+      }
     }
 
     /** sampleWorlds(oppState, candidateSetDatabase, K) -> World[] */

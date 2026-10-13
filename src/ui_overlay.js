@@ -113,6 +113,9 @@
       this._drawerOpen = false;
       this._bound = false;
       this._benchBound = false;   // the strip's delegated listener is attached at most once
+      this._layoutBound = false;  // the resize/orientation listener is attached at most once
+      this._scrollBound = false;  // the scroll listener (new client's inline move bar) too
+      this._layoutKey = '';       // "w x h" the chrome was last measured at (see _syncChipBand)
       this._receiptText = null;   // text behind the receipt's Copy button
       this.selectedBenchId = null; // which bench pill is currently selected ('' = the active mon)
       this.renderCount = 0;
@@ -217,8 +220,32 @@
 
     _moveIdOf(button) {
       if (!button) return '';
+      // Classic client (play.pokemonshowdown.com/oldclient, js/oldclient/client-battle.js) labels
+      // each move button with the canonical id, so `data-move` is the one source of truth.
       const direct = button.getAttribute ? button.getAttribute('data-move') : null;
       if (direct) return U.toID(direct);
+      // PS's new client (play.pokemonshowdown.com/newclient, src/panel-battle.tsx) drops BOTH
+      // `data-move` and `name="chooseMove"`. The only handle left on the button is the tooltip
+      // payload — "move|<id>|<pos>" for ordinary moves, "zmove|<id>|<pos>" and
+      // "maxmove|<id>|<pos>" for the boosted variants — and an index in `data-cmd` ("/move 1").
+      // textContent is the WRONG last resort: it concatenates name + type + pp into a string
+      // whose toID no longer matches the engine's action id ("Headlong Rush<br>Ground 16/16"
+      // becomes "headlongrushground1616"), and the HUD silently decorates nothing on the new
+      // client — a no-op the regression suite can't catch because the fixture only exercises
+      // the classic markup. Read the tooltip first; the index alone cannot be mapped back to a
+      // move id without the request the engine already holds, so a `data-cmd` match is a no-op
+      // and we deliberately fall through to the (lossy) textContent.
+      //
+      // The tooltip carries the move NAME, not its id (panel-battle.tsx builds it from
+      // `moveData.name`), so the capture has to be "everything up to the next pipe" and then
+      // run through toID: "Will-O-Wisp" and "Headlong Rush" both contain characters a
+      // `[A-Za-z0-9]+` capture would stop at, and a truncated match silently reintroduces the
+      // very bug this fallback exists to fix.
+      const tip = button.getAttribute ? button.getAttribute('data-tooltip') : null;
+      if (tip) {
+        const m = /^(?:move|maxmove|zmove)\|([^|]+)\|/.exec(tip);
+        if (m) return U.toID(m[1]);
+      }
       const name = button.getAttribute ? button.getAttribute('name') : null;
       if (name && U.toID(name) !== 'choosemove') return U.toID(name);
       const label = button.textContent || '';
@@ -386,6 +413,7 @@
       const heading = this._el('div', 'st-lead-title', 'TEAM PREVIEW ADVISORY');
       if (heading && typeof card.appendChild === 'function') card.appendChild(heading);
       const self = this;
+      let rows = 0;
       [['st-lead-best', advisory.best, '\uD83D\uDFE2 Top lead'],
         ['st-lead-risky', advisory.risky, '\uD83D\uDD34 Risky lead']].forEach(function (pair) {
         const item = pair[1];
@@ -393,8 +421,14 @@
         const text = pair[2] + ': ' + item.species + ' (' + item.favorability + '% favorability) — ' +
           (item.reason || '');
         const row = self._el('div', pair[0], text);
-        if (row && typeof card.appendChild === 'function') card.appendChild(row);
+        if (row && typeof card.appendChild === 'function') { card.appendChild(row); rows++; }
       });
+      // The guard above only asks whether `leads` is NON-EMPTY, and that is not the same question as
+      // "is there anything to show": a non-empty `leads` whose `best`/`risky` entries lack a
+      // `species` skips both rows and leaves the heading alone in the box — the empty card this
+      // method's own contract says it will not draw. So count what was actually APPENDED (not what
+      // was offered) and dismiss when nothing was.
+      if (!rows) return this.dismissLeadAdvisory();
       return card;
     }
 
@@ -426,6 +460,9 @@
       if (this._nodes.banner) return this._nodes.banner;
       const existing = this._qs('.tactician-banner');
       if (existing) { this._nodes.banner = existing; return existing; }
+      // Measure the page chrome BEFORE mounting, so the banner's first paint lands below
+      // Showdown's topbar/room-tab bar instead of jumping from 0 to 56 on the next frame.
+      this._syncChipBand();
       const el = this._el('div', 'tactician-banner');
       if (!el) return null;
       if (el.setAttribute) { el.setAttribute(BANNER_ATTR, '1'); el.setAttribute('role', 'status'); }
@@ -708,6 +745,11 @@
       if (!this._document()) return null;
       const list = Array.isArray(targets) ? targets.filter(Boolean) : [];
       if (!list.length) return this.clearBenchTargets();
+      // Re-measure the band before the strip is (re)drawn: the strip is the element whose
+      // position depends on Showdown's own control bar, and it is mounted on every turn of a
+      // real battle — so it is the one render path that must not depend on some other call
+      // having synced first. Height is lift-independent, so measuring here is safe.
+      this._syncChipBand();
       const cap = cfg('hud.benchStripMax', 6);
       let strip = this._nodes.benchStrip || this._qs('.st-bench-strip');
       if (!strip) {
@@ -836,6 +878,10 @@
     renderReceipt(receipt) {
       if (!this._document()) return null;
       if (!receipt || typeof receipt !== 'object') return this.dismissReceipt();
+      // The receipt is post-match, so Showdown's control bar is normally gone by now and the
+      // lift is 0. Sample anyway: a receipt that arrives during the win animation must clear
+      // the bar rather than cover the buttons the player was just using.
+      this._syncChipBand();
       const card = this._el('div', 'st-receipt-card');
       if (!card) return null;
       if (card.setAttribute) card.setAttribute(RECEIPT_ATTR, '1');
@@ -918,6 +964,102 @@
     /* -------------------------------------- PP-stall gauge & format sentinel */
 
     /**
+     * _touchOffset(doc) -> the HUD's own touch-target size in px.
+     * Read back out of the cascade so the lift arithmetic below and overlay.css can never
+     * disagree about what `--st-touch` is today. `--st-touch` is a static 48px in the
+     * stylesheet and config.js never touches it, but the value is not hard-coded here on
+     * purpose: a second copy of the number is a second place for it to drift.
+     */
+    _touchOffset(doc) {
+      const view = doc && doc.defaultView ? doc.defaultView :
+        (typeof window !== 'undefined' ? window : null);
+      if (view && typeof view.getComputedStyle === 'function') {
+        try {
+          const raw = view.getComputedStyle(doc.documentElement).getPropertyValue('--st-touch');
+          const n = parseFloat(raw);
+          if (n === n && n > 0) return n;
+        } catch (e) { /* no cascade (Node harness) */ }
+      }
+      return 48;
+    }
+
+    /**
+     * _syncControlBar(doc) -> the lift the bottom band needs, in px (0 = none).
+     *
+     * Showdown's own control bar is the one piece of page furniture the HUD's bottom band
+     * shares pixels with, and where it lives is client-specific:
+     *
+     *   classic  `.battle-controls { position: absolute; top: 370px }` — measured live at
+     *            411x891 it occupies 297..402, and the screen below it is empty. The hundred
+     *            or so pixels of HUD pinned to the viewport bottom are in clear air.
+     *   new      `.battle-log .battle-controls { top: 0; position: static; width: auto }` —
+     *            the move bar RIDES INSIDE the scrollable battle log, so its Y is a function
+     *            of the log's scrollTop. Measured live with the log at rest it occupies
+     *            688..792 out of 891 — exactly where the HUD pins its bottom band.
+     *
+     * With no correction the bench strip (774..835 by measurement) sits on the bar's bottom
+     * 18px: the PP half of the move buttons goes dark and the strip, which is a live
+     * tappable element, swallows the taps that were meant for those buttons. That is the
+     * worst place for the two to collide, because the whole point of the strip is to be
+     * used while the move buttons are on screen.
+     *
+     * The lift is published as `--st-band-lift`, which overlay.css adds to the three
+     * bottom-anchored offsets. Absent var = 0px, so lobbies, the classic client and every
+     * headless test keep today's layout byte for byte.
+     *
+     * The overlap probe deliberately reads the UN-LIFTED geometry (`vh - touch - pad -
+     * height`), never the elements' live rects: after a lift, the live rects would report
+     * "no overlap" and snap the band back down, then back up, on the next scroll tick.
+     * Height is lift-independent, so measuring it is safe.
+     */
+    _syncControlBar(doc) {
+      const reset = function () {
+        doc.documentElement.style.setProperty('--st-band-lift', '0px');
+        doc.documentElement.style.setProperty('--st-controls-top', '0px');
+        doc.documentElement.style.setProperty('--st-controls-bottom', '0px');
+        if (doc.documentElement.dataset) delete doc.documentElement.dataset.stBandLifted;
+        return 0;
+      };
+      const view = doc.defaultView || (typeof window !== 'undefined' ? window : null);
+      const vh = (view && typeof view.innerHeight === 'number') ? view.innerHeight : 0;
+      const bar = this._qs('.battle-controls');
+      if (!bar || !vh || typeof bar.getBoundingClientRect !== 'function') return reset();
+
+      const rect = bar.getBoundingClientRect();
+      // A lobby, a team builder, or a bar that has scrolled clean off the screen: no page
+      // furniture down here, so the band belongs at the viewport bottom. `top <= 0` also
+      // covers the degenerate rect the Node harness returns (top 0, height 50).
+      if (!rect || rect.top !== rect.top || rect.height <= 0 || rect.top <= 0 || rect.top >= vh) return reset();
+      const top = Math.round(rect.top);
+      const bottom = Math.round(rect.bottom);
+
+      // Published for auditability: `getComputedStyle(documentElement)` answers "where did
+      // Showdown put its controls, and did the HUD move out of the way?" without a debugger.
+      doc.documentElement.style.setProperty('--st-controls-top', top + 'px');
+      doc.documentElement.style.setProperty('--st-controls-bottom', bottom + 'px');
+
+      // The bench strip is the lowest block the HUD pins to the bottom (`--st-touch + 8`) and
+      // the only one of the three that is mounted on every turn of a real battle, so it is
+      // the probe. 61px is a measured fallback for "one row of 48px pills + 12px padding +
+      // 1px border"; the real height is read off the node when it is mounted.
+      const strip = this._qs('.st-bench-strip');
+      const stripRect = (strip && typeof strip.getBoundingClientRect === 'function')
+        ? strip.getBoundingClientRect() : null;
+      const stripH = (stripRect && stripRect.height) ? stripRect.height : 61;
+      const bottomEdge = vh - (this._touchOffset(doc) + 8);   // the strip's bottom at NO lift
+      const stripTop = bottomEdge - stripH;                   // ...and therefore its top
+      const overlaps = stripTop < bottom && bottomEdge > top;
+      const lift = overlaps ? Math.round(bottomEdge - (top - 4)) : 0;
+
+      doc.documentElement.style.setProperty('--st-band-lift', (lift > 0 ? lift : 0) + 'px');
+      if (doc.documentElement.dataset) {
+        if (lift > 0) doc.documentElement.dataset.stBandLifted = '1';
+        else delete doc.documentElement.dataset.stBandLifted;
+      }
+      return lift > 0 ? lift : 0;
+    }
+
+    /**
      * _syncChipBand() -> the chip band's measured bottom in px (or null).
      * Every block in the chip band is an independently `position: fixed` node, so no block can
      * stack itself under its neighbours in CSS — and the badge row is content-driven: at phone
@@ -926,6 +1068,14 @@
      * and publish it as `--st-chip-bottom`, which overlay.css consumes with a static fallback
      * for the case where the stylesheet loads without this file having run. Fixed elements use
      * viewport coordinates, so the rect's bottom is directly comparable to a `top` offset.
+     *
+     * Also publishes `--st-battle-top`: the top of Showdown's own `.battle` container, which
+     * is the room tab bar's bottom on mobile (≈56 px) and a hair under the topbar on the new
+     * client (≈30 px). The banner consumes it as its own `top` so the status strip sits just
+     * above the arena instead of painting over the menu and the room tabs. The measurement is
+     * done here (and in `_ensureBanner`) rather than on every render so a player scrolling the
+     * battle log can't drag the banner with them; the values are re-read on resize via the
+     * listener installed in `bindDrawer`.
      */
     _syncChipBand() {
       const doc = this._document();
@@ -943,6 +1093,44 @@
       }
       const px = Math.round(bottom);
       doc.documentElement.style.setProperty('--st-chip-bottom', px + 'px');
+
+      // The bottom band's clearance from Showdown's own control bar. NOT keyed to the
+      // viewport: on the new client the move bar rides inside the scrollable battle log, so
+      // its Y is a function of the log's scrollTop (see _syncControlBar).
+      this._syncControlBar(doc);
+
+      // The top of the visible battle content. The classic client renders the room tab bar
+      // (and the topbar) ABOVE the battle container, so the banner should sit at `.battle.top`,
+      // not at the viewport's `top: 0` (which would cover the menu and the room tabs). Lobbies
+      // and the spec harness don't have a `.battle`, so the var is left unset and the CSS
+      // falls back to 0 px — i.e. the original "pinned to the viewport top" behavior.
+      //
+      // The measurement is re-taken ONLY when the viewport changes size. The new client is one
+      // long vertical scroll and `.battle` scrolls with it, so re-measuring on every render
+      // would drag the banner up a few pixels every time the player scrolled the log. The
+      // chrome height only changes on resize/rotate, and that is exactly what the key catches.
+      const view = doc.defaultView || (typeof window !== 'undefined' ? window : null);
+      const key = (view && typeof view.innerWidth === 'number')
+        ? (view.innerWidth + 'x' + view.innerHeight) : '';
+      if (key && key === this._layoutKey) return px;
+      this._layoutKey = key;
+
+      const battle = this._qs('.battle');
+      if (battle && typeof battle.getBoundingClientRect === 'function') {
+        const br = battle.getBoundingClientRect();
+        if (br && br.top === br.top && br.top > 0) {
+          doc.documentElement.style.setProperty('--st-battle-top', Math.round(br.top) + 'px');
+          // The whole chip band is a stack of `position: fixed` nodes pinned to the banner. In
+          // the original (viewport-top) layout the overlord pill and the badge row sit on top
+          // of / just below the banner, which is the intended visual. Once the banner moves
+          // down to `.battle.top` those offsets still point at 18/46 px and the band ends up
+          // straddling the banner. Mark the document so the stylesheet re-anchors the band to
+          // the new banner position; the attribute is only set when a real battle is mounted,
+          // so lobbies and tests keep the original offsets. Guarded: the Node harness's stub
+          // element has no `dataset`, and an unguarded write there is a TypeError.
+          if (doc.documentElement.dataset) doc.documentElement.dataset.stBandAnchored = '1';
+        }
+      }
       return px;
     }
 
@@ -1180,6 +1368,8 @@
         this._nodes.teamStatus = this._qs('[data-st-team-status]') || this._qs('.drawer-team-status');
         this._nodes.candidates = this._qs('[data-st-candidates]') || this._qs('.drawer-candidates');
         this._bound = true;
+        // Adopted, not built — the signals still have to be bound (see _bindLayoutSignals).
+        this._bindLayoutSignals();
         return existing;
       }
 
@@ -1248,7 +1438,56 @@
         toggle.addEventListener('click', this.toggleDrawer.bind(this));
       }
       this._bound = true;
+      // Re-measure the chip band on viewport resize and orientation change. The HUD is a stack
+      // of `position: fixed` blocks anchored to the PS chrome, and the chrome (the room tab
+      // bar in particular) changes height between portrait/landscape and across phone sizes;
+      // without this, the banner would stay stuck at the height it was measured at boot.
+      this._bindLayoutSignals();
       return this._nodes.drawer;
+    }
+
+    /**
+     * _bindLayoutSignals() — re-measure the chip band when the layout or the log scroll moves.
+     * Called from BOTH exit paths of bindDrawer, including the one that ADOPTS a drawer that
+     * is already in the document: attaching these inside the drawer-building branch only
+     * meant an adopted drawer kept a stale band forever, which is the exact failure the
+     * listeners exist to prevent (resize → banner stuck at the old chrome height; scroll →
+     * band drifts back over the new client's move bar). Idempotent per instance.
+     */
+    _bindLayoutSignals() {
+      const doc = this._document() || (typeof document !== 'undefined' ? document : null);
+      const view = (doc && doc.defaultView) || (typeof window !== 'undefined' ? window : null);
+      if (!this._layoutBound && view && typeof view.addEventListener === 'function') {
+        this._layoutBound = true;
+        const self = this;
+        const onLayout = function () { try { self._syncChipBand(); } catch (e) { /* detached */ } };
+        view.addEventListener('resize', onLayout, { passive: true });
+        view.addEventListener('orientationchange', onLayout, { passive: true });
+      }
+      // …and on scroll. The new client makes `.battle-log .battle-controls` `position:
+      // static`, so its move bar is a node in the scrollable log and scrolling moves it;
+      // without this the bottom band's lift is sampled once at boot and the strip drifts
+      // back over the buttons as soon as the player touches the log. Scroll events do not
+      // bubble, so the listener goes on `document` with `capture` to catch any scrolled
+      // descendant, and the work is coalesced into one rAF so a fling costs one measurement
+      // per frame instead of one per scroll event.
+      if (!this._scrollBound && doc && typeof doc.addEventListener === 'function') {
+        this._scrollBound = true;
+        const self = this;
+        let queued = false;
+        const onScroll = function () {
+          if (queued) return;
+          queued = true;
+          const run = function () {
+            queued = false;
+            try { self._syncChipBand(); } catch (e) { /* detached */ }
+          };
+          if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
+          else setTimeout(run, 16);
+        };
+        doc.addEventListener('scroll', onScroll, { passive: true, capture: true });
+      }
+      return this;
     }
 
     /**
@@ -1421,11 +1660,19 @@
 
     /** clear() — remove every injected node and inline style change. */
     clear() {
-      const nodes = this._qsa('.elo-helper-badge, .tactician-banner, .tactician-tr-chip, .team-drawer, .team-drawer-toggle, .elo-helper-reason, .st-lethal-bar, .st-bench-strip, .st-badge-row, .st-receipt-card, .st-overlord-gauge, .st-pp-gauge, .st-format-sentinel');
+      const nodes = this._qsa('.elo-helper-badge, .tactician-banner, .tactician-tr-chip, .team-drawer, .team-drawer-toggle, .elo-helper-reason, .st-lethal-bar, .st-bench-strip, .st-badge-row, .st-receipt-card, .st-overlord-gauge, .st-pp-gauge, .st-format-sentinel, .st-lead-advisory');
       for (let i = 0; i < nodes.length; i++) {
         const n = nodes[i];
         if (n && typeof n.remove === 'function') n.remove();
       }
+      // ...and the advisory card is ALSO dropped by handle, the way dismissReceipt and
+      // clearDeductionBadges do it, because the sweep above is a bulk selector and this is the one
+      // node the HUD simultaneously holds a reference to. The selector used to omit
+      // `.st-lead-advisory`; clear() then reset `_nodes.leadAdvisory` to null underneath a card that
+      // was still mounted, so nothing could ever remove it (dismissLeadAdvisory() reads the handle)
+      // while the next battle mounted a SECOND one. Two ways to drop the same node is deliberate
+      // here: the handle keeps the document and the HUD agreeing even if the selector drifts again.
+      this.dismissLeadAdvisory();
       const buttons = this._findMoveButtons();
       const cls = [BADGES.high.cls, BADGES.mid.cls, BADGES.low.cls, BADGES.veto.cls, 'st-optimal',
         'st-lethal-guaranteed', 'st-lethal-high', 'st-lethal-mid', 'st-lethal-none'];

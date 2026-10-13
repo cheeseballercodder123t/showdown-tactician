@@ -154,7 +154,9 @@ only been exercised in Chromium here — see the limitations below.
 | `.team-drawer` (bottom-left TAC button, 48×48) | Team paste textarea, save button, team status, live opponent candidate-set breakdown. |
 
 When an API key is configured, the model's one-line justification is appended under the
-recommended move within ~600 ms. The local engine's answer is already on screen before that.
+recommended move once it arrives — the budget is `llm.timeoutMs` (20 s, sent with the request and
+honoured by the service worker), so it never replaces the answer, it only annotates it. The local
+engine's answer is already on screen without it.
 
 ## Files
 
@@ -187,7 +189,7 @@ src/veto_guard.js          the twelve hard blunder vetoes (immunity, rhythm, TR,
                            hazard clearing, consecutive Protect, Magic Bounce, hazard caps, redundant weather)
 src/world_sampler.js       K=6 determinized worlds with observed-fact verification
 src/laplace_core.js        the decision loop (payoff matrix, mixed-strategy solve, legacy softmax)
-src/llm_client.js          optional Gemini/OpenRouter bridge, hard 600 ms abort
+src/llm_client.js          optional Gemini/OpenRouter bridge, hard 20 s abort (config llm.timeoutMs)
 src/ui_overlay.js          mobile HUD DOM injection
 src/injected.js            MAIN-world WebSocket interceptor
 src/background.js          service worker: the only component that calls the LLM API

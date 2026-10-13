@@ -8,6 +8,149 @@ provenance — why a number is what it is, and what was tried and rejected. Entr
 
 ### Fixed
 
+- **Showdown's new client decorated 0 of 4 move buttons — a silent no-op.** `_moveIdOf` resolved the
+  classic client's `data-move` and then fell back to `U.toID(button.textContent)`. The new client
+  (`play.pokemonshowdown.com/newclient`, `src/panel-battle.tsx`) drops BOTH `data-move` and
+  `name="chooseMove"`; the only handle left is the tooltip payload, and `textContent` concatenates
+  name + type + PP into a string whose toID matches nothing ("Headlong Rush<br>Ground 16/16" becomes
+  `headlongrushground1616`). So on the new client the HUD never marked a single button, never showed
+  a lethal bar and never showed a badge — while the classic client stayed correct, which is exactly
+  why the suite stayed green. It now reads `data-tooltip` first. Two traps worth recording, because
+  both were hit in the attempt: the tooltip carries the move NAME, not its id (built from
+  `moveData.name`), so a `[A-Za-z0-9]+` capture silently fails on every name with a space or a hyphen
+  ("Headlong Rush", "Will-O-Wisp", "U-turn") and drops straight back into the broken fallback — the
+  capture is `[^|]+` and is then run through `toID`; and `data-cmd="/move 1"` is an INDEX that cannot
+  be mapped back to a move without the request the engine already holds, so it is deliberately NOT
+  used (a stale index is worse than no opinion). `tests/hud_check.js` section 13 pins the contract
+  with the REAL rendered label on each fake button, so the lossy `textContent` path can no longer
+  rescue the fixture: reverting the regex fails 5 checks, including the end-to-end
+  "decorates every button → got 0, want 4". Verified on the live site: 4/4 on both clients.
+- **The banner painted over Showdown's topbar and room-tab bar.** `tactician-banner` was pinned to
+  the viewport's `top: 0`, which on a phone is Showdown's own chrome: the classic client reserves
+  0..56 px for the topbar + room-tab bar, and the new client 0..30, so the menu, the room tab and
+  the volume control sat underneath the status strip. The banner now anchors to the measured top of
+  `.battle` (`--st-battle-top`, measured before the first paint so there is no 0→56 jump), and the
+  overlord pill and deduction badges re-anchor with it by keeping the SAME 18/46 px offsets they had
+  to the banner's old position — so the gold pill still peeks out from behind the dark strip exactly
+  as before. Measured live: the banner lands at 56 on classic and 30 on new, with the chrome fully
+  clear, and what it covers is the top 25 px of the battlefield container (background + weather
+  layer), not any control. The attribute is only set by the measurement, so lobbies and the test
+  harness keep the viewport-top layout byte for byte.
+- **The lethal bar hung out of its move button and covered the button below.** Showdown fixes
+  `.movebutton { height: 40px }` and the lethal bar is `display: block` INSIDE it, so it was a third
+  row of content in a 40 px box: measured 24 px of overspill on classic (`scrollHeight` 64 vs a
+  40 px box) and 15 px on new, landing on the move button in the row under with a 141×19 px /
+  145×12 px overlap — i.e. the PP half of a button the player was being asked to read.
+  `button[data-st-lethal] { height: auto; min-height: 40px }` lets a decorated button grow to contain
+  it; specificity (0,1,1) beats `.movebutton` (0,1,0) so no `!important`, and `min-height` keeps an
+  undecorated button exactly Showdown's own size. After: overspill 0 / -2, bar bottom flush with the
+  button bottom, sibling overlap `[]` on both clients.
+- **The HUD's bottom band covered the new client's move bar, and swallowed the taps meant for it.**
+  The bar's position is client-specific and the new one was not modelled: classic puts
+  `.battle-controls` at `position: absolute; top: 370px` (297..402 live, with the bottom 400 px of
+  the screen empty), while `client2.css` makes `.battle-log .battle-controls` `position: static`
+  inside the SCROLLABLE log — so the bar rides wherever the scroll leaves it, 688..792 of an 891 px
+  viewport at rest. The bench strip was pinned at 774..835, sitting on the bar's bottom 18 px.
+  `_syncControlBar` now measures the bar and publishes `--st-band-lift`, which the three
+  bottom-anchored offsets add, and the overlap probe deliberately reads the UN-LIFTED geometry so a
+  lift cannot oscillate against its own result. The strip's gradient is also tap-transparent
+  (`pointer-events: none` on the strip, `auto` on the pills), so an overlap that does occur can never
+  eat a move-button tap. The lift is re-measured on scroll as well as on render — on a `document`
+  capture listener, because scroll events do not bubble — and the trigger lives on
+  `renderBenchTargets`, which runs every turn of a real battle. Verified live with a colliding bar
+  seated deliberately at 747: 61 px of overlap before, 92 px lift, 4 px clear after, with the probe
+  in the gradient hitting PS's own log content and the probe on a pill hitting the pill.
+- Smaller, same sweep: the `.conf-veto` badge struck its OWN text on top of the strike the move
+  button already draws, so "VETO" read as a typo (`styles/overlay.css`); the PP gauge and the
+  format sentinel were capped at `40vh`/`34vh` with no viewport bound, so a gauge that starts low
+  could hang its last line off the bottom of the screen (now `min(<cap>, calc(100vh - <offset>))`);
+  and `bindDrawer`'s adopt-an-existing-drawer exit returned before installing the layout signals, so a
+  second content-script injection got a HUD whose band never re-measured — no re-anchor on resize,
+  and a bottom band that drifted back over the move bar on the first scroll. Both exits now bind,
+  and `tests/dom_check.js` pins it with a doc whose `querySelectorAll` searches the mounted subtree
+  (the old stub searched only the button registry, which made adoption unreachable and the section
+  unable to fail); removing the fix fails 2 of the 6 new checks.
+- **A multi-line WebSocket frame was delivered twice, and the second copy is not harmless.** The
+  page APPENDS every line it receives to `battle.log` as well as delivering it on the socket, so a
+  line the socket had already forwarded was still sitting in the log for the next 250 ms poll to
+  hand over again. The dedupe could only ever remember ONE line, so after a three-line frame
+  (`|turn|5` + `|move|...` + `|-boost|...`) it held the frame's LAST line, the poll found the
+  earlier two "new", and all three were re-delivered. Most protocol lines are absolute and hide
+  it; the relative ones do not — `|-boost|p1a|atk|1` twice is +2, a `|pp|` is decremented twice, and
+  `|turn|n` twice double-ticks Trick Room, the weather and terrain timers and BOTH Protect-rhythm
+  counters, because `_onTurn` is not idempotent. The socket path now remembers the run it delivered
+  and the poll claims it POSITIONALLY at its cursor: only a run sitting exactly at the cursor is
+  claimed (so a genuine repeat appended later is still delivered), and a batch that does not line up
+  is dropped rather than retried, so it can never stall a later batch or grow without bound. Pinned
+  in `tests/injected_bridge.js` (29, up from 23) with a multi-line frame AND a frame the client
+  never mirrors into the log; both new checks were verified to FAIL with the claim removed (the
+  a three-line frame was re-delivered 3 times over).
+- **`SETUP_MOVES` was missing eight real setup moves** (`src/util.js`), so clicking one was priced
+  as a NO-OP by the quiescence tier whose entire purpose is to price that click — the same blind
+  spot as a missed Earthquake being read as a connection. Added to BOTH tables, with the effects
+  the dex cannot answer (21 -> 29): Fillet Away (+2 Atk/SpA/Spe, 50% of max HP — the failure below
+  that fraction is already modelled), Coil, Hone Claws, Cosmic Power, Autotomize, No Retreat,
+  Meditate, Sharpen. Still excluded and now pinned by test: Curse (type-conditional), Double Team /
+  Minimize (Evasion Clause), Acupressure (random), Geomancy (charges a turn). No Retreat's
+  switch-lock is the one part NOT modelled — stated rather than invented. `shelter` was in
+  `PROTECT_MOVES` AND in the pruner's conditional-power DAMAGING list, which cannot both be right;
+  it is neither, so it is gone from both, and `PROTECT_MOVES ∩ UNPREDICTABLE_DAMAGE` is now asserted
+  to be empty. `tests/quiescence_check.js` pinned the HP-costing setup list and is updated (Fillet
+  Away really does pay half its HP; pricing it as free at any HP is the wrong rule).
+- **The speed floor converted an observation its own ceiling cannot see** (`src/set_pruner.js` +
+  `src/state_manager.js`). `maxSpeedForSet` is set-STATIC: it knows a set's item and ability but not
+  the weather, the terrain, Tailwind or a Speed stage. So a Swift Swim body in rain moves first
+  through a ceiling this rule computes as too low, and every one of that body's REAL sets was
+  eliminated for being "too slow". The conversion now REFUSES rather than guesses
+  (`set_pruner.speedFloorUnsound`, consulted by `applySpeedFloor`, `handleSpeedFloorEvent` and
+  `_onSpeedFloor`), which matters because `mon.speedFloor` is read as a real bound by the world
+  sampler, the endgame solver and the Trick Room queue. On a clean board — no weather, no terrain,
+  no Tailwind, no Speed stage — nothing fires and the rule behaves exactly as before.
+  Protosynthesis / Quark Drive stay a documented residual (see below).
+- **Knock Off's "connected" latch was set by ANY damage to the target that turn**
+  (`src/state_manager.js`). The move was stamped when merely AIMED, and the latch had no `[from]`
+  test, so a Knock Off into a Protect plus the target's burn / weather / hazard tick in the same
+  turn read as the move landing; `_resolveKnockOffs` then set the item fact, which drives HARD
+  itemless / irremovable-Mega verdicts that prune the pool to itemless / Z / Mega sets for the rest
+  of the battle. It now requires a DIRECT hit — the same gate the Ground rule already uses.
+- **Two weathers could not double their ability's Speed** (`src/util.js`). `swiftswim` accepted only
+  `rain` (missing Primordial Sea's `heavyrain`, legal in this NatDex format) and `slushrush` only
+  `snow` (missing NatDex `hail`), while `chlorophyll` already handled both sun spellings. All three
+  now compare the weather FAMILY, so no legal weather misses.
+- **The receipt's clipboard fallback copied nothing and reported success** (`src/content.js`).
+  `execCommand('copy')` acts on the document's CURRENT SELECTION, and the textarea was never
+  attached and never selected — so the button put the user's previous selection (or nothing) on the
+  clipboard while the HUD claimed success. It now attaches, focuses and selects the field and
+  returns the payload only when the copy actually happened; an unavailable `execCommand` is a
+  failure, not a silent no-op.
+- **`clear()` orphaned the Turn-0 advisory card** (`src/ui_overlay.js`). The bulk selector omitted
+  `.st-lead-advisory` and the handle was then reset underneath a node that was still mounted, so a
+  new battle mounted a SECOND card and `dismissLeadAdvisory()` could never remove the first. The
+  card is now dropped by handle as well as by selector. Same shape: an advisory with a non-empty
+  `leads` array whose rows carry no species used to render the empty box its own contract promised
+  never to render; it now dismisses.
+- **The optional LLM readout could never succeed** (`src/config.js`, `src/background.js`,
+  `src/llm_client.js`). A 600 ms budget for a generative round trip, written twice — the config's
+  `llm.timeoutMs` and a separate literal in the service worker — with nothing keeping them in
+  agreement, and with the caller's own identical deadline racing the worker's abort so the honest
+  `'timeout'` always lost to a silent `null`. The budget is now 20 s, the worker reads it off the
+  request (one source of truth, with the fallback still bounded for an untrusted message), and the
+  caller's backstop carries a 2 s grace so a real answer can land. `tests/config_check.js` asserts
+  the two budgets agree by reading both sources.
+- **The API key could reach the PAGE'S OWN storage** (`src/llm_client.js`). A content script's
+  `localStorage` IS the ladder site's origin storage, and `_storageSet`'s fallback wrote the whole
+  config blob — `apiKey` included — there, where any script on play.pokemonshowdown.com can read it.
+  The fallback now strips the secret; the `chrome.storage.local` path is unchanged.
+- **`sampleWorld` restored `this.database` without `try/finally`** (`src/world_sampler.js`), so a
+  throw from `_pick` / `_monFromSet` / `_violationsFor` left the sampler permanently bound to a
+  caller's database and every later sample drew from the wrong pool.
+- Smaller, same sweep: `immunityReason('Ground', {item: 'Air Balloon'})` reported "Air Balloon / Air
+  Balloon" (a duplicated push — the id is already rewritten to the display name the list contains);
+  the `|init|` branch reset every per-battle field EXCEPT `lastEvaluateTurn` / `pendingReadout`, so a
+  new battle whose turn number collided with the previous battle's last evaluated turn reused the
+  stale ranking instead of evaluating (`src/content.js`); and the options page loaded neither
+  `lib/species-abilities.js` nor `lib/species-aliases.js`, so its team validation reported "Unknown
+  species" for a paste the engine accepts.
 - **Four unsound eliminations in the negative-space ability deduction, found by a review sweep.**
   Each one let the pruner drop a candidate set on evidence that does not disprove it, which is the
   single failure mode this tier was built to avoid. All four are pinned by new checks in
@@ -52,6 +195,35 @@ provenance — why a number is what it is, and what was tried and rejected. Entr
   the deliberation floor on a new battle but deliberately cannot clear the rating (the constructor
   seeds it from `opts.rating` after calling `reset()`), so the broker clears it alongside the floor.
   Harmless while `clock.ratingBands` ships off; wrong the moment it does not.
+
+### Known — open, from the same review sweep
+
+Findings the sweep confirmed but did NOT close, because closing them soundly needs a change bigger
+than the bug. Stated here rather than hidden:
+
+- **`residualOrder.trust` ships at 1** (`src/set_pruner.js`), converting a residual-order bracket
+  into a speed fact. The parser requires only adjacency, opposite sides, same turn and "carries a
+  clause, not `move:`" — while the pruner's own comment warns that a switch-in, a consumed berry or
+  a weather heal can reorder the same block. The narrow fix is to require the bracket's two bodies
+  to be the ones the move order already named.
+- **Protosynthesis / Quark Drive Speed** can be 1.5x from sun / Electric Terrain WITHOUT Booster
+  Energy, and `maxSpeedForSet` applies that multiplier only when the set holds the item. The new
+  refusal predicate names this in place; the fix is in the ceiling, not the refusal.
+- **`shelter`'s real effect is unverified.** It is out of both wrong lists but deliberately NOT
+  added to `SETUP_MOVES`/`SETUP_BOOSTS`: the vendored dex carries no effect data for it, and this
+  table's contract is single-correct-value game rules, so guessing a boost would be worse than the
+  gap. One-line add once the effect is confirmed (`BOOST_KEYS` already supports `evasion`).
+- **G-Max Steelsurge is modelled as a flat 12.5%** in `util.hazardPercent`, while `calc_engine`
+  computes it from Steel effectiveness the way Stealth Rock uses Rock — so the two disagree for a
+  Rock/Ice body (4x, really 50%) and a Steel/Fairy body (0.25x). This number feeds the Heavy-Duty
+  Boots proof, and `state_manager` also gives `steelspikes` two layers when Steelsurge lays one.
+- **Two HUDs sharing one document double-handle a bench tap.** `renderBenchTargets` ADOPTS an
+  existing strip from the DOM while `_benchBound` is a per-instance flag, so a second HUD adopts the
+  first's strip, adds a second delegated listener, and one tap fires both. `bindDrawer` is also the
+  one render path that trusts a cached node without a liveness check.
+- **`mon.knockOffSurvived` is documented and read but never written** (`ARCHITECTURE.md`,
+  `src/set_pruner.js`) — harmless as an `||` alternative, but the documented control surface is
+  wrong. Either write it or drop it.
 
 ### Changed
 

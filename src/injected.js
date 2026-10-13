@@ -10,7 +10,8 @@
  *   2. incoming frames   - addEventListener('message') AND the onmessage property, on every
  *                          WebSocket instance ever constructed
  *   3. a polling fallback over window.app.curRoom.battle.log every 250 ms, kept behind a
- *      cursor so no line is ever emitted twice
+ *      cursor so no line is ever emitted twice — the cursor is also advanced over the runs the
+ *      socket path already delivered, since the page mirrors those same lines into the log
  *   4. the PP snapshot (ARCHITECTURE §6.4): the page's own battle object holds every body's
  *      move slots with their REAL pp/maxpp, which the protocol stream never reveals for the
  *      opponent. Once per poll — and only when a number actually changed — each slot is
@@ -55,6 +56,32 @@
    * is only ever skipped when the SOCKET was the last thing to deliver it.
    */
   var lastForwarded = { line: null, kind: null };
+
+  /* The socket path and the poll path see the same battle from two directions.
+   *
+   * The page APPENDS every protocol line it receives to `battle.log` as well as delivering it on
+   * the socket, so a line the socket already forwarded is still sitting in the log for the next
+   * poll to hand over a second time. `lastForwarded` can only remember ONE line, and a single
+   * WebSocket frame routinely carries several (`|turn|3` then `|move|...` then `|-damage|...`), so
+   * after a three-line frame that slot holds the frame's LAST line and the poll finds the earlier
+   * two "new" — re-delivering all three. It is worth being precise about the damage, because most
+   * protocol lines are absolute and hide it: `|-boost|p1a|atk|1` twice is +2, a `|pp|` is
+   * decremented twice, `_recordDamageObservation` records the hit twice, and `|turn|n` twice
+   * double-ticks Trick Room, the weather and terrain timers and both Protect-rhythm counters,
+   * because the state manager's turn hook is not idempotent. The existing tests only ever pushed
+   * ONE line per frame, which is why this stayed invisible.
+   *
+   * So the socket path now remembers WHAT IT DELIVERED, batch by batch, and the poll tries to
+   * claim that run positionally before it reads anything. The test is deliberately narrow: the run
+   * is claimed only when it sits EXACTLY at the cursor, so a line the socket delivered is never
+   * credited to a log entry the poll still has to read, and a genuine repeat appended later in the
+   * log is outside the batch's own run and therefore still delivered (the B14 rule). The queue is
+   * drained on every poll — a batch gets one chance to be claimed and is then forgotten — because
+   * the log, not this bookkeeping, is the authority on what happened: a batch that does not align
+   * (a line the client never logs, a frame the page reorders) simply falls back to the old
+   * last-line comparison, and it can never block a later batch or grow without bound.
+   */
+  var pendingSocketBatches = [];
 
   /* The last inbound event object we forwarded.
    *
@@ -119,11 +146,18 @@
     if (typeof text !== 'string' || !text) return;
     // A single WebSocket frame can carry several newline separated protocol lines.
     var parts = text.split('\n');
+    var delivered = [];
     for (var i = 0; i < parts.length; i++) {
       var line = parts[i];
       if (line && line.charAt(line.length - 1) === '\r') line = line.slice(0, -1);
-      if (line) forward(line, kind);
+      if (line) {
+        forward(line, kind);
+        delivered.push(line);
+      }
     }
+    // Only INBOUND battle traffic is mirrored into battle.log, so only that needs claiming; see
+    // pendingSocketBatches for why the whole run has to be remembered and not just its last line.
+    if (kind === 'recv' && delivered.length) pendingSocketBatches.push(delivered);
   }
 
   /* ------------------------------------------------------------------ websocket capture */
@@ -360,6 +394,32 @@
 
   var pollCursor = 0;
 
+  /**
+   * Claim the log entries a socket batch already delivered, then forget the batch.
+   *
+   * A batch is only claimed when its whole run sits exactly at the cursor: the cursor is where the
+   * poll's own delivery resumes, so anything before it has already been handed over and anything
+   * after it is genuinely unread. A batch that does not line up is dropped rather than retried
+   * forever, which keeps an unloggable line (one the client never mirrors into battle.log) from
+   * stalling every later batch; the poll's own last-line comparison still covers the common case.
+   */
+  function claimPendingSocketBatches(log) {
+    while (pendingSocketBatches.length) {
+      var batch = pendingSocketBatches.shift();
+      if (!batch || !batch.length) continue;
+      var n = 0;
+      while (n < batch.length && pollCursor + n < log.length && log[pollCursor + n] === batch[n]) n++;
+      if (n === batch.length) {
+        pollCursor += n;
+        // The positional claim owns this delivery now, so the single-line fallback must step
+        // aside: a GENUINE repeat of the last socket line is still in the log and must be
+        // delivered, and the value comparison could not tell it from the copy we just consumed.
+        lastForwarded.line = null;
+        lastForwarded.kind = null;
+      }
+    }
+  }
+
   function pollBattleLog() {
     try {
       var app = window.app;
@@ -367,7 +427,11 @@
       var battle = room && room.battle;
       var log = battle && battle.log;
       if (!log || typeof log.length !== 'number') return;
-      if (log.length < pollCursor) pollCursor = 0; // room reset / new battle
+      if (log.length < pollCursor) { // room reset / new battle
+        pollCursor = 0;
+        pendingSocketBatches.length = 0;
+      }
+      claimPendingSocketBatches(log);
       for (; pollCursor < log.length; pollCursor++) {
         var line = log[pollCursor];
         if (typeof line !== 'string' || !line) continue;

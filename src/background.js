@@ -8,7 +8,15 @@
 
 const GEMINI_MODEL = 'gemini-3.5-flash-lite';
 const OPENROUTER_MODEL = 'google/gemini-2.0-flash-lite-001';
-const REQUEST_TIMEOUT_MS = 600;
+/* Fallback abort budget, used only when the caller sends none.
+ *
+ * This file must not own a second opinion about the budget. It used to hardcode 600 ms while
+ * src/config.js said 600 ms too — and no hosted model answers in 600 ms, so the abort fired
+ * before any provider could reply and every configured call failed. The budget now travels WITH
+ * the request (src/llm_client.js sends `timeoutMs`, read from config.js, the single source of
+ * truth); this literal is the safety net for a caller that sends nothing, and
+ * tests/config_check.js asserts it matches config's `llm.timeoutMs` so the two cannot drift. */
+const DEFAULT_REQUEST_TIMEOUT_MS = 20000;
 
 function geminiRequest(cfg) {
   return {
@@ -56,8 +64,14 @@ async function handleLLMRequest(payload) {
     return { ok: false, error: 'missing prompt' };
   }
   const spec = cfg.provider === 'openrouter' ? openRouterRequest(cfg) : geminiRequest(cfg);
+  // The caller's budget when it sent one, otherwise the fallback above. Guarded, because a
+  // message is untrusted input: a missing, zero, negative or non-finite value must fall back
+  // rather than abort immediately (0 would kill every request) or never (Infinity).
+  const budget = (typeof cfg.timeoutMs === 'number' && isFinite(cfg.timeoutMs) && cfg.timeoutMs > 0)
+    ? cfg.timeoutMs
+    : DEFAULT_REQUEST_TIMEOUT_MS;
   const controller = new AbortController();
-  const timer = setTimeout(function () { controller.abort(); }, REQUEST_TIMEOUT_MS);
+  const timer = setTimeout(function () { controller.abort(); }, budget);
   try {
     const res = await fetch(spec.url, {
       method: 'POST',

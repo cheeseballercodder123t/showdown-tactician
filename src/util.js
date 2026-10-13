@@ -27,8 +27,18 @@
   const DEFAULT_IVS = { hp: 31, atk: 31, def: 31, spa: 31, spd: 31, spe: 31 };
   const ZERO_EVS = { hp: 0, atk: 0, def: 0, spa: 0, spd: 0, spe: 0 };
 
+  /**
+   * The moves that actually BLOCK an incoming attack: the nine protection moves plus Max Guard.
+   *
+   * `shelter` used to sit here and it does not belong: no generation gives Shelter any protection
+   * effect, so the entry made `isProtect` true for a move that shields nothing, and _trackProtect
+   * (src/state_manager.js), the tempo rhythm (src/tempo_vector.js) and `quiescence.blockProtect`
+   * would all credit a blocked attack from it. It was ALSO in the pruner's UNPREDICTABLE_DAMAGE
+   * list — a list of conditional-power DAMAGING moves — and those two readings cannot both be
+   * right, so it is now in neither: it is neither a shield nor an HP-moving move.
+   */
   const PROTECT_MOVES = new Set(['protect', 'detect', 'kingsshield', 'banefulbunker', 'spikyshield',
-    'silktrap', 'burningbulwark', 'obstruct', 'shelter', 'maxguard']);
+    'silktrap', 'burningbulwark', 'obstruct', 'maxguard']);
   const RECOVERY_MOVES = new Set(['recover', 'roost', 'slackoff', 'softboiled', 'milkdrink', 'shoreup',
     'healorder', 'synthesis', 'moonlight', 'morningsun', 'strengthsap', 'wish', 'rest']);
   const RECOVERY_8PP = new Set(['recover', 'roost', 'slackoff', 'softboiled', 'milkdrink', 'shoreup', 'healorder']);
@@ -81,7 +91,8 @@
   }
   const SETUP_MOVES = new Set(['swordsdance', 'nastyplot', 'dragondance', 'calmmind', 'bulkup', 'quiverdance',
     'shellsmash', 'irondefense', 'amnesia', 'agility', 'rockpolish', 'shiftgear', 'clangoroussoul',
-    'tidyup', 'victorydance', 'takeheart', 'growth', 'howl', 'workup', 'tailglow', 'bellydrum']);
+    'tidyup', 'victorydance', 'takeheart', 'growth', 'howl', 'workup', 'tailglow', 'bellydrum',
+    'filletaway', 'coil', 'honeclaws', 'cosmicpower', 'autotomize', 'noretreat', 'meditate', 'sharpen']);
 
   /* What a setup move does to ITS USER. These are GAME RULES with a single correct value, like
    * "Trick Room lasts 5 turns" or "Earthquake is 100 BP" — not heuristics, and not guesses about a
@@ -89,7 +100,7 @@
    * question: `calc.MOVES[9]` carries only what a DAMAGE calculator needs, and to a damage
    * calculator a stat boost is an INPUT, not an effect, so `getMoveData('Dragon Dance')` knows the
    * move is setup and nothing about the +1 Atk / +1 Spe it grants. Every entry below is one of the
-   * 21 SETUP_MOVES, so a move can never be classified as setup and then priced as a no-op.
+   * 29 SETUP_MOVES, so a move can never be classified as setup and then priced as a no-op.
    *
    * `hpCostPct` is the fraction of MAX HP the user pays (Belly Drum 50, Clangorous Soul 33); the
    * move FAILS below that fraction (Showdown refuses it), and the caller treats a failed setup as
@@ -97,7 +108,18 @@
    *
    * NOT MODELLED, deliberately: weather- and screen-dependent variants (Growth is +1/+1 in clear
    * weather and +2/+2 in sun). The no-weather value is the one below; the extension that consumes
-   * this table prices those as their base value instead of inventing a weather rule. */
+   * this table prices those as their base value instead of inventing a weather rule.
+   *
+   * `accuracy` IS modelled (it is one of BOOST_KEYS), so Coil and Hone Claws are recorded exactly
+   * rather than rounded down to their Attack. Also NOT MODELLED inside an entry, and stated here
+   * rather than hidden: No Retreat makes its user unable to switch out and the table has no
+   * switch-lock field, so only its five +1 boosts are priced; Fillet Away's HP price IS modelled,
+   * through the same `hpCostPct` shape Belly Drum already uses.
+   *
+   * NOT IN THIS TABLE, deliberately, so that it is not "fixed" later: Curse (its effect depends on
+   * the user's type), Double Team and Minimize (Evasion Clause), Acupressure (the boosted stat is
+   * random) and Geomancy (it spends a turn charging). Shelter is absent for a different reason: it
+   * is not a setup move this file can price without guessing. */
   const SETUP_BOOSTS = {
     swordsdance: { atk: 2 },
     nastyplot: { spa: 2 },
@@ -119,7 +141,15 @@
     howl: { atk: 1 },
     workup: { atk: 1, spa: 1 },
     tailglow: { spa: 3 },
-    bellydrum: { atk: 6, hpCostPct: 50 }
+    bellydrum: { atk: 6, hpCostPct: 50 },
+    filletaway: { atk: 2, spa: 2, spe: 2, hpCostPct: 50 },
+    coil: { atk: 1, def: 1, accuracy: 1 },
+    honeclaws: { atk: 1, accuracy: 1 },
+    cosmicpower: { def: 1, spd: 1 },
+    autotomize: { spe: 2 },
+    noretreat: { atk: 1, def: 1, spa: 1, spd: 1, spe: 1 },
+    meditate: { atk: 1 },
+    sharpen: { atk: 1 }
   };
 
   const BOOST_KEYS = ['atk', 'def', 'spa', 'spd', 'spe', 'accuracy', 'evasion'];
@@ -127,7 +157,7 @@
   /**
    * setupBoosts(name) -> { atk?, ..., hpCostPct? } | null
    * A copy, so a caller can merge it into a stat table without writing through the table above.
-   * Null for anything that is not one of the 21 SETUP_MOVES (an unknown move is not a setup).
+   * Null for anything that is not one of the 29 SETUP_MOVES (an unknown move is not a setup).
    */
   function setupBoosts(name) {
     const id = toID(name);
@@ -647,8 +677,10 @@
       for (let i = 0; i < abilityList.length; i++) {
         if (entry.abilities.indexOf(abilityList[i]) !== -1) reasons.push(abilityName(abilityList[i]));
       }
+      // ONE push. An Air Balloon id is rewritten to the display name the items list contains, so
+      // the first test already fires for it; a second, id-only push used to append it again and the
+      // HUD string read 'Air Balloon / Air Balloon'.
       if (entry.items.indexOf(itemId === 'airballoon' ? 'Air Balloon' : opts.item) !== -1 && moveType === 'Ground') reasons.push('Air Balloon');
-      if (moveType === 'Ground' && itemId === 'airballoon') reasons.push('Air Balloon');
     }
     if (opts.itemless && toID(moveType) === '') { /* noop */ }
     return reasons.length ? reasons.join(' / ') : null;
@@ -793,10 +825,15 @@
         toID(item) === 'powerbracer' || toID(item) === 'powerbelt' || toID(item) === 'powerlens' ||
         toID(item) === 'powerband') mult *= 0.5;
     if (opts.tailwind) mult *= 2;
-    if (ability === 'swiftswim' && weather === 'rain') mult *= 2;
-    if (ability === 'chlorophyll' && (weather === 'sun' || weather === 'harshsun')) mult *= 2;
-    if (ability === 'sandrush' && weather === 'sandstorm') mult *= 2;
-    if (ability === 'slushrush' && weather === 'snow') mult *= 2;
+    // The weather is compared by FAMILY, not by its raw field value: Heavy Rain still IS rain (it
+    // is what Primordial Sea reports) and NatDex Hail reports 'hail', so the raw comparisons this
+    // used to make silently priced a Swift Swim body at half its Speed in Heavy Rain and a Slush
+    // Rush body at half in Hail — and Speed order is a decision input. `weatherFamily` returns the
+    // id unchanged for everything it does not remap, so the already-correct cases are untouched.
+    if (ability === 'swiftswim' && weatherFamily(weather) === 'rain') mult *= 2;
+    if (ability === 'chlorophyll' && weatherFamily(weather) === 'sun') mult *= 2;
+    if (ability === 'sandrush' && weatherFamily(weather) === 'sandstorm') mult *= 2;
+    if (ability === 'slushrush' && weatherFamily(weather) === 'snow') mult *= 2;
     if (ability === 'surgesurfer' && terrain === 'electric') mult *= 2;
     if (opts.paradoxSpeedBoost) mult *= 1.5;
     if (opts.unburden) mult *= 2;

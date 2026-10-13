@@ -1157,7 +1157,14 @@
           this._addItemEvidence(mon, 'Took ' + from.replace(/^\[from\]\s*/, '') + ' damage: no Heavy-Duty Boots');
         }
         if (/trick|swap/i.test(from)) { /* handled by item events */ }
-        if (mon.knockOffTurn === this.state.turn) mon.knockOffSawDamage = true;
+        // A DIRECT hit only, for exactly the reason the ground rule demands one: `from` is the
+        // protocol's own `[from] ...` clause and a direct hit carries none, so a residual tick (a
+        // burn, sandstorm, Leech Seed, hazard or recoil) cannot stand in for the move landing.
+        // Without this test a Knock Off into a Protect or a miss, plus the target's burn tick in
+        // the same turn, reads as "Knock Off connected" and _resolveKnockOffs concludes the item
+        // is irremovable or absent — a HARD verdict that prunes the pool to itemless / Z / Mega
+        // sets for the rest of the battle.
+        if (mon.knockOffTurn === this.state.turn && !from) mon.knockOffSawDamage = true;
       }
       if (kind === 'heal' && /sys|item: leftovers|item: black sludge|item: shell bell/i.test(from)) {
         mon.turnedThisTurn = false;
@@ -1968,7 +1975,16 @@
         (event.species ? this._findBySpecies(side, event.species) : null) ||
         (side === this.state.oppSide ? this.state.active.opp : this.state.active.my);
       if (!mon) return;
-      if (value > mon.speedFloor) mon.speedFloor = value;
+      // The order is only evidence about a STATIC Speed while nothing the ceiling cannot see could
+      // explain it. `U.maxSpeedForSet` knows the set's item and ability but not the weather, the
+      // terrain, Tailwind or a Speed stage, so a floor raised through one of those is a wrong
+      // bound — and every consumer of `mon.speedFloor` (the pruner's elimination, the world
+      // sampler, the endgame solver, the Trick Room queue) reads it as a real one. The predicate
+      // lives on the pruner because it needs the candidate pool; with no pruner nothing eliminates
+      // anything, so the floor is recorded exactly as before.
+      const unsound = !!(this.pruner && typeof this.pruner.speedFloorUnsound === 'function' &&
+        this.pruner.speedFloorUnsound(mon, this.state));
+      if (!unsound && value > mon.speedFloor) mon.speedFloor = value;
       const reason = event.reason || 'moved first';
       if (mon.speedEvidence.indexOf(reason) === -1) mon.speedEvidence.push(reason);
       if (this.pruner && typeof this.pruner.handleSpeedFloorEvent === 'function') {

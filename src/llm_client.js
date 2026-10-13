@@ -24,7 +24,10 @@
     return (typeof ST.configGet === 'function') ? ST.configGet(path, fallback) : fallback;
   }
 
-  const TIMEOUT_MS = cfgGet('llm.timeoutMs', 600);
+  // The bridge default for a build without config.js. It must stay equal to config's
+  // `llm.timeoutMs` (which is what actually ships); 600 ms was too short for any provider to
+  // answer, which made every configured call fail. tests/config_check.js guards the agreement.
+  const TIMEOUT_MS = cfgGet('llm.timeoutMs', 20000);
   const GEMINI_MODEL = cfgGet('llm.geminiModel', 'gemini-3.5-flash-lite');
   const OPENROUTER_MODEL = cfgGet('llm.openrouterModel', 'google/gemini-2.0-flash-lite-001');
   const GEMINI_ENDPOINT = cfgGet('llm.geminiEndpoint', 'https://generativelanguage.googleapis.com/v1beta/models/');
@@ -79,7 +82,15 @@
       } catch (e) { /* fall through */ }
       try {
         if (typeof localStorage !== 'undefined' && localStorage) {
-          localStorage.setItem('showdownTactician.config', JSON.stringify(obj));
+          // SECURITY: this fallback runs inside a CONTENT SCRIPT, so `localStorage` here is the
+          // LADDER SITE'S origin storage (play.pokemonshowdown.com), not a sandbox of our own.
+          // Writing the settings blob there put the user's API KEY one page script away from being
+          // read off the ladder. The secret is stripped before anything reaches page-origin
+          // storage: a non-secret setting losing its fallback round-trip is recoverable, a leaked
+          // key is not. (chrome.storage.local, the real home, still gets the whole object.)
+          const safe = Object.assign({}, obj || {});
+          delete safe.apiKey;
+          localStorage.setItem('showdownTactician.config', JSON.stringify(safe));
           return true;
         }
       } catch (e2) { /* ignore */ }
@@ -182,7 +193,12 @@
       return new Promise(function (resolve) {
         let settled = false;
         const done = function (value) { if (!settled) { settled = true; resolve(value); } };
-        const timer = setTimeout(function () { done(null); }, self.timeoutMs);
+        // The budget above belongs to the ONE provider round trip; this timer is the backstop for a
+        // bridge that never answers at all, so it is deliberately longer than the budget the worker
+        // aborts at. On an identical deadline the two race and the worker's honest 'timeout' loses
+        // to a silent null; the grace lets the real failure be the one reported.
+        const GRACE_MS = 2000;
+        const timer = setTimeout(function () { done(null); }, self.timeoutMs + GRACE_MS);
 
         const finish = function (value) { clearTimeout(timer); done(value); };
 
@@ -196,7 +212,10 @@
                 provider: cfg.provider || 'gemini',
                 apiKey: cfg.apiKey,
                 system: SYSTEM_PROMPT,
-                prompt: prompt
+                prompt: prompt,
+                // The ONE abort budget, sent with the request so src/background.js does not keep a
+                // second opinion about it. Owned here (config.js) rather than in the worker.
+                timeoutMs: self.timeoutMs
               }, function (response) {
                 responded = true;
                 if (chrome.runtime && chrome.runtime.lastError) { self._directFetch(cfg, prompt).then(finish); return; }

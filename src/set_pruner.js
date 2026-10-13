@@ -85,6 +85,12 @@
   // move (Seismic Toss = the user's level), a weight/speed/HP-ratio move or a boost-scaling move
   // computes the same base power for every candidate spread, so the observed number would
   // "prove" whichever set happened to be modelled first. They are skipped rather than trusted.
+  //
+  // A STATUS move that moves HP (Pain Split) belongs here too — the library cannot predict its
+  // number either — but a status move that moves no HP at all does not. `shelter` used to be listed
+  // and it is the second kind: it is not a damaging move, and it was ALSO in util.PROTECT_MOVES,
+  // and those two readings cannot both be true. It is now in neither list; see the note on
+  // PROTECT_MOVES in src/util.js.
   const UNPREDICTABLE_DAMAGE = new Set([
     'seismictoss', 'nightshade', 'sonicboom', 'dragonrage', 'superfang', 'naturesmadness',
     'ruination', 'endeavor', 'counter', 'mirrorcoat', 'metalburst', 'comeuppance', 'finalgambit',
@@ -94,7 +100,7 @@
     'punishment', 'fling', 'naturalgift', 'beatup', 'dreameater', 'synchronoise', 'grasspledge',
     'waterpledge', 'firepledge', 'payback', 'avalanche', 'revenge', 'assurance', 'boltbeak',
     'fishiousrend', 'echoedvoice', 'rollout', 'iceball', 'furycutter', 'brine', 'venoshock',
-    'hex', 'acrobatics', 'facade', 'brutalswing', 'lastrespects', 'rage', 'bide', 'shelter'
+    'hex', 'acrobatics', 'facade', 'brutalswing', 'lastrespects', 'rage', 'bide'
   ]);
 
   const CHOICE_REASON = 'Choice lock: 2+ distinct moves in one stint => no Choice item';
@@ -524,6 +530,60 @@
     }
 
     /**
+     * speedFloorUnsound(mon, state) -> boolean
+     *
+     * Is the observed SPEED ORDER safe to convert into a floor?
+     *
+     * `U.maxSpeedForSet` is a SET-STATIC ceiling: it knows the set's item and ability but not the
+     * weather, the terrain, Tailwind or a Speed stage — all of which the protocol PRINTS and the
+     * engine already holds. A Swift Swim body in rain, a Chlorophyll body in sun, a Surge Surfer
+     * body on Electric Terrain, a body behind Tailwind, or one that was simply at +1 Speed moves
+     * first through a ceiling this rule computes as too low — so every one of that body's REAL sets
+     * is eliminated although the order is perfectly consistent with them. And because the floor is
+     * also read as a Speed bound by the world sampler, the endgame solver and the Trick Room queue,
+     * an unsound floor is not a local error.
+     *
+     * The conversion therefore REFUSES rather than guesses. A refused floor costs one observation;
+     * an unsound one corrupts the pool for the rest of the battle. On a clean board — no weather,
+     * no terrain, no Tailwind and no Speed stages — nothing here fires and the rule works as before.
+     *
+     * NOT modelled, so it stays a documented residual: Protosynthesis / Quark Drive can raise Speed
+     * by 1.5x from SUN / Electric Terrain without Booster Energy, and `maxSpeedForSet` only applies
+     * that multiplier when the set holds the item.
+     */
+    speedFloorUnsound(mon, state) {
+      if (!mon) return true;
+      const boosts = mon.boosts || null;
+      if (boosts && (boosts.spe | 0) > 0) return true;
+      const field = (state && state.field) || {};
+      const tw = field.tailwind || {};
+      // Tailwind doubles every body on its side, so it makes the ORDER uninformative about Speed.
+      const onMyTeam = !!(state && Array.isArray(state.myTeam) && state.myTeam.indexOf(mon) !== -1);
+      const side = onMyTeam ? ((state && state.mySide) || 'p1') : ((state && state.oppSide) || 'p2');
+      if (tw[side]) return true;
+      const family = U.weatherFamily ? U.weatherFamily(field.weather || '') : U.toID(field.weather || '');
+      const terrain = U.toID(field.terrain || '');
+      if (!family && !terrain) return false;
+      // The pool when it is seeded, otherwise the species' own ability list — the wider question
+      // ("could this body have the ability at all") is the conservative one here.
+      let pool = (mon.candidateSets && mon.candidateSets.length) ? mon.candidateSets : null;
+      if (!pool && mon.possibleAbilities && mon.possibleAbilities.length) {
+        pool = mon.possibleAbilities.map(function (a) { return { ability: a }; });
+      }
+      if (!pool) return false;
+      for (let i = 0; i < pool.length; i++) {
+        const id = U.toID((pool[i] && pool[i].ability) || '');
+        if (!id) continue;
+        if (id === 'swiftswim' && family === 'rain') return true;
+        if (id === 'chlorophyll' && family === 'sun') return true;
+        if (id === 'sandrush' && family === 'sandstorm') return true;
+        if (id === 'slushrush' && family === 'snow') return true;
+        if (id === 'surgesurfer' && terrain === 'electric') return true;
+      }
+      return false;
+    }
+
+    /**
      * Dynamic Speed Bracket Pruning: drop every set whose ceiling Speed cannot reach the
      * established floor. Also tightens mon.speedCeiling when survivors collapse.
      */
@@ -532,6 +592,10 @@
       const floor = Math.max(mon.speedFloor | 0, 0);
       if (!floor) return { pruned: false, dropped: 0, floor: 0, survivors: this._poolFor(mon) };
       const pool = this._poolFor(mon);
+      // The observation is refused, not the conclusion re-weighted: see speedFloorUnsound.
+      if (this.speedFloorUnsound(mon, state)) {
+        return { pruned: false, dropped: 0, floor: floor, survivors: pool, unsound: true };
+      }
       let dropped = 0;
       const survivors = [];
       for (let i = 0; i < pool.length; i++) {
@@ -795,6 +859,13 @@
         }
       }
       if (!mon) return { pruned: false, dropped: 0, floor: 0, survivors: [] };
+      // Refuse the observation before it becomes a floor: see speedFloorUnsound. The ORDER is still
+      // recorded as evidence (it did happen), it just is not converted into a Speed bound.
+      if (this.speedFloorUnsound(mon, state)) {
+        this._addEvidence(mon, 'Speed order seen but not converted to a floor (' +
+          (event.reason || 'moved first') + '): weather / terrain / Tailwind / a Speed stage could explain it');
+        return { pruned: false, dropped: 0, floor: mon.speedFloor | 0, survivors: this._poolFor(mon), unsound: true };
+      }
       const value = Math.max(1, Math.round(event.value || 0));
       if (value > (mon.speedFloor | 0)) {
         mon.speedFloor = value;

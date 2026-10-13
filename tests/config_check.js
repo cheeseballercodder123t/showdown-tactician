@@ -26,6 +26,8 @@
  * Exit code 0 = every check passed.
  */
 'use strict';
+const fs = require('fs');
+const path = require('path');
 const H = require('./harness.js');
 
 /* --------------------------------------------------------------- tiny assert */
@@ -418,6 +420,50 @@ if (!ST.DenseStateEvaluator) {
   check('mutating evaluator.scale changes the output', Math.abs(wideScore) > Math.abs(baseScore) + 1e-6,
     baseScore + ' -> ' + wideScore);
 }
+
+/* ==================================== 5b. the LLM abort budget agrees everywhere */
+
+section('the LLM abort budget lives in config.js and the other writers agree with it');
+
+/* The budget used to be written down THREE times - config.js, background.js and the client's own
+ * fallback literal - all of them 600 ms. No hosted model answers in 600 ms, so the caller's timer
+ * and the service worker's abort both fired before any provider could reply and every configured
+ * call failed: the optional readout was dead while looking wired. config.js is now the single
+ * source of truth, the client sends `timeoutMs` with the request, and the worker aborts at the
+ * value it receives.
+ *
+ * These are SOURCE-level assertions on purpose. The service worker is a separate MV3 context that
+ * cannot import this module, so no runtime check can compare the two numbers; reading the files is
+ * the only way this suite can notice the literals drifting apart again. */
+const cfgSrc = fs.readFileSync(path.join(H.ROOT, 'src', 'config.js'), 'utf8');
+const bgSrc = fs.readFileSync(path.join(H.ROOT, 'src', 'background.js'), 'utf8');
+const clientSrc = fs.readFileSync(path.join(H.ROOT, 'src', 'llm_client.js'), 'utf8');
+const budget = cfg('llm.timeoutMs');
+
+check('llm.timeoutMs is a finite number', typeof budget === 'number' && isFinite(budget), String(budget));
+check('the budget is long enough for a provider to answer', budget >= 5000, budget + ' ms');
+check('...and still bounded, so a hung socket cannot hold the HUD forever', budget <= 60000, budget + ' ms');
+
+const bgFallback = /const DEFAULT_REQUEST_TIMEOUT_MS = (\d+);/.exec(bgSrc);
+check('background.js declares exactly one fallback budget', !!bgFallback &&
+  (bgSrc.match(/const DEFAULT_REQUEST_TIMEOUT_MS/g) || []).length === 1,
+  bgFallback ? bgFallback[1] : 'declaration not found');
+check('the worker fallback equals llm.timeoutMs (they cannot drift)',
+  !!bgFallback && Number(bgFallback[1]) === budget,
+  bgFallback ? bgFallback[1] + ' vs ' + budget : 'declaration not found');
+/* A bare name scan would be wrong here: `DEFAULT_REQUEST_TIMEOUT_MS` CONTAINS the old name, so
+ * the test is whether the abort timer is still handed a number of its own. `\b` would not save a
+ * substring match either way, so this asserts the actual defect instead of a variable name. */
+check('the worker no longer aborts on a literal of its own',
+  !/controller\.abort\(\)[\s\S]{0,40}\}, \d+\)/.test(bgSrc));
+check('the worker aborts at the budget the caller sent', /controller\.abort\(\)[\s\S]{0,40}\}, budget\)/.test(bgSrc));
+check('...and falls back when the caller sends none', /typeof cfg\.timeoutMs === 'number'/.test(bgSrc));
+
+check('the client sends the budget with the request', /timeoutMs: self\.timeoutMs/.test(clientSrc));
+const clientFallback = /cfgGet\('llm\.timeoutMs', (\d+)\)/.exec(clientSrc);
+check("the client's literal fallback matches llm.timeoutMs too",
+  !!clientFallback && Number(clientFallback[1]) === budget,
+  clientFallback ? clientFallback[1] + ' vs ' + budget : 'fallback not found');
 
 /* ================================================================ 6. left as found */
 

@@ -501,7 +501,14 @@
 
     /* --------------------------------------------------------------------- llm */
     llm: {
-      timeoutMs: 600,                 // hard AbortController budget
+      // Hard AbortController budget for ONE provider round trip, in ms. It has to be a budget a
+      // hosted model can actually meet: at the previous 600 ms the caller's own timer and the
+      // service worker's abort both fired before any provider could answer, so the optional
+      // readout was dead while looking wired. 20 s is generous for a <80-token completion and
+      // still bounded, so a hung socket cannot hold the HUD. src/background.js carries the same
+      // number as its fallback and does NOT hardcode a second budget: the client sends this value
+      // with the request, and tests/config_check.js asserts the two literals agree.
+      timeoutMs: 20000,               // hard AbortController budget
       geminiModel: 'gemini-3.5-flash-lite',
       openrouterModel: 'google/gemini-2.0-flash-lite-001',
       geminiEndpoint: 'https://generativelanguage.googleapis.com/v1beta/models/',

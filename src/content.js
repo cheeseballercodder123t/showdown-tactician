@@ -197,6 +197,13 @@
         if (this.clock) { this.clock.reset(); this.clock.setRating(null); this._syncClock(); }
         this.selectedBenchId = null;
         this._trAlerted = false;
+        // The evaluation latch is per-BATTLE as well. `_onRequest` returns the cached ranking
+        // WITHOUT evaluating when `state.turn === this.lastEvaluateTurn`, so a new battle whose
+        // turn number collides with the previous battle's last evaluated turn — a game that ended
+        // on turn 1 is the easy case — would skip its evaluation entirely and leave the previous
+        // battle's ranking and readout on the HUD.
+        this.lastEvaluateTurn = -1;
+        this.pendingReadout = null;
         if (this.hud && typeof this.hud.dismissReceipt === 'function') this.hud.dismissReceipt();
         // The candidate pools are seeded per side|slot|species and are only meaningful for the
         // battle they were seeded in: after a reconnect Showdown replays the whole log, and a
@@ -646,7 +653,17 @@
       };
     }
 
-    /** Copy the receipt text: clipboard API first, a hidden textarea second, silence third. */
+    /**
+     * Copy the receipt text: clipboard API first, a hidden textarea second, and an honest null when
+     * neither can actually copy.
+     *
+     * The fallback used to copy NOTHING while reporting success: `execCommand('copy')` acts on the
+     * document's CURRENT SELECTION, and a textarea that was never attached to the document and
+     * never selected can never become that selection — so the button put whatever the page already
+     * had selected (or nothing at all) on the clipboard, and the caller was told it worked. It now
+     * attaches the field to the document, focuses and selects it, and returns the payload only when
+     * execCommand reports the copy happened.
+     */
     _copyReceipt(text) {
       const payload = typeof text === 'string' ? text : '';
       if (!payload) return null;
@@ -660,13 +677,24 @@
       try {
         const doc = this.doc;
         if (doc && typeof doc.createElement === 'function' && typeof doc.execCommand === 'function') {
+          const host = doc.body || doc.documentElement || null;
+          // Without somewhere to attach the field there is no selection to copy, so this is a
+          // FAILURE rather than a silent success.
+          if (!host || typeof host.appendChild !== 'function') return null;
           const area = doc.createElement('textarea');
           area.value = payload;
-          doc.execCommand('copy');
-          return payload;
+          host.appendChild(area);
+          try {
+            if (typeof area.focus === 'function') area.focus();
+            if (typeof area.select === 'function') area.select();
+            return doc.execCommand('copy') ? payload : null;
+          } finally {
+            if (typeof area.remove === 'function') area.remove();
+            else if (typeof host.removeChild === 'function') host.removeChild(area);
+          }
         }
       } catch (e2) { /* nothing to do */ }
-      return payload;
+      return null;
     }
 
     /* ------------------------------------------------------------- team */

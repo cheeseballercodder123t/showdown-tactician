@@ -658,7 +658,9 @@ engine.simulate(action, world, battleState)  // -> SimResult { state, myPercentD
 
 // llm_client.js
 new ST.LLMTactician()
-llm.getTacticalReadout(battleState, laplaceResults, tempoVector)  // -> Promise<{action,confidence,reason}|null>, hard 600ms abort
+llm.getTacticalReadout(battleState, laplaceResults, tempoVector)  // -> Promise<{action,confidence,reason}|null>, hard 20s abort
+//   (the budget is config llm.timeoutMs, sent with the request and honoured by background.js —
+//    one source of truth, asserted at the source level in tests/config_check.js)
 llm.getConfig()  / llm.saveConfig(cfg)      // chrome.storage.local, no-ops safely without chrome
 
 // ui_overlay.js
@@ -684,7 +686,11 @@ hud.confidenceClass(conf, isVetoed)         // pure helper: 'conf-high'|'conf-mi
 * inbound `message` events on every live WebSocket (wrap the socket's `onmessage`
   setter and `addEventListener`).
 * a 250 ms polling fallback over `window.app.curRoom && window.app.curRoom.battle`
-  (`battle.log[battle.log.length - 1]` cursor) for missed lines.
+  (`battle.log` cursor) for missed lines. The cursor also advances over the runs the SOCKET path
+  already delivered, because the page mirrors those same lines into the log: a multi-line frame
+  would otherwise be handed over twice, and the relative lines make that a real error (`|-boost|`
+  twice is +2, |turn| twice double-ticks the Trick Room and weather clocks). Only a run sitting
+  exactly at the cursor is claimed.
 
 It forwards each line by dispatching two DOM events (belt and braces — the detail of a
 `CustomEvent` created in the MAIN world is readable from an ISOLATED-world listener in

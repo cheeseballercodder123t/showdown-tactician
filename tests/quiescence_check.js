@@ -193,10 +193,13 @@ check('every stage is a non-zero integer in [-6, 6] on a real stat', badStage.le
 check('every entry actually boosts something', emptyStage.length === 0, emptyStage.join(', '));
 
 const costed = Object.keys(TABLE).filter(function (id) { return typeof TABLE[id].hpCostPct === 'number'; }).sort();
-eqc('only the two HP-costing setup moves name a cost', costed, ['bellydrum', 'clangoroussoul']);
-check('the HP costs are the game rules (Belly Drum 50, Clangorous Soul 33)',
-  TABLE.bellydrum.hpCostPct === 50 && TABLE.clangoroussoul.hpCostPct === 33,
-  TABLE.bellydrum.hpCostPct + '/' + TABLE.clangoroussoul.hpCostPct);
+// The list GREW deliberately: Fillet Away really does pay half the user's maximum HP, and pricing
+// it as free at any HP would be the wrong game rule. Any future entry here must be a move that
+// truly pays HP (Belly Drum 50, Clangorous Soul 33, Fillet Away 50).
+eqc('only the HP-costing setup moves name a cost', costed, ['bellydrum', 'clangoroussoul', 'filletaway']);
+check('the HP costs are the game rules (Belly Drum 50, Clangorous Soul 33, Fillet Away 50)',
+  TABLE.bellydrum.hpCostPct === 50 && TABLE.clangoroussoul.hpCostPct === 33 && TABLE.filletaway.hpCostPct === 50,
+  TABLE.bellydrum.hpCostPct + '/' + TABLE.clangoroussoul.hpCostPct + '/' + TABLE.filletaway.hpCostPct);
 
 eqc('Dragon Dance grants +1 Atk / +1 Spe', U.setupBoosts('Dragon Dance'), { atk: 1, spe: 1 });
 eqc('Belly Drum maximises Attack and carries the 50% cost', U.setupBoosts('Belly Drum'), { atk: 6, hpCostPct: 50 });

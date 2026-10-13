@@ -814,6 +814,112 @@ if (TAP_BOOT && TAP_BOOT.hud && TAP_BOOT.state) {
   check('TacticianBoot is required for the bench-tap fixture', false, 'missing boot, hud or state');
 }
 
+/* ================================================== 13. move-button identity
+ *
+ * WHY THIS EXISTS. The HUD decorates Showdown's own move buttons, and it can only do that if
+ * it can read a move id off them. The two live clients label those buttons DIFFERENTLY:
+ *
+ *   classic (play.pokemonshowdown.com/oldclient, js/oldclient/client-battle.js)
+ *     <button class="movebutton" name="chooseMove" data-move="<id>" …>
+ *   new     (play.pokemonshowdown.com/newclient, src/panel-battle.tsx renderMoveButton)
+ *     <button class="movebutton" data-cmd="/move N" data-tooltip="move|<NAME>|<pos>">
+ *
+ * The new client drops BOTH `data-move` and `name`, so `_moveIdOf` has to fall back to the
+ * tooltip payload — and that payload is built from `moveData.name`, the DISPLAY NAME, not the
+ * id. A capture that stops at the first non-alphanumeric (the bug this section exists to pin)
+ * silently decorates NOTHING on the new client for every move whose name has a space or a
+ * hyphen, which is most of them: "Headlong Rush", "Rapid Spin", "Will-O-Wisp", "U-turn".
+ * The e2e fixture only renders classic markup, so nothing downstream caught it.
+ */
+
+section('13. every PS move-button markup resolves to the engine\'s move id');
+
+const idHud = newHud();
+
+/** Build a stand-in move button with exactly the attributes the given client emits. */
+function moveButton(props) {
+  const b = el('button');
+  Object.keys(props || {}).forEach(function (k) {
+    if (b.setAttribute && props[k] !== null) b.setAttribute(k, props[k]);
+  });
+  if (props && props.label) b.textContent = props.label;
+  return b;
+}
+
+// --- classic client: `data-move` is the id, and it wins over everything else.
+eq('classic: data-move is the id the engine keys on',
+  idHud._moveIdOf(moveButton({ 'data-move': 'headlongrush', name: 'chooseMove' })), 'headlongrush');
+eq('classic: a Struggle button (the fallback the client renders) still resolves',
+  idHud._moveIdOf(moveButton({ 'data-move': 'Struggle', 'data-target': 'randomNormal' })), 'struggle');
+eq('classic: data-move beats the tooltip and the text, which are free to disagree',
+  idHud._moveIdOf(moveButton({
+    'data-move': 'closecombat', 'data-tooltip': 'move|Close Combat|0', label: 'Close Combat'
+  })), 'closecombat');
+
+// --- new client: no data-move, no name, only the tooltip payload and an index in data-cmd.
+eq('new: the tooltip resolves an ordinary two-word move',
+  idHud._moveIdOf(moveButton({
+    'data-cmd': '/move 1', 'data-tooltip': 'move|Headlong Rush|0', label: 'Headlong Rush'
+  })), 'headlongrush');
+eq('new: a hyphenated move resolves (the case a [A-Za-z0-9]+ capture stops at)',
+  idHud._moveIdOf(moveButton({
+    'data-cmd': '/move 3', 'data-tooltip': 'move|Will-O-Wisp|0', label: 'Will-O-Wisp'
+  })), 'willowisp');
+eq('new: another hyphenated move',
+  idHud._moveIdOf(moveButton({ 'data-cmd': '/move 4', 'data-tooltip': 'move|U-turn|0' })), 'uturn');
+eq('new: the Z-Move variant of the payload resolves',
+  idHud._moveIdOf(moveButton({ 'data-cmd': '/move 1 zmove', 'data-tooltip': 'zmove|Flamethrower|0' })),
+  'flamethrower');
+eq('new: the Max Move variant (with its gmax suffix) resolves',
+  idHud._moveIdOf(moveButton({ 'data-cmd': '/move 1 max', 'data-tooltip': 'maxmove|Max Flare|0|gmaxwildfire' })),
+  'maxflare');
+
+// --- A payload that is NOT a move must not be mistaken for one: the tooltip is a shared
+//     attribute and the client puts switch/team payloads on the same buttons.
+const switchBtn = moveButton({ 'data-cmd': '/switch 2', 'data-tooltip': 'switch|2|0', label: 'Iron Valiant' });
+check('new: a switch payload is not read as a move (it falls through, never invents an id)',
+  idHud._moveIdOf(switchBtn) === U.toID('Iron Valiant'), String(idHud._moveIdOf(switchBtn)));
+
+// --- Nothing at all: the documented (lossy) last resort, and it must not throw.
+eq('an unlabelled button with no attributes is a no-op, not a throw',
+  idHud._moveIdOf(moveButton({})), '');
+eq('a null button is a no-op', idHud._moveIdOf(null), '');
+
+// --- WHY the tooltip fallback exists, stated as a check. A real move button renders its name,
+//     its type and its PP in one text node ("Headlong Rush<br><small>Ground</small> 16/16"), so
+//     `textContent` is a concatenation whose toID matches nothing the engine produced. Any test
+//     that builds a button with ONLY the move name in it is too kind: the fallback would rescue
+//     it and the bug (no tooltip match) would go undetected.
+eq('a button with no tooltip degrades to the concatenated text, which matches no action',
+  idHud._moveIdOf(moveButton({ label: 'Headlong RushGround 16/16 ' })), 'headlongrushground1616');
+
+// --- End to end: the new-client markup is what decides whether a badge is drawn at all.
+//     The labels are the REAL rendered text (name + type + pp), which is the whole point: with a
+//     broken tooltip capture these buttons resolve to nothing and `render` decorates 0 of 4,
+//     which is exactly the silent no-op the new client shipped with.
+const NEW_CLIENT_BUTTONS = [
+  moveButton({ 'data-cmd': '/move 1', 'data-tooltip': 'move|Headlong Rush|0', label: 'Headlong RushGround 16/16 ' }),
+  moveButton({ 'data-cmd': '/move 2', 'data-tooltip': 'move|Close Combat|0', label: 'Close CombatFighting 8/8 ' }),
+  moveButton({ 'data-cmd': '/move 3', 'data-tooltip': 'move|Will-O-Wisp|0', label: 'Will-O-WispFire 24/24 ' }),
+  moveButton({ 'data-cmd': '/move 4', 'data-tooltip': 'move|Rapid Spin|0', label: 'Rapid SpinNormal 32/32 ' })
+];
+const RANKED = [
+  { moveId: 'headlongrush', name: 'Headlong Rush', confidence: 78, score: 210.4, isOptimal: true },
+  { moveId: 'closecombat', name: 'Close Combat', confidence: 41, score: 64.1 },
+  { moveId: 'willowisp', name: 'Will-O-Wisp', confidence: 22, score: -18.2 },
+  { moveId: 'rapidspin', name: 'Rapid Spin', confidence: 12, score: -95.7, isVetoed: true }
+];
+const newClientHud = hudWithButtons(NEW_CLIENT_BUTTONS);
+const decoratedNew = call('rendering against new-client markup does not throw', function () {
+  return newClientHud.render(RANKED, null, null);
+});
+eq('the new client decorates every button (0 here is the silent no-op this section pins)',
+  decoratedNew, 4);
+eq('...and the HUD agrees on how many it decorated', newClientHud.lastBadgeCount, 4);
+eq('the hyphenated move carries the confidence of the action it was matched to',
+  textOf(NEW_CLIENT_BUTTONS[2].querySelector('.elo-helper-badge') ||
+    (NEW_CLIENT_BUTTONS[2].children || [])[0]), '22%');
+
 /* ================================================================== summary */
 
 console.log('\n=== summary ===');
