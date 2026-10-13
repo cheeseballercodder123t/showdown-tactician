@@ -478,6 +478,13 @@
       low: 0,
       confidenceLabels: { high: 'HIGH', mid: 'MID', low: 'LOW', veto: 'VETO' },
       bannerSep: '  ·  ',
+      // Layout mode. 'auto' picks by viewport width (mobile below 1024 px, desktop at and
+      // above), 'mobile' forces the phone layout, 'desktop' forces the docked console
+      // built for a 640 px-wide arena column. The HUD exposes a one-tap toggle that flips
+      // between 'mobile' and 'desktop'; 'auto' is the reset state and is also the
+      // options-page default.
+      layoutMode: 'auto',
+      layoutBreakpoint: 1024,         // 'auto' switches to 'desktop' at this viewport width
       // Lethal-roll gauge bands (KO probability %, from the library's own koChance): at or
       // above `guaranteed` the bar is green, at or above `high` gold, at or above `mid` slate.
       lethal: { guaranteed: 100, high: 67, mid: 34 },

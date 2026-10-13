@@ -249,6 +249,19 @@ async function openBattle(ctx, opts) {
    * the page navigates. It runs after the page exists and before goto, and nowhere else. */
   if (typeof opts.onPage === 'function') await opts.onPage(page);
 
+  /* Seed the PAGE's localStorage before the content script reads it. The HUD persists its
+   * layout mode there as well as in chrome.storage, so a spec that assumes the default has
+   * to be able to say so before navigation — otherwise a spec that ran earlier and toggled
+   * the mode would leak its choice into the next one through localStorage (which lives on
+   * the page origin, not in chrome.storage, so clearStorage does not reach it). */
+  if (opts.initLocal && typeof page.addInitScript === 'function') {
+    await page.addInitScript(function (seed) {
+      try {
+        Object.keys(seed).forEach(function (k) { window.localStorage.setItem(k, seed[k]); });
+      } catch (e) { /* storage may be unavailable */ }
+    }, opts.initLocal);
+  }
+
   await page.goto('https://play.pokemonshowdown.com/battle-gen9nationaldexou-1', { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(function () {
     return document.documentElement.getAttribute('data-st-injected') === '1' &&

@@ -298,6 +298,35 @@
   </fieldset>
 
   <fieldset>
+    <legend>Mobile HUD layout</legend>
+    <div class="row">
+      <label class="lbl">Layout mode</label>
+      <label class="radio-card">
+        <input type="radio" name="hudLayout" value="auto" checked>
+        <span class="rc-body">
+          <span class="rc-title">Auto</span>
+          <span class="rc-sub">Match the layout to the viewport: phone (under 1024&nbsp;px) gets the full-width bottom band, wider windows get the docked desktop console.</span>
+        </span>
+      </label>
+      <label class="radio-card">
+        <input type="radio" name="hudLayout" value="mobile">
+        <span class="rc-body">
+          <span class="rc-title">Mobile</span>
+          <span class="rc-sub">Force the phone layout: full-width banner, TR chip, bench strip, PP gauge, sentinel and receipt pinned to the viewport edges.</span>
+        </span>
+      </label>
+      <label class="radio-card">
+        <input type="radio" name="hudLayout" value="desktop">
+        <span class="rc-body">
+          <span class="rc-title">Desktop</span>
+          <span class="rc-sub">Force the docked console: a single scrollable column under the 640&nbsp;px-wide arena, never covering the log or PS chrome. The quick toggle in the HUD flips between Mobile and Desktop.</span>
+        </span>
+      </label>
+      <p class="hint">The HUD shows a small toggle next to the TAC button for a one-tap switch; this setting is the reset / explicit choice.</p>
+    </div>
+  </fieldset>
+
+  <fieldset>
     <legend>Save</legend>
     <div class="btn-row">
       <button type="submit" class="btn primary" id="save-btn">Save configuration</button>

@@ -105,7 +105,8 @@
         banner: null, chip: null, drawer: null, toggle: null,
         teamStatus: null, candidates: null,
         benchStrip: null, badgeRow: null, receipt: null, overlord: null,
-        ppGauge: null, sentinel: null, leadAdvisory: null
+        ppGauge: null, sentinel: null, leadAdvisory: null,
+        console: null, modeToggle: null
       };
       this._touched = [];        // [{ el, prop, previous }] inline style rollbacks
       this._lastRanked = [];
@@ -120,6 +121,21 @@
       this.selectedBenchId = null; // which bench pill is currently selected ('' = the active mon)
       this.renderCount = 0;
       this.lastBadgeCount = 0;
+      // Layout mode. `layoutMode` is the user's choice ('auto'|'mobile'|'desktop'). The HUD
+      // resolves it to a concrete 'mobile'|'desktop' (depending on viewport width in 'auto'
+      // mode) and writes the result to `data-st-layout` on documentElement, which overlay.css
+      // reads to switch layouts. The toggle button flips between 'mobile' and 'desktop'; the
+      // options page can reset to 'auto'.
+      this.layoutMode = (typeof options.layoutMode === 'string') ? options.layoutMode : 'auto';
+      this.resolvedLayout = null;  // set by _setLayout
+      this.onLayoutModeChange = (typeof options.onLayoutModeChange === 'function')
+        ? options.onLayoutModeChange : null;
+      // Apply the layout as soon as a document is available. A construction-time call is
+      // safe even without one (the helper returns null), and it means the very first render
+      // (e.g. the banner in content.js) lands in the correct layout — otherwise a HUD
+      // created with `layoutMode: 'auto'` on a desktop viewport would render the mobile
+      // band at full viewport width until something called bindDrawer.
+      try { this._applyResolvedLayout(); } catch (e) { /* no document yet */ }
     }
 
     /* ------------------------------------------------------------- dom helpers */
@@ -542,6 +558,26 @@
       return chip;
     }
 
+    /**
+     * _mountBand(el) -> the same element, parented to the right place.
+     * Band elements (the TR chip, bench strip, PP gauge, sentinel, receipt) live in the
+     * docked console on desktop and in the body on mobile. The console is a flex column on
+     * desktop so children flow as cards; the body hosts `position: fixed` nodes on mobile.
+     * Existing nodes (e.g. an adopted band element) are returned unchanged — we never
+     * re-mount what is already mounted.
+     */
+    _mountBand(el) {
+      if (!el) return el;
+      if (el.parentNode) return el;
+      if (this.resolvedLayout === 'desktop') {
+        const console = this._ensureConsole();
+        if (console && typeof console.appendChild === 'function') {
+          try { console.appendChild(el); return el; } catch (e) { /* fall through */ }
+        }
+      }
+      return this._mount(el);
+    }
+
     _ensureChip() {
       if (this._nodes.chip) return this._nodes.chip;
       const existing = this._qs('.tactician-tr-chip');
@@ -549,7 +585,7 @@
       const el = this._el('div', 'tactician-tr-chip tr-info');
       if (!el) return null;
       if (el.setAttribute) { el.setAttribute(CHIP_ATTR, '1'); el.setAttribute('role', 'alert'); }
-      this._nodes.chip = this._mount(el);
+      this._nodes.chip = this._mountBand(el);
       return this._nodes.chip;
     }
 
@@ -756,7 +792,7 @@
         strip = this._el('div', 'st-bench-strip');
         if (!strip) return null;
         if (strip.setAttribute) strip.setAttribute(BENCH_ATTR, '1');
-        strip = this._mount(strip);
+        strip = this._mountBand(strip);
       }
       this._nodes.benchStrip = strip;
       this.selectedBenchId = (selectedId === undefined || selectedId === null) ? '' : safeString(selectedId);
@@ -909,7 +945,7 @@
       }
       this.dismissReceipt();
       this._receiptText = safeString(receipt.copyText);
-      this._nodes.receipt = this._mount(card);
+      this._nodes.receipt = this._mountBand(card);
       return this._nodes.receipt;
     }
 
@@ -1154,7 +1190,7 @@
         el = this._el('div', 'st-pp-gauge');
         if (!el) return null;
         if (el.setAttribute) el.setAttribute(PP_ATTR, '1');
-        el = this._mount(el);
+        el = this._mountBand(el);
       }
       this._nodes.ppGauge = el;
       this._clearChildren(el);
@@ -1287,7 +1323,7 @@
         el = this._el('div', 'st-format-sentinel');
         if (!el) return null;
         if (el.setAttribute) el.setAttribute(SENTINEL_ATTR, '1');
-        el = this._mount(el);
+        el = this._mountBand(el);
       }
       this._nodes.sentinel = el;
       this._clearChildren(el);
@@ -1370,6 +1406,7 @@
         this._bound = true;
         // Adopted, not built — the signals still have to be bound (see _bindLayoutSignals).
         this._bindLayoutSignals();
+        this._mountModeToggle();
         return existing;
       }
 
@@ -1437,13 +1474,60 @@
       if (toggle && toggle.addEventListener) {
         toggle.addEventListener('click', this.toggleDrawer.bind(this));
       }
+      // The layout-mode toggle lives next to the TAC button, in the same bottom-left cluster.
+      // A second 40x40 button is enough — it shows the current RESOLVED mode and tapping it
+      // flips to the other. The options page is the place to reset to 'auto'.
       this._bound = true;
       // Re-measure the chip band on viewport resize and orientation change. The HUD is a stack
       // of `position: fixed` blocks anchored to the PS chrome, and the chrome (the room tab
       // bar in particular) changes height between portrait/landscape and across phone sizes;
       // without this, the banner would stay stuck at the height it was measured at boot.
       this._bindLayoutSignals();
+      // The mode toggle is a HUD-wide control, so it is mounted as part of binding the HUD to
+      // the page rather than at construction: a HUD that is constructed but never bound (the
+      // clipboard fallback tests build one to exercise a pure function) must not leave a
+      // button in the document. `_setLayout` only re-labels an already-mounted button.
+      this._mountModeToggle();
       return this._nodes.drawer;
+    }
+
+    _mountModeToggle() {
+      const doc = this._document();
+      if (!doc) return null;
+      let btn = this._nodes.modeToggle;
+      const existing = this._qs('.st-mode-toggle');
+      if (existing) {
+        btn = existing;
+        this._nodes.modeToggle = btn;
+      } else {
+        btn = this._el('button', 'st-mode-toggle');
+        if (!btn) return null;
+        btn.textContent = '...';
+        if (btn.setAttribute) {
+          btn.setAttribute('type', 'button');
+          btn.setAttribute('aria-label', 'Switch HUD layout between mobile and desktop');
+          btn.setAttribute('data-st-mode-toggle', '1');
+        }
+        this._mount(btn);
+        this._nodes.modeToggle = btn;
+      }
+      // The click handler is bound once per node, and re-binding is harmless because the
+      // second call replaces the prior one on the same button. Doing it here (not in
+      // _bindLayoutSignals) means even a HUD that never had a drawer can still toggle.
+      if (btn && btn.addEventListener) {
+        const self = this;
+        btn.onclick = function () { self.toggleLayoutMode(); };
+        // Avoid stealing keyboard focus: PS uses 1-4 for moves and the rest of the document
+        // is keyboard-driven, so a focused button that intercepts space/enter would block
+        // those shortcuts. Blur immediately after the click so PS's window-level listeners
+        // keep the next keystroke.
+        btn.onmousedown = function () { /* let the click fire */ };
+        btn.addEventListener('click', function () {
+          if (typeof btn.blur === 'function') setTimeout(function () { try { btn.blur(); } catch (e) { } }, 0);
+        }, true);
+      }
+      this._updateModeToggle();
+      return btn;
     }
 
     /**
@@ -1460,7 +1544,13 @@
       if (!this._layoutBound && view && typeof view.addEventListener === 'function') {
         this._layoutBound = true;
         const self = this;
-        const onLayout = function () { try { self._syncChipBand(); } catch (e) { /* detached */ } };
+        // Re-measure AND re-resolve the layout. Re-resolve matters in 'auto' mode when the
+        // viewport crosses the breakpoint — the HUD has to flip layouts without a reload.
+        // Re-measure matters on every resize/orientation because PS's chrome resizes too.
+        const onLayout = function () {
+          try { self._applyResolvedLayout(); } catch (e) { /* detached */ }
+          try { self._syncChipBand(); } catch (e) { /* detached */ }
+        };
         view.addEventListener('resize', onLayout, { passive: true });
         view.addEventListener('orientationchange', onLayout, { passive: true });
       }
@@ -1487,7 +1577,181 @@
         };
         doc.addEventListener('scroll', onScroll, { passive: true, capture: true });
       }
+      // And on resize / breakpoint-crossing, the resolved layout may need to flip when the
+      // user is in 'auto' mode. The listeners above already re-measure, so this just tells
+      // the layout resolver to re-evaluate and re-apply the result.
+      this._applyResolvedLayout();
       return this;
+    }
+
+    /**
+     * _resolveLayout(viewport) -> 'mobile' | 'desktop'.
+     * The 'auto' mode picks by viewport width; explicit modes pass through. The breakpoint
+     * is configurable so a tablet with a small desktop window can be told "you are mobile".
+     * `viewport` defaults to the HUD's own document, falling back to the global window so
+     * the Node harness can drive it.
+     */
+    _resolveLayout(viewport) {
+      const mode = (this.layoutMode === 'mobile' || this.layoutMode === 'desktop')
+        ? this.layoutMode : 'auto';
+      if (mode !== 'auto') return mode;
+      const doc = this._document();
+      const view = (doc && doc.defaultView) || (typeof window !== 'undefined' ? window : null);
+      const w = (viewport && typeof viewport.width === 'number') ? viewport.width
+        : (view && typeof view.innerWidth === 'number') ? view.innerWidth : 0;
+      const bp = (typeof cfg('hud.layoutBreakpoint', 1024) === 'number')
+        ? cfg('hud.layoutBreakpoint', 1024) : 1024;
+      return w >= bp ? 'desktop' : 'mobile';
+    }
+
+    /**
+     * _applyResolvedLayout() -> re-resolve and re-apply the layout.
+     * Idempotent: if the resolved mode has not changed, this is a no-op. Called on boot
+     * and on resize, so a window crossing the breakpoint (auto mode) flips the HUD without
+     * a page reload.
+     */
+    _applyResolvedLayout() {
+      const next = this._resolveLayout();
+      if (next === this.resolvedLayout) return this.resolvedLayout;
+      this._setLayout(next);
+      return this.resolvedLayout;
+    }
+
+    /**
+     * setLayoutMode(mode) -> switch to a user-chosen mode ('auto' | 'mobile' | 'desktop').
+     * Fires `onLayoutModeChange` so the host can persist, then resolves and applies.
+     */
+    setLayoutMode(mode) {
+      if (mode !== 'auto' && mode !== 'mobile' && mode !== 'desktop') return;
+      if (this.layoutMode === mode) { this._applyResolvedLayout(); return; }
+      this.layoutMode = mode;
+      if (this.onLayoutModeChange) {
+        try { this.onLayoutModeChange(mode); } catch (e) { /* persistence is best-effort */ }
+      }
+      this._applyResolvedLayout();
+    }
+
+    /**
+     * toggleLayoutMode() -> flip between 'mobile' and 'desktop'. From 'auto' it goes to the
+     * opposite of whatever the viewport currently resolves to, so the button feels like it
+     * does what the user expects: tap it, the HUD changes shape.
+     */
+    toggleLayoutMode() {
+      const next = (this.resolvedLayout === 'desktop') ? 'mobile' : 'desktop';
+      this.setLayoutMode(next);
+    }
+
+    /**
+     * _setLayout(resolved) -> 'mobile' | 'desktop'.
+     * Switches the DOM into the resolved layout. On desktop it ensures the `.st-console`
+     * exists and reparents the bottom band into it; on mobile it moves them back and
+     * removes the console. The decision is published as `data-st-layout` on
+     * documentElement, which overlay.css reads to switch positioning rules.
+     */
+    _setLayout(resolved) {
+      if (resolved !== 'mobile' && resolved !== 'desktop') resolved = 'mobile';
+      this.resolvedLayout = resolved;
+      const doc = this._document();
+      if (!doc || !doc.documentElement) return resolved;
+      doc.documentElement.setAttribute('data-st-layout', resolved);
+      // The mode toggle is mounted by bindDrawer (the "HUD is live" signal), never here:
+      // a HUD that is only constructed — never bound to the page — must not leave a button
+      // in the document. This only re-labels a button that already exists.
+      if (resolved === 'desktop') this._reparentIntoConsole();
+      else this._reparentOutOfConsole();
+      // Any layout-bound geometry has to be re-measured: the band lift depends on where
+      // Showdown's control bar sits, the banner re-anchors to the battle top, and the chip
+      // band re-anchors with it.
+      try { this._syncChipBand(); } catch (e) { /* detached */ }
+      this._updateModeToggle();
+      return resolved;
+    }
+
+    _ensureConsole() {
+      if (this._nodes.console) return this._nodes.console;
+      const doc = this._document();
+      if (!doc) return null;
+      let el = doc.querySelector ? doc.querySelector('.st-console') : null;
+      if (!el) {
+        el = (doc.createElement ? doc.createElement('div') : null);
+        if (el) {
+          el.className = 'st-console';
+          if (el.setAttribute) el.setAttribute('data-st-console', '1');
+          // Mount into body so it can position relative to the viewport.
+          const parent = doc.body || doc.documentElement;
+          if (parent && parent.appendChild) parent.appendChild(el);
+        }
+      }
+      this._nodes.console = el;
+      return el;
+    }
+
+    /**
+     * _reparentIntoConsole() -> move the bottom band into the console.
+     * The console is a single scrollable column; children flow as flex items. We move ONLY
+     * the band elements (chip, bench strip, PP gauge, sentinel, receipt) — the top
+     * elements (banner, overlord, badges) stay in their viewport-fixed positions and are
+     * repositioned to the arena column by CSS, because they need to float above the
+     * battlefield regardless of the panel's height.
+     */
+    _reparentIntoConsole() {
+      const console = this._ensureConsole();
+      if (!console) return;
+      const doc = this._document();
+      if (!doc) return;
+      const sel = '.tactician-tr-chip, .st-bench-strip, .st-pp-gauge, .st-format-sentinel, .st-receipt-card';
+      const nodes = (typeof doc.querySelectorAll === 'function')
+        ? doc.querySelectorAll(sel) : [];
+      for (let i = 0; i < nodes.length; i++) {
+        const n = nodes[i];
+        if (n && n.parentNode !== console && typeof console.appendChild === 'function') {
+          try { console.appendChild(n); } catch (e) { /* detached */ }
+        }
+      }
+    }
+
+    /**
+     * _reparentOutOfConsole() -> move the band back into the document body.
+     * On mobile, the elements are `position: fixed` children of the body, so they can use
+     * viewport-relative coordinates again. The console's child collection is walked
+     * defensively (it is a real NodeList in the browser and a plain array in the test
+     * stub), and only children that are still parented to the console are moved — a
+     * half-migrated state must not throw.
+     */
+    _reparentOutOfConsole() {
+      const console = this._nodes.console;
+      if (!console) return;
+      const doc = this._document();
+      const body = (doc && doc.body) || (doc && doc.documentElement) || console.parentNode;
+      // Use `children` (the stub's makeEl array and the browser's HTMLCollection both have
+      // one) and snapshot before moving so the live list does not mutate under us.
+      const live = console.children || console.childNodes;
+      const kids = Array.prototype.slice.call(live || []);
+      for (let i = 0; i < kids.length; i++) {
+        const n = kids[i];
+        if (n && n.parentNode === console && body && typeof body.appendChild === 'function') {
+          try { body.appendChild(n); } catch (e) { /* detached */ }
+        }
+      }
+      // Drop the console so a future desktop switch builds a fresh one.
+      if (console.parentNode && typeof console.parentNode.removeChild === 'function') {
+        try { console.parentNode.removeChild(console); } catch (e) { /* detached */ }
+      }
+      this._nodes.console = null;
+    }
+
+    _updateModeToggle() {
+      const btn = this._nodes.modeToggle;
+      if (!btn) return;
+      const resolved = this.resolvedLayout || this._resolveLayout();
+      const icon = (resolved === 'desktop') ? '\uD83D\uDDA5\uFE0F' : '\uD83D\uDCF1';
+      const label = (resolved === 'desktop') ? 'Desktop' : 'Mobile';
+      if (btn.textContent !== undefined) btn.textContent = icon + ' ' + label;
+      const title = (this.layoutMode === 'auto')
+        ? 'Switch HUD layout (currently auto, resolved to ' + label.toLowerCase() + ')'
+        : 'Switch HUD layout (currently ' + this.layoutMode + ')';
+      if (btn.setAttribute) btn.setAttribute('title', title);
+      btn.setAttribute && btn.setAttribute('data-st-resolved', resolved);
     }
 
     /**

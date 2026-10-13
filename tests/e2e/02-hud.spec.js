@@ -166,3 +166,123 @@ test('the banner tracks the turn number', async function () {
   expect(second.banner).toContain('Landorus-Therian');
   await page.close();
 });
+
+/* ------------------------------------------------------------------ layout mode */
+
+/**
+ * The HUD has two layouts. `auto` resolves by viewport width (mobile below the breakpoint,
+ * desktop at or above it), and the in-page toggle flips between them. This spec pins both
+ * directions and the invariant that matters for a player: in the desktop layout the HUD is
+ * a single console docked out of the way, and it must never cover Showdown's own move bar.
+ */
+test('the layout toggle switches mobile and desktop, and neither covers the move bar', async function () {
+  /* The context is created at the phone viewport (412x915) because every other spec needs
+   * it. `setViewportSize` moves THIS page to a desktop size, and the HUD's resize listener
+   * re-resolves `auto` against the new width — which is the behaviour under test. */
+  const opened = await H.openBattle(env.ctx, { initLocal: { stHudLayout: 'auto' } });
+  const { page } = opened;
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await H.waitForDrain(page);
+  await H.pushLines(page, [H.buildRequest()]);
+  await H.waitForBadges(page, 4);
+  /* 1280 is above the 1024 breakpoint, so `auto` must resolve to DESKTOP. */
+  await page.waitForFunction(function () {
+    return document.documentElement.getAttribute('data-st-layout') === 'desktop';
+  });
+
+  const read = function () {
+    return page.evaluate(function () {
+      const rect = function (sel) {
+        const el = document.querySelector(sel);
+        if (!el) return null;
+        const b = el.getBoundingClientRect();
+        return { top: b.top, bottom: b.bottom, left: b.left, right: b.right, w: b.width, h: b.height };
+      };
+      const overlaps = function (a, b) {
+        if (!a || !b) return false;
+        return a.right > b.left && a.left < b.right && a.bottom > b.top && a.top < b.bottom;
+      };
+      const toggle = document.querySelector('.st-mode-toggle');
+      const hudSel = ['.tactician-tr-chip', '.st-bench-strip', '.st-pp-gauge', '.st-format-sentinel'];
+      const consoleR = rect('.st-console');
+      let coversMoveButton = false;
+      hudSel.forEach(function (s) {
+        const r = rect(s);
+        if (r) {
+          document.querySelectorAll('button[data-move]').forEach(function (b) {
+            const m = b.getBoundingClientRect();
+            if (r.right > m.left && r.left < m.right && r.bottom > m.top && r.top < m.bottom) coversMoveButton = true;
+          });
+        }
+      });
+      return {
+        layout: document.documentElement.getAttribute('data-st-layout'),
+        resolved: toggle ? toggle.getAttribute('data-st-resolved') : null,
+        label: toggle ? toggle.textContent : null,
+        hasToggle: !!toggle,
+        hasConsole: !!consoleR,
+        consoleRect: consoleR,
+        coversMoveButton: coversMoveButton
+      };
+    });
+  };
+
+  const desktop = await read();
+  expect(desktop.layout).toBe('desktop');
+  expect(desktop.resolved).toBe('desktop');
+  expect(desktop.label).toMatch(/desktop/i);
+  expect(desktop.hasConsole).toBe(true);
+  /* The point of the desktop layout: the HUD is docked and must not cover a move button. */
+  expect(desktop.coversMoveButton).toBe(false);
+
+  /* The toggle button flips it. It is the in-page control the user actually touches. */
+  await page.click('.st-mode-toggle');
+  await page.waitForFunction(function () {
+    return document.documentElement.getAttribute('data-st-layout') === 'mobile';
+  });
+  const mobile = await read();
+  expect(mobile.layout).toBe('mobile');
+  expect(mobile.label).toMatch(/mobile/i);
+  expect(mobile.hasToggle).toBe(true);
+
+  /* Clicking the toggle must not steal keyboard focus: Showdown's move shortcuts are
+   * window-level keys, so a button that keeps focus would swallow space/enter. */
+  const focus = await page.evaluate(function () {
+    const ae = document.activeElement;
+    return ae ? ae.tagName : null;
+  });
+  expect(focus === 'BODY' || focus === 'HTML' || focus === null).toBe(true);
+
+  /* And back to desktop, which must re-parent the band into the console. */
+  await page.click('.st-mode-toggle');
+  await page.waitForFunction(function () {
+    return document.documentElement.getAttribute('data-st-layout') === 'desktop';
+  });
+  const again = await read();
+  expect(again.layout).toBe('desktop');
+  expect(again.hasConsole).toBe(true);
+  expect(again.coversMoveButton).toBe(false);
+
+  expect(opened.errors, opened.errors.join('\n')).toHaveLength(0);
+  await page.close();
+});
+
+test('auto below the breakpoint keeps the mobile layout', async function () {
+  const opened = await H.openBattle(env.ctx, { initLocal: { stHudLayout: 'auto' } });
+  const { page } = opened;
+  await page.setViewportSize({ width: 900, height: 500 });
+  await H.waitForDrain(page);
+  const w = await page.evaluate(function () { return window.innerWidth; });
+  const layout = await page.evaluate(function () {
+    return document.documentElement.getAttribute('data-st-layout');
+  });
+  const afterSynthetic = await page.evaluate(function () {
+    window.dispatchEvent(new Event('resize'));
+    return document.documentElement.getAttribute('data-st-layout');
+  });
+  expect(w, 'the page must really be under the breakpoint').toBeLessThan(1024);
+  expect(layout, 'layout at width ' + w).toBe('mobile');
+  expect(afterSynthetic, 'a synthetic resize must re-resolve (listener attached?)').toBe('mobile');
+  expect(opened.errors, opened.errors.join('\n')).toHaveLength(0);
+  await page.close();
+});

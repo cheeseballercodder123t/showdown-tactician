@@ -755,6 +755,25 @@ so `renderTRChip` died on its first call and the TR chip never appeared at all. 
 token at a time. `tests/hud_check.js` covers the new entry points in the DOM-less sandbox; the
 browser pass is what caught that one.
 
+## Desktop viewports
+
+The HUD is laid out for both a phone and a desktop browser, and picks on its own: `hud.layoutMode`
+(`auto` | `mobile` | `desktop`, default `auto`) resolves against `hud.layoutBreakpoint` (1024 px,
+viewport width), and an explicit mode always wins. The resolution is published as `data-st-layout`
+on `documentElement`, and the desktop rules in `styles/overlay.css` are scoped to it — so lobbies,
+the options page and the test harness keep the phone layout untouched.
+
+Showdown's desktop layout puts the battle arena in a **fixed 640 px column at x=0** on both clients,
+with the scrollable battle log entirely to the right of x=640, so the desktop HUD docks a single
+`.st-console` column under the move bar at x 0..640 and never touches a PS control, the log or the
+topbar. On a phone the same five elements are `position: fixed` nodes in `<body>`, as before.
+
+A small **📱/🖥️ pill next to the TAC button** switches between the two at any time; it blurs itself
+after the click so it can never hold keyboard focus (Showdown's own chat and shortcuts stay
+reachable). The choice persists to `chrome.storage.local` (and to the page's `localStorage`, so a
+restored tab paints correctly on its first frame), is mirrored into other open tabs, and has a
+matching radio on the options page.
+
 ## The six "sweaty" upgrades
 
 Six further upgrades, all of them built on the same discipline: a number that exists in the game

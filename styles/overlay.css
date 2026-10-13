@@ -755,3 +755,209 @@ button[data-st-lethal="none"] .st-lethal-bar {
 @media (prefers-reduced-motion: reduce) {
   .st-pp-gauge, .st-format-sentinel { animation: none; }
 }
+
+/* =============================================================== layout mode */
+/* The HUD has two layouts, chosen by `data-st-layout` on documentElement. The default
+ * (no attribute, or `mobile`) is the portrait phone layout this file was written for. The
+ * desktop layout docks a single scrollable console into the 640 px-wide arena column on
+ * the left, where there is no PS furniture to collide with. Every rule below is scoped to
+ * a layout that nobody is in by accident — the attribute is only ever set by
+ * ui_overlay.js. */
+
+:root[data-st-layout="desktop"] .tactician-banner {
+  /* The arena column on desktop: same intent as the mobile rule (sit just above the
+   * battlefield, not at the viewport top), but the width is the arena, not the screen. */
+  top: var(--st-battle-top, 56px);
+  left: 8px;
+  right: auto;
+  width: 624px;
+  border-radius: 12px 12px 0 0;
+}
+:root[data-st-layout="desktop"] .st-overlord-gauge {
+  top: calc(var(--st-battle-top, 56px) + 22px);
+  left: 16px;
+  right: auto;
+  width: auto;
+  max-width: calc(640px - 32px);
+}
+:root[data-st-layout="desktop"] .st-badge-row {
+  top: calc(var(--st-battle-top, 56px) + 56px);
+  left: 8px;
+  right: auto;
+  width: 624px;
+  max-height: 84px;
+  overflow-y: auto;
+}
+
+/* The bottom band lives inside the console on desktop; their fixed positioning is opt-out. */
+.st-console {
+  position: fixed;
+  /* Start below the measured controls bottom (set by _syncControlBar) and at least below the
+   * 50 px PS topbar. `max()` keeps the panel in clear air whether or not a battle is loaded. */
+  top: max(58px, calc(var(--st-controls-bottom, 0px) + 8px));
+  left: 8px;
+  right: auto;
+  width: 624px;
+  /* Anchor 8 px above the viewport bottom; on very short windows we collapse the bottom and
+   * let the panel scroll. */
+  bottom: max(8px, env(safe-area-inset-bottom, 0px));
+  z-index: 50;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  background: var(--st-panel);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 12px;
+  box-shadow: var(--st-shadow);
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.35) transparent;
+  -webkit-overflow-scrolling: touch;
+  /* Desktop panels do not have to be tap-transparent — the only thing under them is free
+   * viewport space (the lower-left rectangle of the arena column). */
+}
+.st-console::-webkit-scrollbar { width: 6px; }
+.st-console::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.35); border-radius: 3px; }
+
+/* Inside the console, every band element loses its viewport-fixed positioning and becomes a
+ * flex item. left/right/bottom are reset to their natural flow values. The children also
+ * span the panel's width (no longer full-viewport). */
+[data-st-layout="desktop"] .st-console .tactician-tr-chip,
+[data-st-layout="desktop"] .st-console .st-bench-strip,
+[data-st-layout="desktop"] .st-console .st-pp-gauge,
+[data-st-layout="desktop"] .st-console .st-format-sentinel,
+[data-st-layout="desktop"] .st-console .st-receipt-card {
+  position: static;
+  left: auto;
+  right: auto;
+  top: auto;
+  bottom: auto;
+  width: auto;
+  z-index: auto;
+  margin: 0;
+}
+/* The chip's pill style survives, but the rounded bar shape is less ideal inside a card. */
+[data-st-layout="desktop"] .st-console .tactician-tr-chip { border-radius: 10px; }
+[data-st-layout="desktop"] .st-console .st-bench-strip {
+  border-top: none;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.6);
+  padding: 6px;
+}
+/* The strip's tap-transparency was for the full-width mobile case; the console panel never
+ * covers PS's move bar (the bar is at y < console top), so pills go back to a normal hit
+ * target. */
+[data-st-layout="desktop"] .st-console .st-bench-strip { pointer-events: auto; }
+[data-st-layout="desktop"] .st-console .st-bench-pill  { pointer-events: auto; }
+
+/* On mobile the band's gradient was a safety net; on desktop the panel's own background is
+ * the safety net, so the children drop their gradients. */
+[data-st-layout="desktop"] .st-console .st-bench-strip { background: rgba(15, 23, 42, 0.65); }
+[data-st-layout="desktop"] .st-console .st-receipt-card { background: rgba(15, 23, 42, 0.9); }
+
+/* The mobile-only lift variable is no-op in desktop (the console clears the move bar by
+ * construction — the bar is ABOVE the console). Drop the offset additions so any stale value
+ * the engine published does not push the children. */
+[data-st-layout="desktop"] .st-console .tactician-tr-chip,
+[data-st-layout="desktop"] .st-console .st-receipt-card,
+[data-st-layout="desktop"] .st-console .st-bench-strip {
+  --st-band-lift: 0px;
+}
+
+/* The team drawer remains a full-width sheet on mobile (it has to, the bench lives under
+ * the keyboard), but on desktop it docks to the same column as the console. */
+:root[data-st-layout="desktop"] .team-drawer {
+  left: 8px;
+  right: auto;
+  width: 624px;
+  max-height: 80vh;
+  bottom: max(8px, env(safe-area-inset-bottom, 0px));
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  box-shadow: var(--st-shadow);
+}
+
+/* =============================================================== mode toggle */
+/* The button that switches between mobile and desktop. A compact pill next to the TAC
+ * drawer toggle, so the two form a single bottom-left cluster the user can find by feel. */
+.st-mode-toggle {
+  position: fixed;
+  left: calc(10px + var(--st-touch) + 8px);
+  bottom: max(10px, env(safe-area-inset-bottom, 0px));
+  z-index: 2147483004;
+  min-width: 80px;
+  min-height: var(--st-touch);
+  height: var(--st-touch);
+  padding: 0 12px;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--st-text);
+  background: var(--st-panel);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  box-shadow: var(--st-shadow);
+  cursor: pointer;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 120ms ease, background-color 120ms ease, border-color 120ms ease;
+}
+.st-mode-toggle:hover  { background: rgba(30, 41, 59, 0.96); border-color: rgba(255, 255, 255, 0.24); }
+.st-mode-toggle:active { transform: scale(0.97); }
+.st-mode-toggle:focus-visible {
+  outline: 2px solid var(--st-high);
+  outline-offset: 2px;
+}
+/* In desktop mode the toggle still lives at the bottom-left of the viewport (the free zone
+ * below the arena), not inside the console, so the user can find it without scrolling. */
+@media (min-width: 1024px) {
+  .st-mode-toggle { left: 10px; bottom: 10px; }
+}
+
+/* =============================================================== visual polish */
+/* A few refinements that make the existing surfaces look more deliberate. Kept as additive
+ * rules so removing them does not regress the geometry work. */
+.tactician-banner {
+  font-feature-settings: "tnum" 1, "cv11" 1;
+  letter-spacing: 0.01em;
+  background:
+    linear-gradient(180deg, rgba(30, 41, 59, 0.96) 0%, rgba(15, 23, 42, 0.94) 100%);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+.team-drawer-toggle {
+  font-feature-settings: "tnum" 1;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  background:
+    linear-gradient(180deg, rgba(30, 41, 59, 0.96) 0%, rgba(15, 23, 42, 0.94) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+  transition: transform 120ms ease, background-color 120ms ease, border-color 120ms ease;
+}
+.team-drawer-toggle:hover  { background: rgba(30, 41, 59, 0.98); border-color: rgba(255, 255, 255, 0.24); }
+.team-drawer-toggle:active { transform: scale(0.96); }
+.team-drawer-toggle:focus-visible {
+  outline: 2px solid var(--st-high);
+  outline-offset: 2px;
+}
+
+.st-receipt-card { border-radius: 12px; }
+.tactician-tr-chip { transition: transform 160ms ease, box-shadow 160ms ease; }
+.tactician-tr-chip.tr-danger { box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.5), 0 0 16px rgba(239, 68, 68, 0.25); }
+.tactician-tr-chip.tr-gold   { box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.5), 0 0 16px rgba(251, 191, 36, 0.2); }
+
+@media (prefers-reduced-motion: reduce) {
+  .st-mode-toggle, .team-drawer-toggle, .tactician-tr-chip { transition: none; }
+}

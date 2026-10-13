@@ -427,7 +427,6 @@ function sectionInitResetsTheEvaluationLatch() {
  * failure the listeners exist to prevent, so the adopting exit must bind them too.
  */
 function sectionAdoptedDrawerStillBindsLayoutSignals() {
-  section('9. an adopted drawer still binds the layout signals');
   // A document that RECORDS what was subscribed to. makeDoc's listener is a no-op, which is
   // fine for the sections above (they assert on rendering) and useless here: this check is
   // about the subscription itself, so the stub has to be able to fail.
@@ -487,6 +486,84 @@ function sectionAdoptedDrawerStillBindsLayoutSignals() {
   eq('re-binding does not add another scroll listener', scrollsAfter, scrolls.length);
 }
 
+function sectionLayoutModeResolvesAndReparents() {
+  section('10. the layout mode resolves, reparents the band, and survives a reset');
+  // The resolver must answer 'mobile' below the breakpoint and 'desktop' at or above it,
+  // and an explicit 'mobile' or 'desktop' must beat the breakpoint every time.
+  const doc = makeDoc();
+  const hud = new ST.MobileHUD({ doc: doc, layoutMode: 'auto' });
+  eq('auto below the breakpoint resolves to mobile', hud._resolveLayout({ width: 600 }), 'mobile');
+  eq('auto at the breakpoint resolves to desktop',  hud._resolveLayout({ width: 1024 }), 'desktop');
+  eq('auto above the breakpoint resolves to desktop', hud._resolveLayout({ width: 1920 }), 'desktop');
+  const forced = new ST.MobileHUD({ doc: doc, layoutMode: 'desktop' });
+  eq('forced desktop beats the breakpoint', forced._resolveLayout({ width: 300 }), 'desktop');
+  const forced2 = new ST.MobileHUD({ doc: doc, layoutMode: 'mobile' });
+  eq('forced mobile beats the breakpoint', forced2._resolveLayout({ width: 1920 }), 'mobile');
+
+  // Switching to desktop: the band elements get reparented into a `.st-console` and the
+  // documentElement gets `data-st-layout="desktop"`. Switching back to mobile moves them
+  // out and the console is removed.
+  // The doc's querySelectorAll must search the mounted subtree (see the adopt-section note
+  // for why), so the freshly-mounted nodes are visible to the band reparenting.
+  doc.querySelectorAll = function (sel) {
+    const parts = String(sel).split(',').map(function (p) { return p.trim(); });
+    const out = [];
+    const walk = function (el) {
+      for (let i = 0; i < parts.length; i++) {
+        if (matchesSelector(el, parts[i])) { out.push(el); break; }
+      }
+      (el.children || []).forEach(walk);
+    };
+    (doc.body.children || []).forEach(walk);
+    return out;
+  };
+  doc.querySelector = function (sel) { const all = doc.querySelectorAll(sel); return all.length ? all[0] : null; };
+  // Bind the HUD to the page the way content.js start() does — the mode toggle is mounted
+  // as part of binding, never at construction, so a HUD that is only constructed (the
+  // clipboard-fallback tests build one to drive a pure function) leaves the document clean.
+  hud.bindDrawer();
+  // Pretend the HUD is mid-battle: stand up the bottom band by hand.
+  const chip = doc.createElement('div');  chip.className = 'tactician-tr-chip';
+  const strip = doc.createElement('div'); strip.className = 'st-bench-strip';
+  const gauge = doc.createElement('div'); gauge.className = 'st-pp-gauge';
+  const sent  = doc.createElement('div'); sent.className  = 'st-format-sentinel';
+  const recpt = doc.createElement('div'); recpt.className = 'st-receipt-card';
+  doc.body.appendChild(chip);
+  doc.body.appendChild(strip);
+  doc.body.appendChild(gauge);
+  doc.body.appendChild(sent);
+  doc.body.appendChild(recpt);
+
+  hud.setLayoutMode('desktop');
+  eq('documentElement carries the resolved layout', doc.documentElement.getAttribute('data-st-layout'), 'desktop');
+  const consoleEl = doc.querySelector('.st-console');
+  check('the console exists after switching to desktop', !!consoleEl);
+  // Every band child is now inside the console, not directly under body. (DOM nodes are
+  // not JSON-serialisable, so the eq helper is no good here — fall back to `check`.)
+  for (const n of [chip, strip, gauge, sent, recpt]) {
+    check(n.className + ' lives in the console', n.parentNode === consoleEl);
+  }
+
+  // Toggle the toggle. The HUD cycles mobile <-> desktop; since we just set 'desktop', the
+  // next toggle call should land on 'mobile'. (toggleLayoutMode is the public entry point
+  // the in-page button calls; setLayoutMode is the one the options page calls.)
+  hud.toggleLayoutMode();
+  eq('toggle flips desktop -> mobile', hud.layoutMode, 'mobile');
+  eq('documentElement follows the toggle', doc.documentElement.getAttribute('data-st-layout'), 'mobile');
+  // On mobile the children are back in the body and the console is removed.
+  for (const n of [chip, strip, gauge, sent, recpt]) {
+    check(n.className + ' is back in the body on mobile', n.parentNode === doc.body);
+  }
+  check('the console is removed on mobile', !doc.querySelector('.st-console'));
+
+  // The mode toggle button is mounted, has the right text, and does not steal focus
+  // (it is the kind of button PS's keyboard input would be sensitive to).
+  const btn = doc.querySelector('.st-mode-toggle');
+  check('the mode toggle is mounted', !!btn);
+  check('its label matches the resolved layout', /mobile/i.test(btn.textContent), btn.textContent);
+  eq('its resolved attribute matches', btn.getAttribute('data-st-resolved'), 'mobile');
+}
+
 function main() {
   console.log('Showdown Tactician — HUD node lifecycle (real elements)\n');
   sectionRollbackIsRecordedOnce();
@@ -498,6 +575,7 @@ function main() {
   sectionReceiptCopyActuallyCopies();
   sectionInitResetsTheEvaluationLatch();
   sectionAdoptedDrawerStillBindsLayoutSignals();
+  sectionLayoutModeResolvesAndReparents();
 
   section('summary');
   console.log('checks passed: ' + passed);

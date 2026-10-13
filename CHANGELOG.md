@@ -276,6 +276,62 @@ than the bug. Stated here rather than hidden:
 
 ### Added
 
+- **The HUD works on a desktop viewport, and there is a button that switches.** The whole overlay was
+  designed for one screen size — a 411×891 portrait phone — and on a desktop it was wrong in the way
+  that matters: the bottom band is `position: fixed` and full-width, so at 1920 px it was a 1920 px
+  strip laid over Showdown's battle log, which is not a control that can be lifted away. Measured on
+  both live clients at 1920×1080, 1440×900 and 1280×800 (`Documents/ST-UI-review/probe-desktop.js`),
+  Showdown's desktop layout is the same on both: the battle arena is a **fixed 640 px-wide column at
+  x=0** and the scrollable log starts at x=640, so the only viewport the HUD can own is
+  **x 0..640, and only below the move bar** (`.battle-controls` sits at `position: absolute;
+  top: 370px`, i.e. y 426..531 of the arena column — its position is client-specific and had to be
+  measured, not assumed, as the mobile lift already proved).
+
+  `hud.layoutMode` (`'auto'` | `'mobile'` | `'desktop'`, default `'auto'`) resolves against
+  `hud.layoutBreakpoint` (1024): `auto` picks by `innerWidth`, the explicit modes always win. The
+  resolution is published as `data-st-layout` on `documentElement` and every desktop rule in
+  `styles/overlay.css` is scoped to it, so a lobby, the options page and the test harness keep the
+  viewport-top mobile layout byte for byte — the attribute is only ever set by the overlay itself.
+  In desktop mode the five band elements (TR chip, bench strip, PP gauge, format sentinel, receipt)
+  are re-parented into ONE scrollable `.st-console` flex column docked at `left: 8px; top: 58px+
+  width: 624px`, which is measured live at 8..632 × 513..1072 — inside the arena column, under the
+  move bar, and clear of the log by 8 px of margin. The banner, overlord pill, badge row and drawer
+  re-anchor to the same column. On mobile the elements go back to `<body>` as `position: fixed`
+  nodes and the console is removed. Re-parenting is idempotent and `_reparentOutOfConsole` snapshots
+  the child list before moving, so a node that is never re-parented is simply skipped rather than
+  throwing on a detached/live list.
+
+  Two traps this hit, both recorded because both were caught by a test rather than by eye:
+  - **The band elements did not exist yet when the layout was first applied.** The constructor runs
+    before any render call, so `_reparentIntoConsole` found nothing to move and every band element
+    then mounted full-width into `<body>`, back over the log. `_mountBand()` now routes band
+    CREATION to the console when `resolvedLayout === 'desktop'`, and is used by every
+    `_ensureChip` / `renderBenchTargets` / `renderPPGauge` / `renderFormatSentinel` /
+    `renderReceipt` path — so a band created in turn 40 lands in the console too, not just one that
+    happened to exist at construction. 6 of the 6 new checks fail with it removed.
+  - **The mode toggle must not be mounted from the layout switch.** It was, and that broke
+    `tests/dom_check.js` ...and leaves no textarea behind in the document, because merely CONSTRUCTING
+    a HUD put a clickable button in the page. It is now mounted only from `bindDrawer()` — the "this
+    HUD is live in this tab" signal — on both the fresh and the adopt-an-existing-drawer exits.
+
+  The switch is an in-page `.st-mode-toggle` pill next to the TAC button (emoji + label, relabelled
+  on every resolution) whose click calls `toggleLayoutMode()`; a capture-phase listener on the same
+  button blurs it immediately after activation, so a HUD button can never end up holding keyboard
+  focus — measured live, `activeElement` is `BODY` after the click. The choice is persisted in BOTH
+  the page's `localStorage` (`stHudLayout`, read synchronously at construction so a page restored by
+    the browser has the right layout before the first paint) and `chrome.storage.local` for the
+  options page, with a `chrome.storage.onChanged` listener mirroring a change made in ANOTHER tab
+  into this one. The options page has a matching radio (`hudLayout`, auto / mobile / desktop).
+
+  Verified: `Documents/ST-UI-review/verify-desktop.js` on the live new client at 1920×1080 — auto
+  resolves to desktop, all five band elements inside the 624 px console, **`psOverlaps: []`**,
+  forced-mobile at 1920 still renders the phone layout (it may then cover PS, which is what asking
+  for the phone layout on a desktop means), the toggle flips both directions, focus stays on `BODY`.
+  Resize re-resolves `auto` both ways (412→mobile, 1280→desktop, 900→mobile, 1920→desktop) with the
+  injected files and with the real extension. The mobile layout itself is UNCHANGED — `probe-mock-geom`
+  still measures lift 300 px / 4 px clear / a tap-transparent strip on the new mock and lift 0 px /
+  240 px clear on classic. e2e is 43/43, `tests/dom_check.js` is 77/77.
+
 - **Negative-space ability deduction in the pruner** (`src/set_pruner.js`, rule tables in
   `src/util.js`). The pruner narrowed the opponent's candidate sets by ITEM and MOVE; abilities were
   only ever read the other way (a revealed ability disproved the sets naming a different one). Two

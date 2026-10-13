@@ -8,7 +8,7 @@
   'use strict';
 
   var ST = (window.ST = window.ST || {});
-  var DEFAULTS = { provider: 'gemini', apiKey: '', teamText: '', elo: 1400 };
+  var DEFAULTS = { provider: 'gemini', apiKey: '', teamText: '', elo: 1400, hudLayout: 'auto' };
   var PROVIDER_LABELS = {
     gemini: 'Google Gemini (gemini-3.5-flash-lite)',
     openrouter: 'OpenRouter (google/gemini-2.0-flash-lite-001)'
@@ -247,7 +247,13 @@
     var apiKey = $('api-key') ? $('api-key').value.trim() : '';
     var teamText = $('team-text') ? $('team-text').value : '';
     var elo = clampElo($('elo') ? $('elo').value : DEFAULTS.elo);
-    return { provider: provider, apiKey: apiKey, teamText: teamText, elo: elo };
+    var hudLayout = 'auto';
+    var hudRadios = document.querySelectorAll('input[name="hudLayout"]');
+    for (var j = 0; j < hudRadios.length; j++) {
+      if (hudRadios[j].checked) hudLayout = hudRadios[j].value;
+    }
+    if (hudLayout !== 'auto' && hudLayout !== 'mobile' && hudLayout !== 'desktop') hudLayout = 'auto';
+    return { provider: provider, apiKey: apiKey, teamText: teamText, elo: elo, hudLayout: hudLayout };
   }
 
   function applyToForm(cfg) {
@@ -263,6 +269,11 @@
     if (label) label.textContent = String(clampElo(cfg.elo));
     var hint = $('elo-hint');
     if (hint) hint.textContent = eloHint(clampElo(cfg.elo));
+    var hudLayout = (cfg.hudLayout === 'mobile' || cfg.hudLayout === 'desktop') ? cfg.hudLayout : 'auto';
+    var hudRadios = document.querySelectorAll('input[name="hudLayout"]');
+    for (var j = 0; j < hudRadios.length; j++) {
+      hudRadios[j].checked = (hudRadios[j].value === hudLayout);
+    }
     renderReadout(validateTeamText(cfg.teamText || ''));
   }
 

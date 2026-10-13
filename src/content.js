@@ -36,10 +36,32 @@
       this.llm = ST.LLMTactician ? new ST.LLMTactician() : null;
       const self = this;
       // The HUD owns the DOM; the boot owns the answers. A bench tap and a receipt copy come
-      // back through these two callbacks, so ui_overlay.js never needs the engine.
+      // back through these two callbacks, so ui_overlay.js never needs the engine. The layout
+      // mode (auto / mobile / desktop) is read from page localStorage synchronously (the
+      // chrome.storage read is async and the HUD is constructed inline here), and written
+      // back on toggle via the `onLayoutModeChange` callback below.
+      const STORAGE_HUD_LAYOUT_KEY = 'stHudLayout';
+      let initialLayout = 'auto';
+      try {
+        const raw = window.localStorage.getItem(STORAGE_HUD_LAYOUT_KEY);
+        if (typeof raw === 'string' && /^(auto|mobile|desktop)$/.test(raw)) initialLayout = raw;
+      } catch (e) { /* private mode / unavailable storage */ }
       this.hud = ST.MobileHUD ? new ST.MobileHUD({
         doc: this.doc,
         state: this.state,
+        layoutMode: initialLayout,
+        onLayoutModeChange: function (mode) {
+          // Mirror to both stores. localStorage is the synchronous read source the HUD
+          // constructed itself from; chrome.storage.local is the cross-page source the
+          // options page reads (it lives on the extension origin and has no access to
+          // the page's localStorage).
+          try { window.localStorage.setItem(STORAGE_HUD_LAYOUT_KEY, mode); } catch (e) { /* private mode */ }
+          try {
+            if (typeof chrome !== 'undefined' && chrome && chrome.storage && chrome.storage.local) {
+              chrome.storage.local.set({ [STORAGE_HUD_LAYOUT_KEY]: mode });
+            }
+          } catch (e) { /* no storage API (Node harness) */ }
+        },
         onBenchTap: function (id) { return self._selectBenchTarget(id); },
         onCopyReceipt: function (text) { return self._copyReceipt(text); }
       }) : null;
@@ -772,9 +794,22 @@
         if (typeof chrome !== 'undefined' && chrome && chrome.storage && chrome.storage.onChanged) {
           const self = this;
           chrome.storage.onChanged.addListener(function (changes, area) {
-            if (area !== 'local' || !changes || !changes.teamText) return;
-            self.parseTeam(changes.teamText.newValue || '');
-            self._onTeamLoaded(self.team);
+            if (area !== 'local' || !changes) return;
+            // Team paste changed: re-parse and re-render the drawer status.
+            if (changes.teamText) {
+              self.parseTeam(changes.teamText.newValue || '');
+              self._onTeamLoaded(self.team);
+            }
+            // Layout mode changed (options page saved it, or another tab flipped it). Apply
+            // the new mode to the live HUD and keep the page-local mirror in sync so a reload
+            // sees the same value without a second storage round trip.
+            if (changes.stHudLayout && self.hud && typeof self.hud.setLayoutMode === 'function') {
+              const mode = changes.stHudLayout.newValue;
+              if (mode === 'auto' || mode === 'mobile' || mode === 'desktop') {
+                try { window.localStorage.setItem('stHudLayout', mode); } catch (e) { /* private mode */ }
+                self.hud.setLayoutMode(mode);
+              }
+            }
           });
         }
       } catch (e) { /* optional */ }
