@@ -321,6 +321,47 @@ section('4. their setup reply buys one extra exchange, priced by the damage engi
   same('a DAMAGING reply is untouched by any of this (their Extreme Speed control)',
     ON._payoff(SPIN, ESPEED, st, st.field), OFF._payoff(SPIN, ESPEED, st, st.field));
 
+  /* ------------------------------------------------------------------ the follow-up WEIGHT
+   * `laplace.quiescence.followUpWeight` scales how much of that second exchange is charged. The
+   * contract is that 1.0 is an EXACT identity (the cell pinned above is the shipped build), that a
+   * missing or unusable value resolves to 1 rather than to 0 — the failure that would silently
+   * delete the extension — and that anything in between scales the DAMAGE of the exchange and
+   * nothing else (their boost still reaches the leaf, the Speed order is still resolved). */
+  same('the shipped weight is the identity', ON._followUpWeight(), 1);
+  eqc('...and a missing or unusable value resolves to the identity, never to 0',
+    [mkEngine({ enabled: true })._followUpWeight(),
+      mkEngine({ enabled: true, followUpWeight: Infinity })._followUpWeight(),
+      mkEngine({ enabled: true, followUpWeight: NaN })._followUpWeight(),
+      mkEngine({ enabled: true, followUpWeight: 'half' })._followUpWeight()], [1, 1, 1, 1]);
+  eqc('...and an out-of-range one is clamped into [0, 1]',
+    [mkEngine({ enabled: true, followUpWeight: -2 })._followUpWeight(),
+      mkEngine({ enabled: true, followUpWeight: 5 })._followUpWeight()], [0, 1]);
+
+  const HALF = mkEngine({ enabled: true, extendSetup: true, followUpWeight: 0.5 });
+  const fuHalf = HALF._setupFollowUp(SPIN, me, them, me, gain, 0, { oppHp: firstOppHp, myHp: 100 }, st.field);
+  same('half the weight charges exactly half of their follow-up hit',
+    fuHalf.avgPercent, boosted.avgPercent * 0.5);
+  same('...to our body', fuHalf.myHp, U.clamp(100 - boosted.avgPercent * 0.5, 0, 100));
+  same('...and halves our repeated hit against their boosted defence too',
+    fuHalf.oppHp, U.clamp(firstOppHp - repeat.avgPercent * 0.5, 0, 100));
+  check('...while the boost still reaches the leaf, so the follow-up is still their boosted best move',
+    fuHalf.move === fu.move, fuHalf.move + ' vs ' + fu.move);
+  const halfCell = HALF._payoff(SPIN, DD, st, st.field);
+  /* The direction is deliberately NOT asserted: the weight shrinks their boosted hit on us (better
+   * for us) AND our repeated hit on them (worse), so which way the cell moves is a property of the
+   * board, not of the knob. What the knob promises is that it MOVES. */
+  check('...and the CELL moves, which is the point of the knob', halfCell !== live,
+    live + ' -> ' + halfCell);
+
+  const ZERO = mkEngine({ enabled: true, extendSetup: true, followUpWeight: 0 });
+  const fuZero = ZERO._setupFollowUp(SPIN, me, them, me, gain, 0, { oppHp: firstOppHp, myHp: 100 }, st.field);
+  same('a weight of 0 charges no second exchange on either side (their number)',
+    fuZero.avgPercent, 0);
+  same('...to our body', fuZero.myHp, 100);
+  same('...and our repeat lands nothing either', fuZero.oppHp, firstOppHp);
+  check('...and it is still NOT the legacy cell: zero the DAMAGE, not the boost',
+    ZERO._payoff(SPIN, DD, st, st.field) !== legacy, '');
+
   // A DEFENCE-boosting setup must shrink our repeated hit: the second hit is priced with `gain` as
   // the DEFENDER\u2019s stages, not the attacker\u2019s.
   const idGain = U.setupBoosts('Iron Defense');

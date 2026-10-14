@@ -239,7 +239,7 @@ tests/tuning_check.js      the four tuning tiers — the Elo switch band, turn u
 tests/preview_check.js     the Turn-0 lead advisory: the parser contract, the 6x6 evaluator scoring,
                            the broker wiring and the HUD card (31 checks)
 tests/quiescence_check.js  the setup punisher: the boost table, the one extra exchange, the three
-                           guards (71 checks)
+                           guards (104 checks)
 tests/profile_check.js     the opponent profiler: the deviation estimator, label/factor agreement,
                            every refusal (80 checks)
 tests/entropy_check.js     the scouting entropy: Shannon arithmetic against hand-computed constants,
@@ -343,7 +343,8 @@ node tests/hud_check.js       # 238 checks: the seven HUD extras (stub DOM), the
 node tests/discrete_check.js  # 110 checks: the 16 discrete rolls, the exact KO count, EV pinning, residual order
 node tests/scout_check.js     #  78 checks: the scouting tool, the overlay, the pruner's re-weighting
 node tests/pressure_check.js  # 151 checks: the PP-stall pivot, the volatility charge, the format sentinel
-node tests/quiescence_check.js #  92 checks: the setup punisher, the boost table, the guards
+node tests/quiescence_check.js # 104 checks: the setup punisher, the boost table, the follow-up
+                              #   weight (1.0 is an exact identity), the guards
 node tests/profile_check.js   #  80 checks: the opponent profiler (deviation, labels, clamping)
 node tests/entropy_check.js   #  48 checks: the scouting entropy and its assumed-response model
 node tests/wincon_check.js    #  56 checks: the win-condition bounty (refusals, payout)
@@ -727,7 +728,7 @@ number by hand.
   the same 432 `_payoff` calls per busy turn, and the suite pins the per-cell counts. It is a config
   flag (`laplace.quiescence.enabled`) rather than a constant because that trade is a taste, not a fact.
 
-`tests/quiescence_check.js` (92 checks) pins the table's completeness, the override contract it
+`tests/quiescence_check.js` (104 checks) pins the table's completeness, the override contract it
 rides on, the arithmetic of the extra exchange as identities against the damage engine's own
 numbers, the three guards, purity and the cost.
 
