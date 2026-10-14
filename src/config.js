@@ -124,7 +124,36 @@
         extendSetup: true,
         // Their PROTECT reply blocks OUR move this turn (a game rule). Without it the matrix
         // credited us the hit anyway, lethal bonus included.
-        blockProtect: true
+        blockProtect: true,
+        // Turn 2 of the setup extension is ordered by the SPEED each body will actually have there
+        // (the boost applied, plus Trick Room and move priority). Without it both second actions
+        // landed unconditionally, so "boost, then kill the setup user" and "boost, die to the setup
+        // user" scored the same as "boost, trade". A body that faints first does not act at all.
+        respectTurn2Speed: true
+      },
+      // Opponent-switch substitution (see laplace_core._oppSwitchTarget). A switch reply used to be
+      // priced by resetting the outgoing body to 100% and DISCARDING our turn-1 hit — the incoming
+      // body was never named, never paid entry hazards, and never took the attack aimed at it. With
+      // this on, the incoming body is resolved (from the sampled world's own roster when one is
+      // available), pays its side's entry hazards, and is the body our move lands on, so the leaf
+      // board has the right body standing there. `enabled: false` restores the old pricing exactly.
+      realOppSwitch: {
+        enabled: true
+      },
+      // Pivot pricing (see laplace_core._pivotPayoff). U-turn / Volt Switch / Flip Turn / Chilly
+      // Reception / Teleport / Parting Shot are priced as what they are: a hit, a switch, and the
+      // incoming body's own matchup — with the TURN ORDER deciding who eats the opponent's reply,
+      // Regenerator credited to the body leaving, and Chilly Reception's snow on the field.
+      pricePivots: {
+        enabled: true,
+        regenPct: 33.3                     // Regenerator credit for the body leaving (1/3 of max HP)
+      },
+      // Recovery pricing (see laplace_core._payoff). A healing move deals no damage, so the 1-ply
+      // model scored it as a wasted turn: the body entered the leaf at the HP it had ALREADY lost.
+      // With this on, the user's heal is credited before the opponent's reply, clamped to 100.
+      priceRecovery: {
+        enabled: true,
+        defaultHealPct: 50                 // percent of max HP credited for a healing move
       },
       // Comeback mode (prospect theory on the risk dial — see laplace_core._comebackScale). Scales
       // the volatility charge by where the 128D evaluator puts the board: sharpened when we are

@@ -89,16 +89,37 @@
   }
   function otherSide(side) { return side === 'p1' ? 'p2' : 'p1'; }
 
-  /** 'p2a: Great Tusk' -> { side:'p2', slot:'p2a', name:'Great Tusk' } */
+  /**
+   * 'p2a: Great Tusk' -> { side:'p2', slot:'p2a', name:'Great Tusk' }.
+   *
+   * A `|request|` roster entry is `p1: Great Tusk` — the SIDE, with no slot letter, because the
+   * server's roster is the team, not the battlefield, and a body on the bench has no slot yet. A
+   * slot must therefore be REPORTED ONLY WHEN THE TEXT CARRIES ONE: this used to fall back to the
+   * bare side prefix, so `p1: Great Tusk` parsed as `slot:'p1'`, and `_mergeMyTeamFromRequest`
+   * matched a body by that invented slot and then STAMPED it onto the body it found. Measured
+   * consequences (both seats, headless arena): the roster entry for the body that was already
+   * holding the fake `p1` slot was overwritten by every later entry in the list (holes in HP and
+   * status), the fake slot displaced the real battle slot, and — through the merge's
+   * last-entry-wins `isActive` assignment — the ACTIVE body was left flagged inactive, so it came
+   * back into `legalActions.switches` and the sim rejected the switch the engine chose with
+   * `|error|[Invalid choice] Can't switch: You can't switch to an active Pokémon`.
+   */
   function parseIdent(ident) {
     const s = String(ident || '');
     const colon = s.indexOf(':');
     const slotPart = (colon === -1 ? s : s.slice(0, colon)).trim();
     const name = colon === -1 ? '' : s.slice(colon + 1).trim();
     const side = slotPart.slice(0, 2);
-    const slot = /^p[12][a-f]$/.test(slotPart) ? slotPart : (side.length === 2 ? side : '');
+    const slot = /^p[12][a-f]$/.test(slotPart) ? slotPart : '';
     return { slot: slot, side: side, name: name };
   }
+
+  /**
+   * Is this ident's slot a REAL battle slot ('p1a'..'p2f')? The one place that answers it, so the
+   * merge, the request's switch list and every protocol handler agree on what "has a slot" means.
+   * A bare side prefix is NOT a slot — see parseIdent.
+   */
+  function isBattleSlot(slot) { return /^p[12][a-f]$/.test(String(slot || '')); }
 
   /**
    * Do these details describe a Mega/Primal FORME (not a species that merely contains the
@@ -211,7 +232,7 @@
           oppProtectedLastTurn: false
         },
         request: null,
-        legalActions: { moves: [], switches: [], trapped: false, forceSwitch: false, forId: null },
+        legalActions: { moves: [], switches: [], trapped: false, maybeTrapped: false, forceSwitch: false, forId: null },
         history: { turns: [], events: [] },
         log: [],
         result: null,
@@ -1803,10 +1824,18 @@
         this._mergeMyTeamFromRequest(json.side.pokemon);
       }
 
-      const actions = { moves: [], switches: [], trapped: false, forceSwitch: false };
+      const actions = { moves: [], switches: [], trapped: false, maybeTrapped: false, forceSwitch: false };
       const active = Array.isArray(json.active) ? json.active[0] : null;
       if (active) {
         actions.trapped = !!active.trapped;
+        /* `maybeTrapped` is the server's weaker read and it is NOT the same fact as `trapped`: the
+         * sim sets `trapped` only when it has PROVEN the body cannot leave, and `maybeTrapped` when
+         * it merely cannot rule it out — and in that second case it ACCEPTS the switch
+         * (`Side.chooseSwitch`: `pokemon.trapped` rejects, `pokemon.maybeTrapped` only sets
+         * `cantUndo`). So this flag is published, never used to delete a legal switch: deleting
+         * them would cost a real escape option to hide an uncertainty the engine is allowed to act
+         * on. */
+        actions.maybeTrapped = !!active.maybeTrapped;
         const moves = Array.isArray(active.moves) ? active.moves : [];
         for (let i = 0; i < moves.length; i++) {
           const mv = moves[i];
@@ -1833,24 +1862,63 @@
         actions.forceSwitch = true;
       }
       if (json.wait) {
-        st.legalActions = { moves: [], switches: [], trapped: false, forceSwitch: false, wait: true, forId: null };
+        st.legalActions = { moves: [], switches: [], trapped: false, maybeTrapped: false, forceSwitch: false, wait: true, forId: null };
         st.waiting = true;
         return;
       }
       st.waiting = false;
 
-      // switches: every healthy, non-active, untrapped bench member
-      const team = st.myTeam;
-      for (let i = 0; i < team.length; i++) {
-        const m = team[i];
-        if (!m || m.fainted) continue;
-        if (m.isActive) continue;
-        if (m.hp === 0) continue;
-        actions.switches.push({
-          id: m.id,
-          name: m.species,
-          slot: m.slot || (st.mySide + slotLetter(m.index))
-        });
+      /* Switches: built from the `|request|`'s OWN roster, which is the authority on three things
+       * nothing else here can be — which body is standing there NOW, which have fainted, and which
+       * slots the server will accept. Reading our own `myTeam` flags instead is what let the ACTIVE
+       * body back into this list (a stale or invented slot; see parseIdent), and the sim rejected
+       * the engine's switch to it. A body the roster does not list is never offered.
+       *
+       * A body the server says is TRAPPED cannot leave on a normal move turn: the sim answers with
+       * `Can't switch: The active Pokémon is trapped`, so the rows are dropped rather than ranked.
+       * On a `forceSwitch` frame the body is already gone and trapping does not apply — the sim's
+       * own `chooseSwitch` only consults `trapped` in its move state. */
+      const roster = (json.side && Array.isArray(json.side.pokemon)) ? json.side.pokemon : null;
+      if (roster && !(actions.trapped && !actions.forceSwitch)) {
+        const added = Object.create(null);
+        for (let i = 0; i < roster.length; i++) {
+          const p = roster[i];
+          if (!p) continue;
+          if (p.active) continue;
+          if (/fnt/i.test(String(p.condition || p.hp || ''))) continue;
+          const ident = parseIdent(p.ident || '');
+          const slotOk = isBattleSlot(ident.slot);
+          let mon = slotOk ? this._findBySlot(ident.slot) : null;
+          if (!mon && ident.name) mon = this._findBySpecies(st.mySide, ident.name);
+          if (!mon) continue;                            // never invent a body the roster named
+          const key = toID(mon.id || mon.species);
+          if (!key || added[key]) continue;
+          added[key] = true;
+          actions.switches.push({
+            id: mon.id || toID(mon.species),
+            name: mon.species || ident.name || '',
+            /* A roster entry for a benched body carries NO slot (`p1: Gholdengo`), and the slot a
+             * body last occupied is now somebody else's — publishing it would let two rows claim
+             * the same battlefield slot. Its team-order letter is stable, unique, and honest about
+             * being an index rather than a position. */
+            slot: slotOk ? ident.slot : (st.mySide + slotLetter(mon.index))
+          });
+        }
+      } else if (!roster) {
+        // No roster on the frame (a hand-built request, a driver fixture): the old bench scan, and
+        // only then — a request that HAD a roster has already said which bodies are switchable.
+        const team = st.myTeam;
+        for (let i = 0; i < team.length; i++) {
+          const m = team[i];
+          if (!m || m.fainted) continue;
+          if (m.isActive) continue;
+          if (m.hp === 0) continue;
+          actions.switches.push({
+            id: m.id,
+            name: m.species,
+            slot: m.slot || (st.mySide + slotLetter(m.index))
+          });
+        }
       }
       // WHICH body this request is about. `st.active.my` moves on, but these numbers are a
       // snapshot of one body's move list: a switch in the log with no request after it (a real
@@ -1873,14 +1941,18 @@
         if (!p) continue;
         const ident = parseIdent(p.ident || '');
         const tok = U.tokenizeDetails(p.details || '');
-        let mon = ident.slot ? this._findBySlot(ident.slot) : null;
+        /* Match on a REAL battle slot only, and only stamp one back when the frame carried one.
+         * A roster entry is `p1: Great Tusk` — no slot — and the slot it must not be matched by is
+         * the invented one parseIdent used to return. See parseIdent for what that cost. */
+        const slotOk = isBattleSlot(ident.slot);
+        let mon = slotOk ? this._findBySlot(ident.slot) : null;
         if (!mon) mon = this._findBySpecies(st.mySide, tok.species);
         if (!mon) {
-          mon = this._newMon(tok.species, st.mySide, st.myTeam.length, { slot: ident.slot || null });
+          mon = this._newMon(tok.species, st.mySide, st.myTeam.length, { slot: slotOk ? ident.slot : null });
           mon.revealed = true;
           st.myTeam.push(mon);
         }
-        if (ident.slot) mon.slot = ident.slot;
+        if (slotOk) mon.slot = ident.slot;
         this._setHP(mon, p.condition || p.hp || '');
         mon.isActive = !!p.active;
         if (!mon.fromPaste) mon.level = tok.level || mon.level;

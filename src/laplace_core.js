@@ -116,8 +116,22 @@
       this.quiescence = Object.assign({
         enabled: cfgGet('laplace.quiescence.enabled', true),
         extendSetup: cfgGet('laplace.quiescence.extendSetup', true),
-        blockProtect: cfgGet('laplace.quiescence.blockProtect', true)
+        blockProtect: cfgGet('laplace.quiescence.blockProtect', true),
+        respectTurn2Speed: cfgGet('laplace.quiescence.respectTurn2Speed', true)
       }, options.quiescence || {});
+      // The three 1-ply leaf corrections, each with its own switch and each the EXACT identity when
+      // off (see _payoff, _pivotPayoff, _setupFollowUp).
+      this.realOppSwitch = Object.assign({
+        enabled: cfgGet('laplace.realOppSwitch.enabled', true)
+      }, options.realOppSwitch || {});
+      this.pricePivots = Object.assign({
+        enabled: cfgGet('laplace.pricePivots.enabled', true),
+        regenPct: cfgGet('laplace.pricePivots.regenPct', 33.3)
+      }, options.pricePivots || {});
+      this.priceRecovery = Object.assign({
+        enabled: cfgGet('laplace.priceRecovery.enabled', true),
+        defaultHealPct: cfgGet('laplace.priceRecovery.defaultHealPct', 50)
+      }, options.priceRecovery || {});
       // Comeback mode (prospect theory on the risk dial). A 100-turn tie is a loss, and so is a
       // safe grind when you are already behind: with the board scored by the evaluator, the SAME
       // miss charge is scaled up when we are winning (minimum variance) and down when we are losing
@@ -212,7 +226,15 @@
       }
       if (!out.length) {
         const active = state.active && state.active.my;
-        const fallback = active && ((active.setMoves && active.setMoves.length && active.setMoves) ||
+        /* A FORCED REPLACEMENT IS NOT A MOVE TURN. On a `forceSwitch` frame the request carries no
+         * move list precisely because the body standing there has fainted, and ARCHITECTURE.md
+         * Rule 10 leaves that body in `state.active.my` until its replacement arrives. Falling
+         * through to the set's own moves here built a menu for a fainted body, and `evaluateTurn`
+         * then ranked `move <its move>` as a REPLACEMENT — an action the server cannot accept, on
+         * the one frame whose whole purpose is picking the best bring-in. The frame ranks bench
+         * switches or nothing at all. */
+        const canMove = !legal.forceSwitch && !legal.wait && !(active && active.fainted);
+        const fallback = canMove && active && ((active.setMoves && active.setMoves.length && active.setMoves) ||
           (active.liveSet && active.liveSet.moves) || active.revealedMoves || []);
         for (let i = 0; fallback && i < fallback.length; i++) {
           const name = fallback[i];
@@ -230,7 +252,13 @@
         if (!s) continue;
         out.push({ kind: 'switch', name: s.name || s.id, moveId: null, targetId: s.id || s.slot || s.name, switchSlot: s.slot });
       }
-      if (!switches.length) {
+      /* The bench scan is a FALLBACK for a board with no authoritative action list (a fixture, a
+       * driver-built state). It must never re-add body rows the request already ruled out: the
+       * request is the only thing that knows the server will refuse them, and re-deriving them from
+       * `myTeam` here put a TRAPPED body's switch back on the menu (`legal.switches` is empty
+       * precisely because every bench body is illegal), which the sim answers with
+       * `|error|[Invalid choice] Can't switch: The active Pokémon is trapped`. */
+      if (!switches.length && !legal.trapped) {
         const bench = (state.myTeam || []).filter(function (mon) {
           return mon && !mon.fainted && !mon.isActive && mon.revealed !== false;
         });
@@ -848,7 +876,7 @@
             const row = [];
             for (let j = 0; j < cols.length; j++) {
               let value = 0;
-              try { value = this._payoff(rows[i].action, cols[j].action, state, state.field || {}); }
+              try { value = this._payoff(rows[i].action, cols[j].action, state, state.field || {}, null); }
               catch (e) { value = 0; }
               row.push(value);
             }
@@ -1083,6 +1111,295 @@
       return null;
     }
 
+    /* ---------------------------- switch-in and turn-order pricing (the leaf corrections) */
+
+    /**
+     * _knownAbilityId(mon) -> the ability id this body's own evidence supports, or ''.
+     * Authority order: what the protocol REVEALED, then the registered set (our own team is known
+     * from the paste), then the pruner's current best candidate set. An unknown body returns '', and
+     * every caller treats that as "no claim" — no tier here ever guesses an ability.
+     */
+    _knownAbilityId(mon) {
+      if (!mon) return '';
+      const direct = [mon.revealedAbility, mon.ability, mon.liveSet && mon.liveSet.ability];
+      for (let i = 0; i < direct.length; i++) {
+        const id = U.toID(direct[i]);
+        if (id) return id;
+      }
+      const cand = mon.candidateSets && mon.candidateSets[0];
+      return U.toID(cand && cand.ability);
+    }
+
+    /** _movePriority(name) -> the move's own priority bracket, from the dex (0 when unknown). */
+    _movePriority(name) {
+      const data = U.getMoveData(name);
+      return data && typeof data.priority === 'number' ? data.priority : 0;
+    }
+
+    /**
+     * _turnOrder(myMon, myMove, oppMon, oppMove, gain, field, state) -> 'me' | 'them' | null
+     *
+     * Who acts first on the NEXT turn. The priority bracket decides first (Protect's +4 is not a
+     * Speed question), then effective Speed — with their stat stages carrying `gain`, which is the
+     * entire point of pricing a setup turn, and through Trick Room, which inverts the comparison.
+     *
+     * Null when the order is genuinely undecidable: a Speed tie is a coin flip in this game, and a
+     * coin flip is not a claim. Callers fall back to the un-ordered pricing there rather than
+     * inventing a winner.
+     */
+    _turnOrder(myMon, myMove, oppMon, oppMove, gain, field, state) {
+      if (!myMon || !oppMon || !U || typeof U.computeSpeed !== 'function') return null;
+      const myPrio = this._movePriority(myMove);
+      const oppPrio = this._movePriority(oppMove);
+      if (myPrio !== oppPrio) return myPrio > oppPrio ? 'me' : 'them';
+      const sides = state ? { my: state.mySide, opp: state.oppSide } : null;
+      const speedOf = function (mon, extraSpe, sideKey) {
+        const f = field || {};
+        const tw = (sides && sideKey && f.tailwind) ? f.tailwind[sideKey] : false;
+        try {
+          return U.computeSpeed(mon, {
+            // Same resolution order the veto layer and the HUD use, for the same reason: an item or
+            // ability we actually hold must not vanish because the OBSERVED fields were never
+            // populated (a paste-registered body only carries mon.item / mon.ability).
+            item: mon.currentBattleItem || mon.confirmedItem || mon.item || (mon.liveSet && mon.liveSet.item),
+            ability: mon.revealedAbility || mon.ability || (mon.liveSet && mon.liveSet.ability),
+            boostStage: ((mon.boosts && mon.boosts.spe) || 0) + (extraSpe || 0),
+            weather: f.weather || '',
+            terrain: f.terrain || '',
+            tailwind: !!tw,
+            // The shared reading, not `boostedStat === 'spe'` on its own: a body only outruns us on
+            // a LIVE boost, and Protosynthesis raising Attack is not a Speed multiplier at all
+            // (util.paradoxSpeedBoost is the one place that rule lives — VETO4 was blind here once).
+            paradoxSpeedBoost: U.paradoxSpeedBoost(mon),
+            unburden: !!mon.unburden
+          }).effective;
+        } catch (e) { return null; }
+      };
+      const mySpeed = speedOf(myMon, 0, sides && sides.my);
+      const oppSpeed = speedOf(oppMon, gain && gain.spe ? gain.spe : 0, sides && sides.opp);
+      if (!isFinite(mySpeed) || !isFinite(oppSpeed) || mySpeed === oppSpeed) return null;
+      const mineFaster = mySpeed > oppSpeed;
+      const tr = !!(field && field.trickRoom);
+      return (mineFaster !== tr) ? 'me' : 'them';
+    }
+
+    /**
+     * _oppSwitchTarget(state, oppAction, world) -> the body THEY are switching to, or null.
+     *
+     * The sampled WORLD's own roster is the authority when there is one — its bodies carry the set
+     * the sampler weighted (item, ability, spread), which is what the incoming body's entry hazards
+     * and defensive numbers must be read from. Falls back to our own read of their team by species
+     * name, and to null when even that cannot name it (the caller then keeps the old pricing).
+     */
+    _oppSwitchTarget(state, oppAction, world) {
+      const wanted = U.toID((oppAction && (oppAction.targetId || oppAction.name)) || '');
+      if (!wanted) return null;
+      const pools = [world && world.team, state.oppTeam];
+      for (let p = 0; p < pools.length; p++) {
+        const team = pools[p];
+        if (!Array.isArray(team) || !team.length) continue;
+        for (let i = 0; i < team.length; i++) {
+          const mon = team[i];
+          if (!mon || mon.fainted || mon.isActive) continue;
+          if (U.toID(mon.species || mon.id) === wanted) return mon;
+        }
+      }
+      return null;
+    }
+
+    /**
+     * _switchInHp(mon, state, field) — the HP the incoming OUR body has left after entry hazards.
+     * The item/ability chain here is the ORIGINAL one, deliberately: this pricing predates the leaf
+     * corrections and must stay byte-identical when their switches are off.
+     */
+    _switchInHp(mon, state, field) {
+      const haz = field.hazards && field.hazards[state.mySide || 'p1'];
+      const chip = U.hazardPercent(mon.species || mon.id,
+        mon.currentBattleItem || mon.confirmedItem || '', mon.revealedAbility || '', haz || {});
+      return U.clamp(this._hp(mon) - chip, 0, 100);
+    }
+
+    /**
+     * _oppSwitchInHp(mon, state, field) — the incoming THEIR body's HP after OUR SIDE's hazards.
+     * Same idea, with the FULL item/ability evidence: an opposing body's item is only ever known
+     * from the protocol or from the sampled set, so `mon.item` / `liveSet.item` are part of the
+     * chain here in a way they are not for our own pre-existing switch pricing.
+     */
+    _oppSwitchInHp(mon, state, field) {
+      const haz = field.hazards && field.hazards[state.oppSide || 'p2'];
+      const chip = U.hazardPercent(mon.species || mon.id,
+        mon.currentBattleItem || mon.confirmedItem || mon.item || (mon.liveSet && mon.liveSet.item) || '',
+        mon.revealedAbility || mon.ability || (mon.liveSet && mon.liveSet.ability) || '', haz || {});
+      return U.clamp(this._hp(mon) - chip, 0, 100);
+    }
+
+    /**
+     * _bestBenchSwitch(state, oppMon, field) -> the bench body that best TAKES this opponent's
+     * attack — the smallest incoming damage from their best move, from the damage engine. This is
+     * the body a FAST pivot brings in, because that body is the one that eats the reply.
+     */
+    _bestBenchSwitch(state, oppMon, field) {
+      return this._bestBenchBody(state, oppMon, field, 'takes');
+    }
+
+    /**
+     * _bestBenchAttacker(state, oppMon, field) -> the bench body that best THREATENS this opponent:
+     * the largest damage it deals back. This is the body a SLOW pivot brings in, and it enters
+     * CLEAN (the reply has already landed on the body that left), so what it resists is not the
+     * question — what it does is.
+     */
+    _bestBenchAttacker(state, oppMon, field) {
+      return this._bestBenchBody(state, oppMon, field, 'threatens');
+    }
+
+    /**
+     * _bestBenchBody(...) -> that choice, memoised per turn.
+     *
+     * The memo is not an optimisation nicety: `_payoff` runs up to 432 times per turn and the pivot
+     * row is priced once per opposing column, so without it the selector would run a full damage
+     * search per bench body per column and the decision would blow its time budget. The key is the
+     * opponent BODY (species + HP) plus the direction, so two columns that face the same opponent
+     * share one answer, and the cache lives on the engine for exactly one evaluateTurn.
+     *
+     * ONE damage search per body, deliberately — not "the best of both directions", which would
+     * double the cost of the hottest new path for a tie-break. Ties go to the earlier body in team
+     * order, which is stable and explainable.
+     */
+    _bestBenchBody(state, oppMon, field, mode) {
+      if (!oppMon) return null;
+      const memo = this._pivotMemo || (this._pivotMemo = Object.create(null));
+      const key = mode + '|' + U.toID(oppMon.species || oppMon.id) + '|' +
+        U.round1(this._hp(oppMon)) + '|' + this._hp(state.active && state.active.my);
+      if (key in memo) return memo[key];
+      const bench = (state.myTeam || []).filter(function (m) {
+        return m && !m.fainted && !m.isActive && m.revealed !== false;
+      });
+      let best = null, bestScore = -Infinity;
+      for (let i = 0; i < bench.length; i++) {
+        const mon = bench[i];
+        let score;
+        if (mode === 'takes') {
+          const theirs = this._damageOf(oppMon, mon, this._bestMove(oppMon, mon, field), field, false);
+          // An unreadable threat is treated as the WORST one, so a body we cannot price is never
+          // preferred for a job that means eating a hit.
+          score = -(theirs ? theirs.avgPercent : 100);
+        } else {
+          const mine = this._damageOf(mon, oppMon, this._bestMove(mon, oppMon, field), field, true);
+          score = mine ? mine.avgPercent : 0;
+        }
+        if (score > bestScore) { bestScore = score; best = mon; }
+      }
+      memo[key] = best;
+      return best;
+    }
+
+    /**
+     * _pivotPayoff(myAction, myActive, oppSideMon, oppAction, state, field, shielded, setup)
+     *   -> { myHp, oppHp, mySideMon, oppSideMon, leafOpts, event }
+     *
+     * What a PIVOT actually is: one turn that does a hit, a switch and a matchup, in an order the
+     * turn order decides. The 1-ply model priced it as "their damage lands on the body that is
+     * LEAVING", so a pivot into a check scored exactly like a pivot into nothing and a pivot out of
+     * a losing matchup was charged the loss it exists to escape.
+     *
+     * FAST (we act first): the hit lands, our body leaves, and the INCOMING body eats their reply.
+     * SLOW (they act first): the body on the field eats the reply, and only then does the pivot
+     * execute — a pivot user that faints to that hit never switches at all, which is the rule the
+     * game plays by.
+     *
+     * Regenerator is credited to the body LEAVING (+1/3 of its max HP, in percent, on top of the HP
+     * it had when it left), and Chilly Reception puts its snow up on the LEAF's field so the live
+     * board is never written through. Their SETUP reply still gets its one-ply extension
+     * (`quiescence.extendSetup`), now priced against the body that will actually be standing there.
+     *
+     * STATED APPROXIMATION: one further exchange is not modelled — the incoming body's OWN next move
+     * is left to the leaf evaluator, exactly as it is for every other row.
+     */
+    _pivotPayoff(myAction, myActive, oppSideMon, oppAction, state, field, shielded, setup) {
+      const outgoing = myActive;
+      let myHp = this._hp(outgoing);
+      let oppHp = this._hp(oppSideMon);
+      let mySideMon = outgoing;
+      const haz = field.hazards && field.hazards[state.mySide || 'p1'];
+      const isSwitchReply = !!(oppAction && oppAction.kind === 'switch');
+
+      const order = this._turnOrder(outgoing, myAction.name, oppSideMon,
+        oppAction && oppAction.name, null, field, state);
+      /* ONLY a decided order that goes our way is a FAST pivot. An undecidable order (a Speed
+       * tie) is priced as the conservative case: the body on the field eats the reply. */
+      const weActFirst = order === 'me';
+      const incoming = weActFirst
+        ? this._bestBenchSwitch(state, oppSideMon, field)
+        : this._bestBenchAttacker(state, oppSideMon, field);
+
+      /* Their live reply, priced against the body that will actually EAT it — the incoming body on
+       * a fast pivot, the body on the field otherwise. A switch reply deals us nothing at all (it
+       * has already been resolved into `oppSideMon`). Same-type bodies take very different numbers
+       * here: the whole point of a pivot into a check is that the CHECK eats it. */
+      const eater = (weActFirst && incoming) ? incoming : outgoing;
+      const reply = (isSwitchReply || !oppAction) ? null
+        : (oppAction.name === 'Struggle'
+            ? { move: 'Struggle', avgPercent: this.struggleChipPercent }
+            : this._damageOf(oppSideMon, eater, oppAction.name, field, false));
+
+      if (!weActFirst) {
+        if (reply && reply.avgPercent) myHp = U.clamp(myHp - reply.avgPercent, 0, 100);
+        if (myHp <= 0) {
+          // A fainted pivot user never pivots: no hit, no bring-in, and no Regenerator.
+          return {
+            myHp: myHp, oppHp: oppHp, mySideMon: outgoing, oppSideMon: oppSideMon, leafOpts: null,
+            event: { move: reply ? reply.move : myAction.name, avgPercent: reply ? reply.avgPercent : 0, pivot: 'fainted' }
+          };
+        }
+      }
+
+      const hit = shielded ? null : this._damageOf(outgoing, oppSideMon, myAction.name, field, true);
+      if (hit) oppHp = U.clamp(oppHp - hit.avgPercent, 0, 100);
+
+      // The body leaving heals itself on the way out (Regenerator, +1/3 max HP).
+      const regenPct = (this.pricePivots && typeof this.pricePivots.regenPct === 'number')
+        ? this.pricePivots.regenPct : 33.3;
+      const outgoingHp = this._knownAbilityId(outgoing) === 'regenerator'
+        ? U.clamp(myHp + regenPct, 0, 100) : myHp;
+
+      let leafOpts = null;
+      if (incoming) {
+        mySideMon = incoming;
+        myHp = U.clamp(this._hp(incoming) - U.hazardPercent(incoming.species || incoming.id,
+          incoming.currentBattleItem || incoming.confirmedItem || incoming.item || (incoming.liveSet && incoming.liveSet.item) || '',
+          incoming.revealedAbility || incoming.ability || '', haz || {}), 0, 100);
+        // Only the FAST pivot leaves the reply for the incoming body to eat.
+        if (weActFirst && reply && reply.avgPercent) myHp = U.clamp(myHp - reply.avgPercent, 0, 100);
+        /* The outgoing body stays on the leaf's bench, healed: it is a legal bring-in again, and
+         * dropping it (the old mapping) both hid the Regenerator credit and deleted a body. */
+        leafOpts = { keepOutgoing: true, outgoingHp: outgoingHp, incoming: incoming, field: field };
+      }
+
+      // Chilly Reception's snow goes on the LEAF's field, never the live one.
+      const weather = U.WEATHER_BY_MOVE && U.WEATHER_BY_MOVE[U.toID(myAction.name)];
+      if (weather && leafOpts) {
+        leafOpts.field = Object.assign({}, field, { weather: weather });
+      }
+
+      // Their setup reply still buys its one extra exchange, now against the body standing there.
+      let move = hit ? hit.move : myAction.name;
+      let avgPercent = hit ? hit.avgPercent : 0;
+      if (setup && setup.gain && !isSwitchReply) {
+        const fu = this._setupFollowUp({ kind: 'switch', name: '' }, mySideMon, oppSideMon, mySideMon,
+          setup.gain, setup.cost || 0, { oppHp: oppHp, myHp: myHp }, field, state);
+        oppHp = fu.oppHp;
+        myHp = fu.myHp;
+        leafOpts = leafOpts || { keepOutgoing: true, outgoingHp: outgoingHp, incoming: mySideMon, field: field };
+        move = fu.move;
+        avgPercent = fu.avgPercent;
+      }
+
+      return {
+        myHp: myHp, oppHp: oppHp, mySideMon: mySideMon, oppSideMon: oppSideMon, leafOpts: leafOpts,
+        event: { move: move, avgPercent: avgPercent, pivot: weActFirst ? 'fast' : 'slow' }
+      };
+    }
+
     _mutableSim(state, myActive, oppActive, myHp, oppHp, result) {
       const sim = Object.create(state);
       sim.active = { my: myActive, opp: oppActive };
@@ -1141,13 +1458,18 @@
      * click Dragon Dance" scored as a free hit for us) and their PROTECT (which blocks our move on
      * the real board, so a line that KOs their body scored the lethal bonus through the shield).
      */
-    _payoff(myAction, oppAction, state, field) {
+    _payoff(myAction, oppAction, state, field, world) {
       const myActive = state.active && state.active.my;
       const oppActive = state.active && state.active.opp;
       if (!myActive || !oppActive || !this.evaluator) return 0;
       let myHp = this._hp(myActive);
       let oppHp = this._hp(oppActive);
       let mySideMon = myActive;
+      /* The body that ends the turn standing on THEIR side, and the leaf options the two switch
+       * tiers need. With every toggle below off these stay `oppActive` / `null`, which is the old
+       * pricing exactly — every branch that reads them is gated on its own config switch. */
+      let oppSideMon = oppActive;
+      let leafOpts = null;
       const events = [];
 
       const q = this.quiescence;
@@ -1178,28 +1500,66 @@
         }
       }
 
+      /* ---- THEIR SWITCH IS RESOLVED BEFORE OUR MOVE IS PRICED. A switch reply used to be priced
+       * by throwing our turn-1 hit away and resetting the outgoing body to 100%, so the incoming
+       * body was never named, never paid its side's entry hazards, and never took the attack aimed
+       * at it — the leaf board then had the WRONG body standing there. `oppSideMon` is that body:
+       * the sampled world's own roster when a world is available, else our own read of their bench.
+       * Unresolvable (a switch to a body we cannot name) keeps the old 100% reset. */
+      let oppSwitchedIn = null;
+      if (oppAction.kind === 'switch' && this.realOppSwitch && this.realOppSwitch.enabled !== false) {
+        oppSwitchedIn = this._oppSwitchTarget(state, oppAction, world);
+        if (oppSwitchedIn) {
+          oppSideMon = oppSwitchedIn;
+          oppHp = this._oppSwitchInHp(oppSwitchedIn, state, field);
+        }
+      }
+
+      let pivot = null;
       if (myAction.kind === 'switch') {
         const incoming = this._switchTarget(state, myAction);
         if (incoming) {
           mySideMon = incoming;
-          const haz = field.hazards && field.hazards[state.mySide || 'p1'];
-          const chip = U.hazardPercent(incoming.species || incoming.id,
-            incoming.currentBattleItem || incoming.confirmedItem || '', incoming.revealedAbility || '', haz || {});
-          myHp = U.clamp(this._hp(incoming) - chip, 0, 100);
+          myHp = this._switchInHp(incoming, state, field);
         }
+      } else if (myAction.kind === 'move' && this.pricePivots && this.pricePivots.enabled !== false &&
+                 U.isPivotMove(myAction.name)) {
+        /* A PIVOT is not a move plus a switch: it is one transaction whose orders matter (see
+         * _pivotPayoff). It prices itself, including the reply, so it replaces everything below. */
+        pivot = this._pivotPayoff(myAction, myActive, oppSideMon, oppAction, state, field, shielded,
+          setupGain ? { gain: setupGain, cost: setupHpCost } : null);
       } else if (!shielded) {
         // Our move still lands on a turn they spend setting up — they are not attacking us yet.
         // It does NOT land through a Protect.
-        const dmg = this._damageOf(myActive, oppActive, myAction.name, field, true);
-        if (dmg) {
-          oppHp = U.clamp(oppHp - dmg.avgPercent, 0, 100);
-          events.push(dmg);
+        if (this.priceRecovery && this.priceRecovery.enabled !== false && U.isRecoveryMove(myAction.name)) {
+          /* A HEAL DEALS NO DAMAGE. The 1-ply model used to score Recover/Roost/Slack Off as a
+           * wasted turn — the cell was priced on a board where the body stood at the HP it had
+           * already lost — so a line whose entire point is "get out of range" could never outrank
+           * clicking an attack. Credited BEFORE their reply (the body is alive while it chooses and
+           * a healing move is not blocked by anything the reply does), clamped to 100. */
+          const heal = typeof this.priceRecovery.defaultHealPct === 'number' ? this.priceRecovery.defaultHealPct : 50;
+          myHp = U.clamp(myHp + heal, 0, 100);
+          events.push({ move: myAction.name, healed: heal });
+        } else {
+          const dmg = this._damageOf(myActive, oppSideMon, myAction.name, field, true);
+          if (dmg) {
+            oppHp = U.clamp(oppHp - dmg.avgPercent, 0, 100);
+            events.push(dmg);
+          }
         }
       }
 
-      if (oppAction.kind === 'switch') {
-        // Switched-out opponent survives; the new body is unscratched.
-        oppHp = 100;
+      if (pivot) {
+        myHp = pivot.myHp;
+        oppHp = pivot.oppHp;
+        mySideMon = pivot.mySideMon;
+        oppSideMon = pivot.oppSideMon;
+        leafOpts = pivot.leafOpts;
+        if (pivot.event) events.push(pivot.event);
+      } else if (oppAction.kind === 'switch') {
+        // Switched-out opponent survives; the new body is unscratched. With `realOppSwitch` off
+        // (or the switch-in unresolved) that is the whole statement, exactly as before.
+        oppHp = oppSwitchedIn ? oppHp : 100;
       } else if (setupGain && oppHp > 0) {
         // `oppHp > 0` is not a nicety. If our move already finished them THIS turn, there is no
         // next turn for them: a fainted body does not keep a boost and does not attack again, so
@@ -1207,7 +1567,7 @@
         // line the whole feature exists to reward. (Their DAMAGING replies keep the pre-existing
         // symmetric treatment, because who moves first is not modelled there either.)
         const followUp = this._setupFollowUp(myAction, myActive, oppActive, mySideMon, setupGain,
-          setupHpCost, { oppHp: oppHp, myHp: myHp }, field);
+          setupHpCost, { oppHp: oppHp, myHp: myHp }, field, state);
         oppHp = followUp.oppHp;
         myHp = followUp.myHp;
         events.push({ move: followUp.move, avgPercent: followUp.avgPercent, boosted: true });
@@ -1224,13 +1584,17 @@
       // fainted keeps no stat stages, so stamping them there would let the evaluator's boost dims
       // move a cell whose own board says the body is gone.
       const applied = (setupGain && oppHp > 0) ? setupGain : null;
-      const sim = this._leafState(state, mySideMon, oppActive, myHp, oppHp,
-        applied ? { opp: applied } : null);
+      const sim = this._leafState(state, mySideMon, oppSideMon, myHp, oppHp,
+        applied ? { opp: applied } : null, leafOpts);
       let score = this.evaluator.evaluate(sim);
       // Terminal bonuses keep the leaf evaluator honest about KOs.
       if (oppHp <= 0) score += this.lethalBonus;
       if (myHp <= 0) score -= this.lethalBonus;
-      if (oppAction.kind === 'switch' && myAction.kind === 'move') score += this.switchAteHitBonus;   // their switch ate our hit for free
+      /* "Their switch ate our hit for free." The compensation is only owed while the hit really was
+       * thrown away: with the substitution resolved, their new body is the one that ate it, and
+       * paying this on top would credit the same event twice. It is unchanged whenever the tier is
+       * off or the switch-in could not be named. */
+      if (oppAction.kind === 'switch' && myAction.kind === 'move' && !oppSwitchedIn) score += this.switchAteHitBonus;
 
       // ---- the optional tiers, both inert unless their config section says otherwise ----
       // The profiler's COLUMN factor: we are not facing the perfectly rational opponent fictitious
@@ -1401,27 +1765,70 @@
      *     lock, weather and ability all run through the one calculator the engine already uses.
      *   - One extension, not a tree: their Protect is not re-checked on the second turn.
      */
-    _setupFollowUp(myAction, myActive, oppActive, mySideMon, gain, hpCostPct, hp, field) {
+    _setupFollowUp(myAction, myActive, oppActive, mySideMon, gain, hpCostPct, hp, field, state) {
       let oppHp = hpCostPct ? U.clamp(hp.oppHp - hpCostPct, 0, 100) : hp.oppHp;
       let myHp = hp.myHp;
       const asAttacker = { attacker: { boosts: gain } };
       const best = this._bestMoveWithDamage(oppActive, mySideMon, field, asAttacker);
       // Same stand-in as the main path when the body has no modelled attack at all.
       const dmg = best.damage || (best.move === 'Struggle' ? { avgPercent: this.struggleChipPercent } : null);
-      if (dmg) myHp = U.clamp(myHp - dmg.avgPercent, 0, 100);
+      const theirDamage = dmg ? dmg.avgPercent : 0;
+      let again = null;
       if (myAction.kind === 'move') {
-        const again = this._damageOf(myActive, oppActive, myAction.name, field, true,
+        again = this._damageOf(myActive, oppActive, myAction.name, field, true,
           { defender: { boosts: gain } });
-        if (again) oppHp = U.clamp(oppHp - again.avgPercent, 0, 100);
       }
-      return { myHp: myHp, oppHp: oppHp, move: best.move, avgPercent: dmg ? dmg.avgPercent : 0 };
+      const ourDamage = again ? again.avgPercent : 0;
+
+      const q = this.quiescence;
+      if (q && q.respectTurn2Speed && (ourDamage > 0 || theirDamage > 0)) {
+        /* WHOSE SECOND ACTION LANDS FIRST. Both used to land unconditionally, so "boost, then kill
+         * the setup user" and "boost, then die to the boosted hit" scored identically — the one
+         * distinction the whole extension exists to draw. The order is decided from the Speed each
+         * body will actually have on turn 2 (their boost applied), through Trick Room and move
+         * priority; a tie or an unreadable Speed falls back to the old both-actions-land pricing
+         * rather than inventing a coin flip. */
+        const order = this._turnOrder(myActive, myAction.name, oppActive, best.move, gain, field, state);
+        if (order === 'me') {
+          oppHp = U.clamp(oppHp - ourDamage, 0, 100);
+          // A body that faints first does not act: their boosted reply deals nothing.
+          if (oppHp > 0) myHp = U.clamp(myHp - theirDamage, 0, 100);
+        } else if (order === 'them') {
+          myHp = U.clamp(myHp - theirDamage, 0, 100);
+          // Same rule the other way: if their boosted hit finished us, our second action never
+          // happens (and with it, the damage it would have dealt).
+          if (myHp > 0) oppHp = U.clamp(oppHp - ourDamage, 0, 100);
+        } else {
+          if (theirDamage) myHp = U.clamp(myHp - theirDamage, 0, 100);
+          if (ourDamage) oppHp = U.clamp(oppHp - ourDamage, 0, 100);
+        }
+        return { myHp: myHp, oppHp: oppHp, move: best.move, avgPercent: theirDamage, ordered: order };
+      }
+
+      if (dmg) myHp = U.clamp(myHp - theirDamage, 0, 100);
+      if (again) oppHp = U.clamp(oppHp - again.avgPercent, 0, 100);
+      return { myHp: myHp, oppHp: oppHp, move: best.move, avgPercent: theirDamage };
     }
 
-    _leafState(state, myMon, oppMon, myHp, oppHp, extraBoosts) {
+    /**
+     * _leafState(state, myMon, oppMon, myHp, oppHp, extraBoosts, opts) -> the simulated board.
+     *
+     * `opts` is only ever passed by the pivot tier, and defaulting it to `null` leaves every line
+     * below reading exactly the values it read before that tier existed:
+     *   - `field`   the leaf's own field. The pivot path needs one because Chilly Reception puts
+     *               snow up, and writing the live `state.field` would write THROUGH to the real
+     *               board (tests/invariants_check.js pins that a leaf clone is read-only to its
+     *               source).
+     *   - `keepOutgoing` / `outgoingHp`  a PIVOT leaves the body behind as a legal bring-in, so the
+     *               team keeps it at its own HP instead of overwriting its slot with the incoming
+     *               body. Without the option the old mapping stands: the active slot's member is
+     *               replaced by the leaf's active body.
+     */
+    _leafState(state, myMon, oppMon, myHp, oppHp, extraBoosts, opts) {
       const leaf = {
         myTeam: null,
         oppTeam: null,
-        field: state.field,
+        field: (opts && opts.field) || state.field,
         active: { my: null, opp: null },
         bench: state.bench,
         protect: state.protect,
@@ -1450,8 +1857,29 @@
       };
       leaf.active.my = cloneMon(myMon, myHp, extraBoosts && extraBoosts.my);
       leaf.active.opp = cloneMon(oppMon, oppHp, extraBoosts && extraBoosts.opp);
+      const keepOutgoing = !!(opts && opts.keepOutgoing);
+      const outgoingHp = keepOutgoing
+        ? (typeof opts.outgoingHp === 'number' ? opts.outgoingHp : this._hp(state.active && state.active.my))
+        : 0;
+      const incoming = (keepOutgoing && opts.incoming) ? opts.incoming : null;
+      // The bring-in IS the active body now. Only ever set on the pivot path: without an incoming
+      // body the leaf's active clone inherits the flag from the live active body, which is already
+      // true, so the legacy path stays bit-identical.
+      if (incoming) leaf.active.my.isActive = true;
+      const liveActive = state.active && state.active.my;
       leaf.myTeam = (state.myTeam || []).map(function (m) {
-        if (m === (state.active && state.active.my)) return leaf.active.my;
+        /* The body coming IN takes the active slot it now occupies; the body going OUT keeps its own
+         * slot, at its own HP, and is no longer active. Both matter: the team array is where the
+         * evaluator reads every non-active body's HP from (dim 114), so a pivot whose outgoing body
+         * was simply overwritten, and whose incoming body stayed flagged as a bencher, would score
+         * the two bodies' HP the wrong way round. */
+        if (incoming && m === incoming) return leaf.active.my;
+        if (m === liveActive) {
+          if (!keepOutgoing) return leaf.active.my;
+          const clone = cloneMon(m, outgoingHp);
+          clone.isActive = false;
+          return clone;
+        }
         return m;
       });
       leaf.oppTeam = (state.oppTeam || []).map(function (m) {
@@ -1495,6 +1923,11 @@
       // profiler's column factor and the win-condition bounty) and the other two are readouts
       // published on `lastReadout` below.
       const tiers = this._tiers(state, worlds, myActions);
+      /* A FRESH MEMO PER TURN, for the pivot tier's bench selection. It caches on the OPPOSING body
+       * and the board, so two rows that face the same opponent share one answer; reusing it across
+       * turns would price this turn's pivot with last turn's board. Cleared here rather than in the
+       * constructor because `evaluateTurn` is the only thing that establishes a turn's context. */
+      this._pivotMemo = Object.create(null);
 
       const aggregate = {};
       const cellSum = [];      // cellSum[i][j]    = world-weighted payoff of our action i against their action j
@@ -1530,7 +1963,7 @@
           const key = this._actionKey(mine);
           let sum = 0, min = Infinity;
           for (let j = 0; j < oppActions.length; j++) {
-            const payoff = this._payoff(mine, oppActions[j], state, state.field || {});
+            const payoff = this._payoff(mine, oppActions[j], state, state.field || {}, world);
             sum += payoff;
             if (payoff < min) min = payoff;
             const col = colIdx[j];

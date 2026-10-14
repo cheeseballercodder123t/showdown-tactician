@@ -91,7 +91,11 @@ function mkEngine(opts) {
     comeback: (opts && opts.comeback) || null,
     urgency: (opts && opts.urgency) || null,
     nash: (opts && opts.nash) || null,
-    switchTax: (opts && opts.switchTax) || null
+    switchTax: (opts && opts.switchTax) || null,
+    quiescence: (opts && opts.quiescence) || null,
+    realOppSwitch: (opts && opts.realOppSwitch) || null,
+    pricePivots: (opts && opts.pricePivots) || null,
+    priceRecovery: (opts && opts.priceRecovery) || null
   });
 }
 
@@ -416,6 +420,279 @@ const rowsHuge = HUGE.evaluateTurn(boardWithBench());
 check('a drag bigger than any payoff puts the pivot last among the live lines',
   rowsHuge.filter(function (r) { return !r.isVetoed; })[0].kind !== 'switch',
   rowsHuge.map(function (r) { return r.kind; }).join(','));
+
+/* ==================================== 4. the leaf corrections: switches, pivots and heals */
+
+section('4. the 1-ply leaf corrections (opponent switch-in, pivots, recovery)');
+
+/**
+ * The three corrections in `_payoff` / `_setupFollowUp`, each behind its own config switch:
+ *
+ *   1. realOppSwitch  — a switch reply used to be priced by DISCARDING our hit and resetting the
+ *                       outgoing body to 100%, so the incoming body was never named, never paid its
+ *                       side's hazards and never took the attack. Now it does, and the leaf holds it.
+ *   2. pricePivots    — U-turn and friends were priced as "their damage lands on the body that is
+ *                       LEAVING", so a pivot into a check scored like a pivot into nothing.
+ *   3. priceRecovery  — a heal deals no damage, so the cell was priced on a board where the body
+ *                       stood at the HP it had already lost.
+ *
+ * Each is checked in BOTH directions: the OFF engine must reproduce the old arithmetic EXACTLY
+ * (computed here from the evaluator, not remembered), and the ON engine must move exactly the
+ * number the tier claims to move.
+ */
+function everyTierOff() {
+  return mkEngine({
+    realOppSwitch: { enabled: false },
+    pricePivots: { enabled: false },
+    priceRecovery: { enabled: false },
+    quiescence: { enabled: true, extendSetup: true, blockProtect: true, respectTurn2Speed: false }
+  });
+}
+const BASE = everyTierOff();
+
+/** The board plus ONE bench body on each side, so a switch row and a pivot both exist to price. */
+function boardBothBenches() {
+  const b = board();
+  const myBench = mon('Iron Valiant', {
+    side: 'p1', evs: OFFENSE, ivs: IVS, nature: 'Jolly', ability: 'Quark Drive',
+    isActive: false, hpPercent: 100, setMoves: ['Close Combat', 'Moonblast', 'Knock Off', 'Encore']
+  });
+  const theirBench = mon('Garchomp', {
+    evs: OFFENSE, ivs: IVS, nature: 'Jolly', ability: 'Rough Skin',
+    isActive: false, hpPercent: 100, item: 'Leftovers', setMoves: ['Earthquake', 'Stone Edge', 'Scale Shot', 'Swords Dance']
+  });
+  b.myTeam = b.myTeam.concat([myBench]);
+  b.oppTeam = b.oppTeam.concat([theirBench]);
+  b.bench.my = [myBench];
+  b.bench.opp = [theirBench];
+  return b;
+}
+
+const OPP_SWITCH = { kind: 'switch', name: 'Garchomp', moveId: null, targetId: 'Garchomp' };
+const UTURN = { kind: 'move', name: 'U-turn', moveId: 'uturn' };
+const CHILLY = { kind: 'move', name: 'Chilly Reception', moveId: 'chillyreception' };
+const ROOST = { kind: 'move', name: 'Roost', moveId: 'roost' };
+const EQ = { kind: 'move', name: 'Earthquake', moveId: 'earthquake' };
+const ESPEED_ACT = { kind: 'move', name: 'Extreme Speed', moveId: 'extremespeed' };
+
+/* ------------------------------------------------- 4a. the opponent-switch substitution */
+{
+  eq('the shipped config ships realOppSwitch ON', ST.configGet('laplace.realOppSwitch.enabled', null), true);
+  eq('...and the engine mirrors it', everyTierOff().realOppSwitch.enabled, false);
+
+  const st = boardBothBenches();
+  const me = st.active.my, them = st.active.opp;
+  const garchomp = st.oppTeam[1];
+
+  /* OFF is the OLD pricing, computed here rather than remembered: they switched, so their body is
+   * unscratched (100%) and our hit is thrown away, and the "their switch ate our hit for free"
+   * compensation is still owed. */
+  const legacy = BASE._payoff(ICE, OPP_SWITCH, st, st.field, null);
+  let legacyExpected = BASE.evaluator.evaluate(BASE._leafState(st, me, them, 100, 100)) + BASE.switchAteHitBonus;
+  same('off: our hit is discarded and their outgoing body stands untouched (the old pricing)',
+    legacy, legacyExpected, 1e-6);
+
+  const ON = mkEngine({ realOppSwitch: { enabled: true }, pricePivots: { enabled: false }, priceRecovery: { enabled: false }, quiescence: { enabled: true, respectTurn2Speed: false } });
+  const on = ON._payoff(ICE, OPP_SWITCH, st, st.field, null);
+  const hit = ON._damageOf(me, garchomp, 'Ice Spinner', st.field, true);
+  check('fixture: our line actually damages the incoming body', !!hit && hit.avgPercent > 0, hit && (hit.avgPercent + '%'));
+  const expOppHp = U.clamp(100 - (hit ? hit.avgPercent : 0), 0, 100);
+  let expected = ON.evaluator.evaluate(ON._leafState(st, me, garchomp, 100, expOppHp));
+  if (expOppHp <= 0) expected += ON.lethalBonus;
+  same('on: our hit lands on THE INCOMING BODY, and the leaf has that body standing there', on, expected, 1e-6);
+  check('on: the substitution changes the cell (it is not a no-op)', Math.abs(on - legacy) > 1e-9,
+    legacy + ' vs ' + on);
+  check('on: the "ate our hit for free" compensation is NOT paid on top of the real hit',
+    Math.abs(on - (expected - 0)) < 1e-9, String(on));
+
+  /* Entry hazards on THEIR side are the switch-in's bill, and only the new pricing pays it. */
+  const haz = boardBothBenches();
+  haz.field.hazards.p2 = { rocks: true };
+  const rock = U.hazardPercent('Garchomp', 'Leftovers', '', { rocks: true });
+  check('fixture: Stealth Rock costs the incoming body HP', rock > 0, String(rock));
+  const onHaz = ON._payoff(ICE, OPP_SWITCH, haz, haz.field, null);
+  same('off: the incoming body is still unpriced — the old cell is the 100% reset, hazards included',
+    BASE._payoff(ICE, OPP_SWITCH, haz, haz.field, null),
+    BASE.evaluator.evaluate(BASE._leafState(haz, me, them, 100, 100)) + BASE.switchAteHitBonus, 1e-6);
+  const expHazOppHp = U.clamp(100 - rock - (hit ? hit.avgPercent : 0), 0, 100);
+  let expHaz = ON.evaluator.evaluate(ON._leafState(haz, me, garchomp, 100, expHazOppHp));
+  if (expHazOppHp <= 0) expHaz += ON.lethalBonus;
+  same('on: the switch-in pays its own side\u2019s hazards before taking our hit', onHaz, expHaz, 1e-6);
+
+  /* The sampled world's roster is the authority when a world is available. */
+  const worldBody = mon('Garchomp', {
+    evs: { hp: 252, atk: 0, def: 252, spa: 0, spd: 4, spe: 0 }, ivs: IVS, nature: 'Impish',
+    ability: 'Rough Skin', isActive: false, hpPercent: 100
+  });
+  const world = { id: 'w0', team: [them, worldBody], weight: 1 };
+  check('on: the world\u2019s own roster names the switch-in when there is one',
+    ON._oppSwitchTarget(st, OPP_SWITCH, world) === worldBody, '');
+  check('on: with no world, our own read of their team is used',
+    ON._oppSwitchTarget(st, OPP_SWITCH, null) === garchomp, '');
+  check('on: a switch to a body we cannot name is NOT invented',
+    ON._oppSwitchTarget(st, { kind: 'switch', name: 'Mewtwo', targetId: 'Mewtwo' }, null) === null, '');
+
+  /* Every non-switch column is untouched by the tier. */
+  same('on and off agree on a DAMAGING reply column',
+    ON._payoff(ICE, EQ, st, st.field, null), BASE._payoff(ICE, EQ, st, st.field, null), 1e-6);
+  same('on and off agree on a SETUP reply column',
+    ON._payoff(ICE, DD, st, st.field, null), BASE._payoff(ICE, DD, st, st.field, null), 1e-6);
+}
+
+/* --------------------------------------------------------------- 4b. pivot pricing */
+{
+  eq('the shipped config ships pricePivots ON', ST.configGet('laplace.pricePivots.enabled', null), true);
+  const st = boardBothBenches();
+  const me = st.active.my, them = st.active.opp;
+  const valiant = st.myTeam[1];
+  const ON = mkEngine({ realOppSwitch: { enabled: false }, pricePivots: { enabled: true }, priceRecovery: { enabled: false }, quiescence: { enabled: true, respectTurn2Speed: false } });
+
+  const reply = ON._damageOf(them, me, 'Earthquake', st.field, false);
+  check('fixture: their reply actually damages the pivot user', !!reply && reply.avgPercent > 0, reply && (reply.avgPercent + '%'));
+
+  /**
+   * The expected cell, derived from the ENGINE'S OWN order and pick (never hardcoded), so this is an
+   * identity for the pricing rules rather than a remembered number:
+   *   - a FAST pivot lands its hit, leaves, and the INCOMING body eats the reply;
+   *   - a SLOW pivot eats the reply on the body on the field, then brings its body in CLEAN;
+   *   - the body leaving keeps its post-reply HP plus whatever `extraOutgoingPct` heals it;
+   *   - the incoming body pays our side's entry hazards on the way in.
+   */
+  function pivotExpectation(engine, b, action, replyAction, extraOutgoingPct) {
+    const mine = b.active.my, theirs = b.active.opp;
+    const slow = engine._turnOrder(mine, action.name, theirs, replyAction.name, null, b.field, b) !== 'me';
+    const pick = slow ? engine._bestBenchAttacker(b, theirs, b.field) : engine._bestBenchSwitch(b, theirs, b.field);
+    if (!pick) return { score: null, pick: null, slow: slow };
+    const eater = slow ? mine : pick;
+    const incoming = engine._damageOf(theirs, eater, replyAction.name, b.field, false);
+    const replyPct = incoming ? incoming.avgPercent : 0;
+    const hit = engine._damageOf(mine, theirs, action.name, b.field, true);
+    const oppHp = U.clamp(engine._hp(theirs) - (hit ? hit.avgPercent : 0), 0, 100);
+    const haz = b.field.hazards && b.field.hazards.p1;
+    const chip = U.hazardPercent(pick.species || pick.id,
+      pick.currentBattleItem || pick.confirmedItem || pick.item || '',
+      pick.revealedAbility || pick.ability || '', haz || {});
+    const hpStart = engine._hp(mine);
+    const outgoingHp = U.clamp(U.clamp(hpStart - (slow ? replyPct : 0), 0, 100) + (extraOutgoingPct || 0), 0, 100);
+    const myHp = U.clamp(U.clamp(engine._hp(pick) - chip, 0, 100) - (slow ? 0 : replyPct), 0, 100);
+    const field = (U.WEATHER_BY_MOVE && U.WEATHER_BY_MOVE[U.toID(action.name)])
+      ? Object.assign({}, b.field, { weather: U.WEATHER_BY_MOVE[U.toID(action.name)] })
+      : b.field;
+    let score = engine.evaluator.evaluate(engine._leafState(b, pick, theirs, myHp, oppHp, null,
+      { keepOutgoing: true, outgoingHp: outgoingHp, incoming: pick, field: field }));
+    if (myHp <= 0) score -= engine.lethalBonus;
+    if (oppHp <= 0) score += engine.lethalBonus;
+    return { score: score, pick: pick, slow: slow, myHp: myHp, outgoingHp: outgoingHp };
+  }
+
+  /* FAST pivot: we act first (both moves priority 0 and we are faster). */
+  eq('fixture: U-turn against a 0-priority reply resolves as a FAST pivot',
+    ON._turnOrder(me, 'U-turn', them, 'Earthquake', null, st.field, st), 'me');
+  const fast = pivotExpectation(ON, st, UTURN, EQ, 0);
+  check('fixture: the FAST pivot picks the bench body', fast.pick === valiant, fast.pick && fast.pick.species);
+  /* The reply is the damage the INCOMING body takes, not the damage the body that just left would
+   * have taken — using the wrong one is the defect this tier exists to fix. */
+  const valiantReply = ON._damageOf(them, valiant, 'Earthquake', st.field, false);
+  check('fixture: the check and the pivot user take different damage from the same move',
+    Math.abs(valiantReply.avgPercent - reply.avgPercent) > 1e-9,
+    reply.avgPercent + '% on the user vs ' + valiantReply.avgPercent + '% on the check');
+  same('on: a FAST pivot lands its hit and the INCOMING body eats the reply',
+    ON._payoff(UTURN, EQ, st, st.field, null), fast.score, 1e-6);
+  same('...and the body that left keeps its own full HP', fast.outgoingHp, 100, 1e-6);
+  same('off: the same cell charged the body that was LEAVING (the old pricing)',
+    BASE._payoff(UTURN, EQ, st, st.field, null),
+    BASE.evaluator.evaluate(BASE._leafState(st, me, them, U.clamp(100 - reply.avgPercent, 0, 100),
+      U.clamp(100 - ON._damageOf(me, them, 'U-turn', st.field, true).avgPercent, 0, 100))), 1e-6);
+  check('on: the fast pivot is a real change, not a rounding difference',
+    Math.abs(ON._payoff(UTURN, EQ, st, st.field, null) - BASE._payoff(UTURN, EQ, st, st.field, null)) > 1e-9, '');
+
+  /* SLOW pivot: Extreme Speed is priority +2, so they move first whatever the Speed is. */
+  eq('fixture: U-turn against a +2 priority reply resolves as a SLOW pivot',
+    ON._turnOrder(me, 'U-turn', them, 'Extreme Speed', null, st.field, st), 'them');
+  const slow = pivotExpectation(ON, st, UTURN, ESPEED_ACT, 0);
+  same('on: a SLOW pivot takes the hit first, then brings its body in cleanly',
+    ON._payoff(UTURN, ESPEED_ACT, st, st.field, null), slow.score, 1e-6);
+  same('...so the bring-in is at FULL HP, not at the HP the body that left had', slow.myHp, 100, 1e-6);
+  check('...while the body that left keeps the HP its reply cost it', slow.outgoingHp < 100, String(slow.outgoingHp));
+
+  /* A pivot user that FAINTS to the reply never pivots at all: no hit, no bring-in. */
+  const doomed = boardBothBenches();
+  doomed.active.my.hpPercent = 5;
+  const dead = ON._payoff(UTURN, ESPEED_ACT, doomed, doomed.field, null);
+  same('on: a pivot user that faints to the reply deals no damage and brings nothing in',
+    dead, ON.evaluator.evaluate(ON._leafState(doomed, doomed.active.my, doomed.active.opp, 0, 100)) - ON.lethalBonus, 1e-6);
+
+  /* Regenerator credits the body LEAVING, and the credit is only visible where the evaluator reads
+   * it: that body's HP on the team (dim 114). So this is a SLOW pivot on a HURT user — a fast pivot
+   * leaves at full and the heal clamps to nothing. The comparison is the same board, same engine,
+   * WITH and WITHOUT the ability. */
+  const regen = boardBothBenches();
+  regen.active.my.ability = 'Regenerator';
+  regen.active.my.hpPercent = 50;
+  const noRegenBoard = boardBothBenches();
+  noRegenBoard.active.my.hpPercent = 50;
+  const withRegen = ON._payoff(UTURN, ESPEED_ACT, regen, regen.field, null);
+  const noRegen = ON._payoff(UTURN, ESPEED_ACT, noRegenBoard, noRegenBoard.field, null);
+  check('on: Regenerator on the body leaving moves the cell (its own HP is on the bench)',
+    Math.abs(withRegen - noRegen) > 1e-9, noRegen + ' vs ' + withRegen);
+  same('...crediting exactly 1/3 of its max HP to the body it leaves behind',
+    withRegen, pivotExpectation(ON, regen, UTURN, ESPEED_ACT, 33.3).score, 1e-6);
+  check('...and an unknown ability claims no Regenerator',
+    ON._knownAbilityId({}) === '', ON._knownAbilityId({}));
+
+  /* Chilly Reception puts its snow on the LEAF, never on the live board. */
+  const chillySt = boardBothBenches();
+  const chilly = ON._payoff(CHILLY, EQ, chillySt, chillySt.field, null);
+  same('on: Chilly Reception prices its own snow on the leaf',
+    chilly, pivotExpectation(ON, chillySt, CHILLY, EQ, 0).score, 1e-6);
+  eq('...and the LIVE field is never written through', chillySt.field.weather, '');
+
+  /* The tier is exactly the identity for a non-pivot attack. */
+  same('on: a non-pivot move is priced identically with the tier on and off',
+    ON._payoff(ICE, EQ, st, st.field, null), BASE._payoff(ICE, EQ, st, st.field, null), 1e-6);
+}
+
+/* --------------------------------------------------------------- 4c. recovery pricing */
+{
+  eq('the shipped config ships priceRecovery ON', ST.configGet('laplace.priceRecovery.enabled', null), true);
+  same('...with a documented 50% default heal', ST.configGet('laplace.priceRecovery.defaultHealPct', null), 50, 0);
+  const REC = mkEngine({ realOppSwitch: { enabled: false }, pricePivots: { enabled: false }, priceRecovery: { enabled: true }, quiescence: { enabled: true, respectTurn2Speed: false } });
+  const NO_REC = everyTierOff();
+
+  const st = boardBothBenches();
+  st.active.my.hpPercent = 40;
+  const me = st.active.my, them = st.active.opp;
+  const reply = REC._damageOf(them, me, 'Earthquake', st.field, false);
+
+  check('fixture: Roost is classified a recovery move', U.isRecoveryMove('Roost') === true, '');
+  same('off: the heal is not credited (the old pricing scored it as a wasted turn)',
+    NO_REC._payoff(ROOST, EQ, st, st.field, null),
+    NO_REC.evaluator.evaluate(NO_REC._leafState(st, me, them, U.clamp(40 - reply.avgPercent, 0, 100), 100)), 1e-6);
+  const healed = U.clamp(U.clamp(40 + 50, 0, 100) - reply.avgPercent, 0, 100);
+  let expRec = REC.evaluator.evaluate(REC._leafState(st, me, them, healed, 100));
+  if (healed <= 0) expRec -= REC.lethalBonus;
+  same('on: the heal is credited before their reply, clamped to 100',
+    REC._payoff(ROOST, EQ, st, st.field, null), expRec, 1e-6);
+  check('on: the heal changes the cell (it is not a no-op)',
+    Math.abs(REC._payoff(ROOST, EQ, st, st.field, null) - NO_REC._payoff(ROOST, EQ, st, st.field, null)) > 1e-9, '');
+
+  /* At 90% the credit clamps: a heal can never take a body over full. */
+  const full = boardBothBenches();
+  full.active.my.hpPercent = 90;
+  same('on: a heal at 90% clamps to 100 rather than 140',
+    REC._payoff(ROOST, EQ, full, full.field, null),
+    REC.evaluator.evaluate(REC._leafState(full, full.active.my, full.active.opp,
+      U.clamp(100 - REC._damageOf(full.active.opp, full.active.my, 'Earthquake', full.field, false).avgPercent, 0, 100), 100)), 1e-6);
+
+  /* The heal percent is a config number, and a bigger one must credit more. */
+  const BIG = mkEngine({ realOppSwitch: { enabled: false }, pricePivots: { enabled: false }, priceRecovery: { enabled: true, defaultHealPct: 80 }, quiescence: { enabled: true, respectTurn2Speed: false } });
+  check('on: defaultHealPct is read from the tier\u2019s own config',
+    Math.abs(BIG._payoff(ROOST, EQ, st, st.field, null) - REC._payoff(ROOST, EQ, st, st.field, null)) > 1e-9, '');
+
+  /* A DAMAGING line is untouched by the tier. */
+  same('on: an attack is priced identically with the tier on and off',
+    REC._payoff(ICE, EQ, st, st.field, null), NO_REC._payoff(ICE, EQ, st, st.field, null), 1e-6);
+}
 
 /* ------------------------------------------------------------------- summary */
 

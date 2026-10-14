@@ -68,6 +68,10 @@
       this.team = null;
       this.pendingReadout = null;
       this.lastEvaluateTurn = -1;
+      // The identity of the DECISION WINDOW last evaluated. See _decisionFrameKey: the turn number
+      // alone is not an identity — a turn routinely holds more than one decision (the move request
+      // that opens it, then a `forceSwitch` request after a faint or a pivot move).
+      this.lastEvaluateFrame = null;
       this.selectedBenchId = null;   // bench-tap sandbox: null = preview the active pair
       this._trAlerted = false;       // the haptic fires ONCE per battle, on TR's last turn
       // Chromium only honours navigator.vibrate after the frame has received a real user gesture
@@ -225,6 +229,7 @@
         // on turn 1 is the easy case — would skip its evaluation entirely and leave the previous
         // battle's ranking and readout on the HUD.
         this.lastEvaluateTurn = -1;
+        this.lastEvaluateFrame = null;
         this.pendingReadout = null;
         if (this.hud && typeof this.hud.dismissReceipt === 'function') this.hud.dismissReceipt();
         // The candidate pools are seeded per side|slot|species and are only meaningful for the
@@ -324,6 +329,62 @@
       return null;
     }
 
+    /**
+     * _decisionFrameKey(state) -> a short string identifying ONE decision window, or null when the
+     * board carries no request to identify.
+     *
+     * WHY THE TURN NUMBER IS NOT ENOUGH. `_onRequest` used to latch on `state.turn` alone, and a
+     * turn routinely contains MORE THAN ONE decision: the move request that opens it, then a
+     * `forceSwitch` request when a body faints (or a pivot move hands the turn's tail to a
+     * replacement). Both carry the SAME turn number, so the second one used to hit the latch,
+     * return `[]` without evaluating, and leave the previous window's ranking — a description of a
+     * board that no longer exists — as the engine's answer.
+     *
+     * That is not a cosmetic staleness. The stale ranking is the PREVIOUS window's: it offers the
+     * bench as it was, so it can name the very body that has since come in and fainted, and a
+     * driver that clicks the engine's top line then writes `switch <that body>`. Measured in the
+     * headless arena (5 battles, both seats): `|error|[Invalid choice] Can't switch: You can't
+     * switch to an active Pokémon` on the faint frames, plus every replacement bring-in chosen
+     * from a ranking that no longer applied.
+     *
+     * The identity is STRUCTURAL, not `rqid`: a request payload is not guaranteed to carry one
+     * (`@pkmn/sim` 0.10.11 sends `{teamPreview, side}` and nothing else, and a browser client's
+     * rqid is not stable across a reconnect replay). `rqid` is still preferred when it IS present,
+     * since it is the server's own frame identity. Two IDENTICAL re-deliveries — the same frame
+     * after `|error|[Invalid choice]`, a duplicated poll — collapse to the same key and still
+     * evaluate once, which is what the latch exists for.
+     */
+    _decisionFrameKey(state) {
+      const req = state && state.request;
+      if (!req || typeof req !== 'object') return null;
+      if (typeof req.rqid === 'number' || (typeof req.rqid === 'string' && req.rqid)) return 'rq:' + req.rqid;
+      if (req.teamPreview) return 'preview';
+      if (req.wait) return 'wait';
+      const parts = ['t' + state.turn];
+      parts.push('fs' + (Array.isArray(req.forceSwitch)
+        ? req.forceSwitch.map(function (v) { return v ? 1 : 0; }).join('')
+        : ''));
+      const active = (req.active && req.active[0]) || null;
+      if (active) {
+        parts.push('tr' + (active.trapped ? 1 : 0) + (active.maybeTrapped ? 1 : 0));
+        // The move list is part of the window: a disabled move, a spent PP or a Struggle-only
+        // menu is a different decision even when the bodies are the same.
+        parts.push('mv' + (active.moves || []).map(function (m) {
+          return U.toID(m.id || m.move) + ':' + (m.pp === undefined || m.pp === null ? '' : m.pp) +
+            (m.disabled ? 'd' : '');
+        }).join(','));
+      } else {
+        // No move list at all IS the forceSwitch window's signature, and it is the distinction the
+        // old turn-only latch could not see.
+        parts.push('noactive');
+      }
+      const mons = (req.side && req.side.pokemon) || [];
+      parts.push('side' + mons.map(function (m) {
+        return (m.ident || '') + (m.active ? 'A' : '') + '@' + (m.condition || '');
+      }).join('|'));
+      return parts.join(':');
+    }
+
     /** A decision turn: evaluate, render, then ask the LLM without blocking. */
     _onRequest() {
       this.stats.requests++;
@@ -358,7 +419,16 @@
           };
         }
       }
-      if (state.turn === this.lastEvaluateTurn) { this._refreshNonDecisionUi(); return []; }
+      const frameKey = this._decisionFrameKey(state);
+      // `null` means the board carries no request to identify, so the turn number is the only thing
+      // there is to latch on — exactly the old behaviour, and the same fallback a driver-built
+      // board gets. Otherwise the WINDOW is the identity, and a second window in the same turn is
+      // evaluated instead of being answered with the first window's ranking.
+      const fresh = frameKey === null
+        ? (state.turn !== this.lastEvaluateTurn)
+        : (frameKey !== this.lastEvaluateFrame);
+      if (!fresh) { this._refreshNonDecisionUi(); return []; }
+      this.lastEvaluateFrame = frameKey;
       this.lastEvaluateTurn = state.turn;
 
       let ranked = [];

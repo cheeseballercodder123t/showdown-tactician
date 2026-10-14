@@ -11,6 +11,143 @@ reaches a verdict.
 
 ## Unreleased
 
+### Fixed — a turn holds more than one decision window, and the engine answered the second with the first one's ranking
+
+A turn is two windows. The move request opens it; a `forceSwitch` request closes it when a body
+faints or a pivot move hands the turn's tail to a replacement — and both carry the SAME turn number.
+`_onRequest` latched on `state.turn` alone, so the second window hit the latch, returned `[]` without
+evaluating, and left the FIRST window's ranking standing as the answer to the second. That ranking
+describes a board that no longer exists: it offers the bench as it was, so it can name the body that
+has just switched in and fainted. The driver clicks the engine's top line, the sim answers
+`|error|[Invalid choice] Can't switch: You can't switch to an active Pokémon`, the fallback ladder
+retries, and the battle stops being the engine's.
+
+Measured on the mirror gate — 20 battles, seed 1337, both seats, `ARENA_MIRROR_GAMES=20 node
+tests/arena_check.js` against the previous commit: **103 `|error|[Invalid choice]` lines**, the
+answered-frame ledger at **−103** (103 playable frames needed the retry ladder), and **20 frames where
+the engine returned no ranking at all**. The same gate on this commit: **0, 0, and 2** — and neither
+of the two is a frame that had a legal action on it.
+
+Three defects wore that one symptom:
+
+- **The window had no identity.** `src/content.js` gained `_decisionFrameKey(state)`: the server's own
+  `rqid` when the frame carries one (a request payload is not guaranteed to — `@pkmn/sim` 0.10.11
+  sends `{teamPreview, side}` and nothing else), else `preview`/`wait`, else a structural key of the
+  turn plus the `forceSwitch` flags, the active body's move list with PP and disabled flags,
+  `trapped` / `maybeTrapped`, and the whole roster's idents, actives and conditions. Two IDENTICAL
+  re-deliveries — the same frame re-sent after an `|error|`, a duplicated poll — collapse to one key
+  and still evaluate once, which is what the latch was for.
+- **`parseIdent` invented a slot.** A roster entry is `p1: Great Tusk` — a side and a name, no slot —
+  and the parser fell back to the bare side prefix, so it returned `slot: 'p1'`.
+  `_mergeMyTeamFromRequest` matched a body by that invented slot and then STAMPED it onto the body, so
+  every later roster entry landed on the same body (holes in HP and status), the fake slot displaced
+  the real battle slot, and the merge's last-entry-wins `isActive` left the ACTIVE body flagged
+  inactive — which put it back on the switch menu. A slot is now reported only when the text carries
+  one, `isBattleSlot` is the single predicate the merge, the switch list and every protocol handler
+  share, and the merge stamps a real slot only.
+- **The switch menu was built from our own flags, not the server's roster.** `legalActions.switches`
+  scanned `myTeam` for `!fainted && !isActive`, so a stale `isActive` could offer the body standing on
+  the field, and `trapped` was ignored entirely. The list is now built from the `|request|`'s own
+  `side.pokemon` — the authority on which body is standing there, which have fainted, and which slots
+  the server will accept — dropping active and `0 fnt` entries, adding each body once, never inventing
+  a body the roster does not name, and dropping the rows altogether when the server says `trapped` on a
+  move window (`forceSwitch` frames are exempt: the body is already gone, and the sim's `chooseSwitch`
+  only consults `trapped` in its move state). `maybeTrapped` is published and deliberately NOT used to
+  delete switches: the sim rejects only on `trapped`, while `maybeTrapped` merely sets `cantUndo`, so
+  deleting them would cost a real escape option to hide an uncertainty the engine may act on.
+- **And the bridge kept a stale answer one layer up.** `engine_bridge.feed` left `ranked` in place when
+  a decision frame arrived that the engine did not answer, so `topChoice()` returned a line computed
+  for an EARLIER window and the driver wrote it. It now clears the ranking instead (the same fact that
+  let an illegal `switch` reach the sim at all), except for a re-delivery of the same raw request line,
+  which keeps the answer that is already that exact window's.
+
+**Guards, each able to fail.** `tests/arena_check.js` §3c pins the engine level with no sim in the
+loop: the slotless roster ident reports no slot while a real battle ident keeps its own, the window
+key changes when the window does, the ACTIVE body is never on the switch list and every bench body is
+once, the opening move window is ranked and a move window's ranking is NOT the answer to the
+`forceSwitch` window on the SAME turn (which is ranked as switch lines only, with the fainted body
+never offered as its own replacement), a byte-identical re-delivery does not re-rank and does not
+discard the ranking that answers it, and a frame with no legal action ranks nothing AND does not leave
+the previous window's ranking behind. `checkMirror` then plays real battles and asserts zero illegal
+choices and zero unanswered playable frames on both seats, plus the opt-in 20-battle gate above —
+`ARENA_MIRROR_GAMES=20` re-runs the exact measurement these fixes were verified against (~3.5 min of
+sim, so it is not part of a default `npm test`).
+
+### Added — the three 1-ply leaf illusions, each behind its own gate
+
+The 1-ply leaf mis-priced three things a real turn does, and the mirror sweep (§J of `ATTEMPTS.md`)
+now prices each of them separately. Every toggle is `enabled: false` = bit-identical to the previous
+pricing, pinned by the suites below.
+
+- **`laplace.realOppSwitch`** — their switch reply used to be priced by resetting the outgoing body to
+  100 % and DISCARDING our turn-1 hit: the incoming body was never named, never paid entry hazards,
+  and never took the attack aimed at it. `_oppSwitchTarget` now resolves the switch-in (from the
+  sampled world's own roster when there is one), `_oppSwitchInHp` charges its side's hazards through
+  `U.hazardPercent`, and OUR move lands on the body that is actually standing there.
+- **`laplace.quiescence.respectTurn2Speed`** — turn 2 of the setup extension is now ordered by the
+  Speed each body will actually have there (the boost applied, plus Trick Room and move priority,
+  through `_turnOrder` / `_movePriority`). Off, both second actions landed unconditionally, so
+  "boost, then kill the setup user" and "boost, die to the setup user" scored the same as
+  "boost, trade"; on, a body that faints first does not act at all.
+- **`laplace.pricePivots`** (+ `regenPct`) — `U-turn` / `Volt Switch` / `Flip Turn` / `Chilly
+  Reception` / `Teleport` / `Parting Shot` are priced as what they are, through `U.isPivotMove` and
+  `_pivotPayoff`: a hit, a switch, and the incoming body's own matchup, with the turn order deciding
+  who eats the opponent's reply, `Regenerator` credited to the body leaving, `Chilly Reception`'s snow
+  on the field, and the best bench body chosen for the job (`_bestBenchSwitch` for a fast pivot,
+  `_bestBenchAttacker` for a slow one that has already taken the hit).
+- **`laplace.priceRecovery`** (+ `defaultHealPct`) — a healing move deals no damage, and the 1-ply
+  model scored it as a wasted turn: the body entered the leaf at the HP it had ALREADY lost. The heal
+  is now credited up front, clamped to 100, and only for a body that survives to execute it.
+
+Pinned by `tests/tuning_check.js` §4 (each correction against a hand-computed board, plus the
+`enabled: false` reproduction) and §4b (turn-2 initiative by Speed, priority and Trick Room), and by
+`tests/quiescence_check.js` for the setup ply. What they measured in the mirror sweep — all four flat
+at 60 battles, with `pricepivots` leaning the same way as `quiescence-extendsetup` — is in §J.
+
+### Measured — the first mirror sweep, and the one contradiction it produced
+
+`node tools/run_ablation.js --league mirror --battles 60 --seed 1337 --parallel 2`: 8 variants, 480
+battles, **0 errors**, 4,122 s. The mirror baseline is the shipped config and the engine seat is the
+only one patched, so the Δ is a paired, same-seat comparison against a frozen twin (baseline 25-34-1,
+41.7 % win, 62.3 turns, 2/60 capped).
+
+| row (feature switched OFF) | Δwin | 95 % CI | verdict |
+|---|---|---|---|
+| `quiescence-extendsetup` | **+23.3** | [+8.3, +38.3] | **feature HURTS** (41.7 % → 65.0 %), `surprise` |
+| `pricepivots` | +10.0 | [−6.7, +26.7] | no measurable effect |
+| `pricerecovery` | +5.0 | [−13.3, +21.7] | no measurable effect |
+| `quiescence-turn2speed` | +0.0 | [+0.0, +0.0] | no measurable effect |
+| `clock` | +0.0 | [+0.0, +0.0] | `identical` — the arena declares the pace, so flat is correct (§D2) |
+| `realoppswitch` | −1.7 | [−20.0, +15.0] | no measurable effect, `stall` |
+| `urgency` | −1.7 | [−18.3, +15.0] | no measurable effect, `stall` |
+
+**`quiescence-extendsetup` is now CONTRADICTED between instruments, and that is the finding.** It was
+re-measured **HELPS +20.0 [+10.0, +30.0]** on the re-anchored personas arena; the mirror reads
+**HURTS +23.3** — same patch, same seed, 60 paired battles each, both intervals excluding zero,
+opposite signs. The knob therefore **stays as it ships** until a higher-power row (500 battles, a
+second seed, or a declared stronger opponent) breaks the tie: the mirror is the instrument WITH
+headroom (41.7 % baseline against the personas arena's 98.3 % ceiling), but a self-play win rate also
+prices how exploitable a frozen twin is, which is not the same question as strength against a human.
+
+**What the mirror did reproduce is `urgency`'s mechanism.** Switching turn urgency off took the
+100-turn cap ties from **1/60 → 14/60** and the mean game from **62.3 → 75.2 turns** — the exact
+behaviour it was adopted for, on an instrument that never saw the adoption run. Its win interval is
+flat for an arithmetic reason worth naming: the OFF variant took the baseline's 34 losses down to 22
+and turned the difference into ties, so the win indicator barely moves while the score (win = 1,
+tie = ½) rises **+9.2**. For a row whose mechanism is converting decisive games into ties, the
+win-indicator bootstrap is the conservative statistic — quote both. (`realoppswitch` has the same
+shape, smaller: win −1.7, score +3.3, cap ties 1 → 7.)
+
+Full table, the resolution check and the reading of the flat leaf rows: `ATTEMPTS.md` §J.
+
+### Housekeeping — the counts the README states
+
+The README's per-suite check counts are canonical (`tests/run_all.js` validates its suite LIST against
+them, not the numbers) — four of those counts had drifted, and every number below is what the suite
+prints on this commit: `arena_check` 125 → **157**, `ablation_check`
+251 → **269**, `tuning_check` 68 → **112**, `quiescence_check` 71 → **92**, plus the suite total
+28 → **32**. Every number is the count the suite itself prints on this commit.
+
 ### Measured — the arena re-anchor
 
 With the engine finally getting a real team and the three client frames, the whole sweep was re-run at

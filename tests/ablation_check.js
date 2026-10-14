@@ -846,17 +846,17 @@ function checkAggregation() {
 
   section('5k. the quiescence sub-knobs exist, because the tier is not one thing');
   const subIds = ablation.FEATURE_IDS.filter(function (id) { return /^quiescence-/.test(id); });
-  eq('both sub-knobs are in the table', subIds.length, 2);
+  eq('all three sub-knobs are in the table', subIds.length, 3);
   const sub = ablation.FEATURES.filter(function (f) { return /^quiescence-/.test(f.id); });
   eq('...and each patches exactly one leaf of the tier',
     sub.map(function (f) { return Object.keys(f.patch)[0]; }).sort(),
-    ['laplace.quiescence.blockProtect', 'laplace.quiescence.extendSetup']);
+    ['laplace.quiescence.blockProtect', 'laplace.quiescence.extendSetup', 'laplace.quiescence.respectTurn2Speed']);
   eq('...and each declares its parent for grouping', sub.every(function (f) { return f.parent === 'quiescence'; }), true);
   eq('...and they are separate from the master switch',
     ablation.FEATURES.filter(function (f) { return f.parent === 'quiescence'; }).map(function (f) { return f.id; }),
-    ['quiescence', 'quiescence-extendsetup', 'quiescence-blockprotect']);
+    ['quiescence', 'quiescence-extendsetup', 'quiescence-blockprotect', 'quiescence-turn2speed']);
   const subReport = ablation.validateFeaturePaths(ablation.buildVariants(subIds));
-  eq('...and their paths are real config leaves', subReport.length, 2);
+  eq('...and their paths are real config leaves', subReport.length, 3);
   eq('...and neither is a no-op against the shipped config',
     subReport.every(function (r) { return r.applied.every(function (a) { return a.from !== a.to; }); }), true);
 }

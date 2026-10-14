@@ -332,6 +332,93 @@ section('4. their setup reply buys one extra exchange, priced by the damage engi
     fuId.oppHp, U.clamp(firstOppHp - repeatId.avgPercent, 0, 100));
 }
 
+/* ======================= 4b. turn 2 is ORDERED, so a body that faints first does not act */
+
+section('4b. the second exchange is ordered by turn-2 initiative (Speed, priority, Trick Room)');
+{
+  /* The two engines differ in ONE switch, so every difference below is that switch. */
+  const NO_ORDER = mkEngine({ enabled: true, extendSetup: true, blockProtect: true, respectTurn2Speed: false });
+  const ORDER = mkEngine({ enabled: true, extendSetup: true, blockProtect: true, respectTurn2Speed: true });
+  eqc('the switch is read from the tier\u2019s own config section',
+    ST.configGet('laplace.quiescence.respectTurn2Speed', null), true);
+  eqc('...and an engine with no override mirrors it', SHIPPED.quiescence.respectTurn2Speed, true);
+
+  const st = board();
+  const me = st.active.my, them = st.active.opp;
+  const ddGain = U.setupBoosts('Dragon Dance');       // +Attack, +Speed
+  const idGain = U.setupBoosts('Iron Defense');       // +Defence only
+  const bestThem = ORDER._bestMoveWithDamage(them, me, st.field, { attacker: { boosts: ddGain } });
+
+  /* --- the ORDER itself, from the library's own Speed numbers --- */
+  eqc('fixture: their boosted best reply is a 0-priority attack', ORDER._movePriority(bestThem.move), 0);
+  eqc('fixture: we act first when their setup does not touch Speed',
+    ORDER._turnOrder(me, 'Ice Spinner', them, bestThem.move, idGain, st.field, st), 'me');
+  eqc('...and their SPEED boost is enough to take the turn-2 lead away from us',
+    ORDER._turnOrder(me, 'Ice Spinner', them, bestThem.move, ddGain, st.field, st), 'them');
+  /* Priority beats Speed, so a +2 attack takes the turn whatever the Speed says. */
+  eqc('a priority reply takes the turn regardless of Speed',
+    ORDER._turnOrder(me, 'Ice Spinner', them, 'Extreme Speed', idGain, st.field, st), 'them');
+  /* Trick Room inverts it. */
+  const trSt = board();
+  trSt.field.trickRoom = true;
+  eqc('Trick Room inverts the Speed comparison',
+    ORDER._turnOrder(trSt.active.my, 'Ice Spinner', trSt.active.opp, bestThem.move, idGain, trSt.field, trSt), 'them');
+  eqc('...and inverts the boosted one back the other way',
+    ORDER._turnOrder(trSt.active.my, 'Ice Spinner', trSt.active.opp, bestThem.move, ddGain, trSt.field, trSt), 'me');
+  /* A tie is a coin flip, and a coin flip is not a claim. */
+  const tieSt = board();
+  tieSt.active.opp.species = 'Great Tusk';
+  tieSt.active.opp.id = 'greattusk';
+  tieSt.active.opp.evs = OFFENSE; tieSt.active.opp.ivs = IVS; tieSt.active.opp.nature = 'Jolly';
+  eqc('an exact Speed tie is reported as undecided, never guessed',
+    ORDER._turnOrder(tieSt.active.my, 'Ice Spinner', tieSt.active.opp, bestThem.move, null, tieSt.field, tieSt), null);
+
+  /* --- our repeat hit kills: their boosted reply never lands --- */
+  const hit = ORDER._damageOf(me, them, 'Ice Spinner', st.field, true);
+  const fuOurKo = ORDER._setupFollowUp(ICE, me, them, me, idGain, 0,
+    { oppHp: U.round1(hit.avgPercent) / 2, myHp: 100 }, st.field, st);
+  same('our second hit finishes them', fuOurKo.oppHp, 0, 1e-9);
+  same('...so their BOOSTED reply deals nothing at all (a dead body does not attack)',
+    fuOurKo.myHp, 100, 1e-9);
+  const legacyOurKo = NO_ORDER._setupFollowUp(ICE, me, them, me, idGain, 0,
+    { oppHp: U.round1(hit.avgPercent) / 2, myHp: 100 }, st.field, st);
+  check('the un-ordered pricing charged us anyway (that is the defect)',
+    legacyOurKo.myHp < 100, String(legacyOurKo.myHp));
+  same('...by exactly their boosted hit', legacyOurKo.myHp,
+    U.clamp(100 - fuOurKo.avgPercent, 0, 100), 1e-9);
+
+  /* --- their boosted hit kills us first: our repeat never lands --- */
+  const boostedHit = ORDER._damageOf(them, me, bestThem.move, st.field, false, { attacker: { boosts: ddGain } });
+  const fuTheirKo = ORDER._setupFollowUp(ICE, me, them, me, ddGain, 0,
+    { oppHp: 90, myHp: U.round1(boostedHit.avgPercent) / 2 }, st.field, st);
+  same('their boosted hit finishes us on turn 2', fuTheirKo.myHp, 0, 1e-9);
+  same('...and our second hit never happens (a dead body does not attack)', fuTheirKo.oppHp, 90, 1e-9);
+  const legacyTheirKo = NO_ORDER._setupFollowUp(ICE, me, them, me, ddGain, 0,
+    { oppHp: 90, myHp: U.round1(boostedHit.avgPercent) / 2 }, st.field, st);
+  check('the un-ordered pricing landed our repeat anyway',
+    legacyTheirKo.oppHp < 90, String(legacyTheirKo.oppHp));
+
+  /* --- when nothing dies, the ORDER changes nothing: both actions still land --- */
+  const fuOrdered = ORDER._setupFollowUp(ICE, me, them, me, idGain, 0, { oppHp: 90, myHp: 100 }, st.field, st);
+  const fuLegacy = NO_ORDER._setupFollowUp(ICE, me, them, me, idGain, 0, { oppHp: 90, myHp: 100 }, st.field, st);
+  same('with both bodies surviving, the ordered pricing IS the old one on our HP',
+    fuOrdered.myHp, fuLegacy.myHp, 1e-9);
+  same('...and on theirs', fuOrdered.oppHp, fuLegacy.oppHp, 1e-9);
+
+  /* --- and the tie / unreadable case falls back to the old both-actions pricing --- */
+  const fuTie = ORDER._setupFollowUp(ICE, tieSt.active.my, tieSt.active.opp, tieSt.active.my, idGain, 0,
+    { oppHp: 90, myHp: 100 }, tieSt.field, tieSt);
+  const fuTieLegacy = NO_ORDER._setupFollowUp(ICE, tieSt.active.my, tieSt.active.opp, tieSt.active.my, idGain, 0,
+    { oppHp: 90, myHp: 100 }, tieSt.field, tieSt);
+  same('an undecidable order falls back to the un-ordered pricing', fuTie.myHp, fuTieLegacy.myHp, 1e-9);
+  same('...on their side too', fuTie.oppHp, fuTieLegacy.oppHp, 1e-9);
+
+  /* --- the whole cell: a knockout priced through `_payoff` still ends the turn --- */
+  const ko = board();
+  same('a knockout line vs their setup reply keeps its EXACT legacy number (the guard runs first)',
+    ORDER._payoff(ICE, DD, ko, ko.field), NO_ORDER._payoff(ICE, DD, ko, ko.field), 1e-9);
+}
+
 /* ==================================================== 5. the guards and the switches */
 
 section('5. the guards: a knockout ends it, an unaffordable setup fails, each switch is exact');

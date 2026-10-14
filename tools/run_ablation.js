@@ -141,6 +141,19 @@ const FEATURES = [
       'evidence the block is useless.'
   },
   {
+    id: 'quiescence-turn2speed',
+    label: 'quiescence: turn-2 speed order (off)',
+    tier: 'laplace',
+    direction: 'off',
+    parent: 'quiescence',
+    patch: { 'laplace.quiescence.respectTurn2Speed': false },
+    expect: 'helps',
+    note: 'Off makes both second actions land unconditionally, so "boost, then kill the setup user" ' +
+      'and "boost, die to the setup user" are priced the same as "boost, trade". On, turn 2 is ' +
+      'ordered by the Speed each body will actually have there (the boost applied, Trick Room and ' +
+      'move priority included) and a body that faints first does not act at all.'
+  },
+  {
     id: 'volatility',
     label: 'volatility penalty (off)',
     tier: 'laplace',
@@ -186,6 +199,38 @@ const FEATURES = [
       '`--deliberation auto` for a fast one), so a flat row against a neutral opponent is CORRECT — ' +
       'price this tier by declaring a fast or slow opponent, not by expecting the arena to invent ' +
       'one.'
+  },
+  {
+    id: 'realoppswitch',
+    label: 'opponent-switch substitution (off)',
+    tier: 'laplace',
+    direction: 'off',
+    patch: { 'laplace.realOppSwitch.enabled': false },
+    expect: 'helps',
+    note: 'Off restores the 1-ply switch cell: their switch-in is never named, the body that left is ' +
+      'reset to 100%, entry hazards are never paid, and our attack lands on the body that left the ' +
+      'field. On, the incoming body is resolved and is the body the leaf board is built around.'
+  },
+  {
+    id: 'pricepivots',
+    label: 'pivot pricing (off)',
+    tier: 'laplace',
+    direction: 'off',
+    patch: { 'laplace.pricePivots.enabled': false },
+    expect: 'helps',
+    note: 'Off prices U-turn / Volt Switch / Flip Turn / Chilly Reception / Teleport / Parting Shot ' +
+      'as a plain attack: no switch, no Regenerator credit on the body leaving, no snow from Chilly ' +
+      'Reception, and no matchup for the body that comes in.'
+  },
+  {
+    id: 'pricerecovery',
+    label: 'recovery pricing (off)',
+    tier: 'laplace',
+    direction: 'off',
+    patch: { 'laplace.priceRecovery.enabled': false },
+    expect: 'helps',
+    note: 'Off scores a healing move as a wasted turn — the body enters the leaf at the HP it had ' +
+      'already lost — which is the reading that made Recover look like a free turn for them.'
   },
   {
     id: 'damage-evidence',

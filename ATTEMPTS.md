@@ -53,7 +53,7 @@ Two traps the tooling now refuses to let you fall into:
 
 | # | attempt | mechanism | evidence | status |
 |---|---|---|---|---|
-| A1 | **Turn urgency** (`laplace.urgency`) | bounded, ramping bonus for COMMITTING rows (a real attack or a setup move) over passive ones past `startTurn`, multiplied at `breakoutTurn`; re-ranks rows, cannot override a veto | 60 paired battles, all three personas, seed 1337: win **68.3 % → 96.7 %**, Δ **+28.3 [+18.3, +40.0]**, and the 100-turn cap ties — *every* tie the baseline played — **17/60 → 1/60**; p90 turns 101 → 89. **Re-anchored 2026-10-13** on the fixed instrument: Δ **0.0**, flagged `stall` — but the baseline is now **98.3 %** win, so the benefit urgency delivered *has become the baseline*. That is a ceiling, **not a refutation**: an instrument that already wins every game cannot price what made it win. Re-pricing urgency needs a stronger opponent, not a longer run | **ADOPTED** 2026-10-12 |
+| A1 | **Turn urgency** (`laplace.urgency`) | bounded, ramping bonus for COMMITTING rows (a real attack or a setup move) over passive ones past `startTurn`, multiplied at `breakoutTurn`; re-ranks rows, cannot override a veto | 60 paired battles, all three personas, seed 1337: win **68.3 % → 96.7 %**, Δ **+28.3 [+18.3, +40.0]**, and the 100-turn cap ties — *every* tie the baseline played — **17/60 → 1/60**; p90 turns 101 → 89. **Re-anchored 2026-10-13** on the fixed instrument: Δ **0.0**, flagged `stall` — but the baseline is now **98.3 %** win, so the benefit urgency delivered *has become the baseline*. That is a ceiling, **not a refutation**: an instrument that already wins every game cannot price what made it win. Re-pricing urgency needs a stronger opponent, not a longer run. **Reproduced on the mirror (§J, 2026-10-14):** urgency OFF took cap ties **1/60 → 14/60** and mean turns **62.3 → 75.2** — the mechanism, on an instrument that never saw the adoption run. Win indicator flat (−1.7 [−18.3, +15.0]) because the OFF variant turned the baseline's losses into ties rather than wins; its SCORE delta is **+9.2** toward OFF | **ADOPTED** 2026-10-12 |
 | A2 | **The fitted 128D vector at a measured scale** | `fitScale` 52.2 restores the evaluator's influence on the blend | held-out AUC **0.670 → 0.705** | **ADOPTED** |
 | A3 | **Memoisation of the hot damage/name path** (`toID`, `getMoveData`, the id→raw index) | pure caching, no policy change | real boards: mean **96.3 ms → 30.7 ms**, p95 **132.7 ms → 47.5 ms**; bit-identical — same 432 `_payoff` cells, same vector, same rankings to 17 significant figures over 390 boards | **ADOPTED** |
 
@@ -81,7 +81,7 @@ wins** (16 of the 17) by making progress outrank passivity late in a game.
 
 | # | attempt | measured | why it is still open |
 |---|---|---|---|
-| C1 | **`quiescence` (the setup punisher)** — prices the opponent's boosted reply and their Protect inside the cell | **SUPERSEDED — the sign has FLIPPED.** The old reading was `feature HURTS`: removing the whole tier won **+19.3 [+12.0, +26.7]** (66.7 % → 86.0 %, cap ties 46/150 → 15/150), with the harm attributed entirely to `extendSetup`. Re-measured 2026-10-13 at the standard sample on the fixed instrument (see §H), switching `extendSetup` off **LOSES 20.0 [−30.0, −10.0]** (98.3 % → 78.3 %, 13 capped) — so the knob **HELPS** — while switching the whole tier off is **−5.0 [−11.7, +1.7]**, not measurable at this sample | **CLOSED 2026-10-13 — and it closed against the old verdict.** The open question was whether the harm survived the urgency change; it does not survive the *instrument* fix. The old number was taken on a build whose arena fed the engine a one-Pokemon team (§H), so it measured a crippled engine and is **not quotable**. On the fixed instrument the tier ships ON with a measurement **supporting** it. |
+| C1 | **`quiescence` (the setup punisher)** — prices the opponent's boosted reply and their Protect inside the cell | **SUPERSEDED — the sign has FLIPPED.** The old reading was `feature HURTS`: removing the whole tier won **+19.3 [+12.0, +26.7]** (66.7 % → 86.0 %, cap ties 46/150 → 15/150), with the harm attributed entirely to `extendSetup`. Re-measured 2026-10-13 at the standard sample on the fixed instrument (see §H), switching `extendSetup` off **LOSES 20.0 [−30.0, −10.0]** (98.3 % → 78.3 %, 13 capped) — so the knob **HELPS** — while switching the whole tier off is **−5.0 [−11.7, +1.7]**, not measurable at this sample. **Then the mirror disagreed (§J, 2026-10-14):** the same patch, 60 paired mirror battles at seed 1337, wins **+23.3 [+8.3, +38.3]** (41.7 % → 65.0 %, capped 2/60 → 4/60) — i.e. **feature HURTS**, flipped and `surprise`-flagged against its `expect: helps` | **CLOSED 2026-10-13 — and it closed against the old verdict.** The open question was whether the harm survived the urgency change; it does not survive the *instrument* fix. The old number was taken on a build whose arena fed the engine a one-Pokemon team (§H), so it measured a crippled engine and is **not quotable**. On the fixed instrument the tier ships ON with a measurement **supporting** it. **REOPENED 2026-10-14 by §J:** the mirror reads the opposite way (**HURTS, +23.3**), so the row is now **DISPUTED — one instrument each way**, both intervals excluding zero, and the knob stays where it ships until a higher-power row (500 battles, a second seed, or a declared stronger opponent) breaks the tie. The mirror is the instrument WITH headroom (41.7 % baseline vs §H's 98.3 % ceiling), but a self-play number also prices how exploitable a frozen twin is, which is not the same question as strength against a human — so neither reading is quotable as "the" answer yet |
 | C2 | **VETO4 (`SPEED_SUICIDE`) firing on stale speed information** | 106 of the 177 elite clicks the guard refuses are this one code | unproven either way. The question is whether those refusals are boards where the human was right because the engine's speed estimate was blind to the field (an unrevealed Scarf, a weather ability, Tailwind). Answering it needs the **speed race itself instrumented**, which has not been done. Suppressing the rule is *not* an answer — see §F2. |
 | C3 | Smaller open defects | see the "Known — open, from the same review sweep" list in `CHANGELOG.md` (`residualOrder.trust` shipping at 1, `shelter`'s unverified effect, G-Max Steelsurge's flat 12.5 %, two HUDs double-handling a bench tap, the Protosynthesis ceiling's sun/terrain case) and the deliberate-omission list in `BUGS_AUDIT_REPORT.md`. **TWO ARE NOW CLOSED** (2026-10-14): `mon.knockOffSurvived` was a read of nothing (the live field is `mon.itemKnockedOff`, now withheld for a Sticky Hold body), and the whole-`possibleAbilities` hard veto in VETO2 became a proof requirement. The Protosynthesis / Quark Drive SPEED misread is fixed for every speed layer, but the ceiling's sun/terrain-only case is not | four remain open, each with its narrow fix |
 
@@ -168,7 +168,8 @@ dead idea under a new name.
 | **suppressing a hard rule to see what it costs** | VETO4 suppression (F2), the veto-family rows (E3) | refuted as a cause / flat | measure the premise before building the softened rule (that is what killed B5) |
 | **"our agreement with human logs goes up, so we got stronger"** | the pivot tax (B1), cross features (B3), the residual head (B2) | all rejected | not a valid inference in this repo. Run the gate |
 | **adding a learned correction term to the evaluator** | the residual head (B2), cross products (B3) | both rejected, both on a battle-level hold-out with a paired bootstrap | two independent negatives. A new one needs a **grouped** split (B4), a hold-out over whole battles, and a CI that excludes zero — and it must not be selected on a training-half gain |
-| **teaching the engine to price the opponent's non-attacking replies** | `quiescence` (C1) | measured **HURTS**, still open | the idea is not refuted; the *implementation* measurably lost. Re-measure before extending it |
+| **teaching the engine to price the opponent's non-attacking replies** | `quiescence` (C1) | measured **HURTS** on the mirror, **HELPS** on the personas arena — DISPUTED (§J) | the idea is not refuted; the run of the *implementation* is instrument-dependent. Resolve the tie before extending it |
+| **pricing a 1-ply leaf cell more faithfully** (name the switch-in, price a pivot as a hit + a switch, credit a heal) | `realoppswitch`, `pricepivots`, `pricerecovery` (§J) | all three flat at 60 mirror battles; `pricepivots` (+10.0) leans the same way as `extendsetup` | correcting a leaf's arithmetic does not by itself buy win points at this resolution. Pin the arithmetic in a suite (`tests/tuning_check.js` §4 does), then price it on a larger or stronger sample |
 | **conditioning on who the opponent is** | `elo-band` (D3), `profile` (E6), `clock` (D2) | inert here / unresolved | none of these has actually been priced. Do not cite them as failures |
 | **widening or narrowing the opponent model** | `damageEvidence`, `residualOrder` (E1–E2), `absenceRules` (E4) | unresolved / fires-but-moves-nothing | narrowing a model only matters when it removes the candidate that won the ranking. Prefer a corpus where that can happen, or measure in the live client |
 | **ending the 100-turn standoff / making the engine commit** | turn urgency (A1) | **ADOPTED, and it worked** | the one proven lever in the repo: 17/60 cap ties → 1/60. If your idea is about tempo, this is the thing to extend |
@@ -268,3 +269,62 @@ refused contradiction.
 **What it does NOT fix.** The mirror is ONE opponent, and a self-play win rate says how the engine
 handles the engine — not how it handles a human (that is `tools/benchmark_human_match.js`'s question)
 or a ladder. Use it to price a variant's effect, not to claim strength.
+
+---
+
+## J. The first mirror sweep (2026-10-14) — seven rows, and one contradiction with §H
+
+`node tools/run_ablation.js --league mirror --battles 60 --seed 1337 --parallel 2`, 8 variants, 480
+battles, **0 errors**, 4,122 s. The baseline is the shipped config, the variant patches the ENGINE
+seat only (the mirror seat stays frozen on the shipped config, see §I), and every Δ is paired on the
+same seed per battle index.
+
+**Baseline: 25-34-1 = 41.7 % win, 62.3 turns, 2/60 capped.** The two seats are both the engine, so
+the number is NOT "the engine beats itself 41.7 % of the time": p1 is the arena's engine seat and p2
+drives its own session, so the seats carry a code-path and first-move bias. The Δ is what is being
+measured, and the seats cancel in it.
+
+| row (feature switched OFF) | variant win% | Δwin | 95 % CI | turns | capped | verdict |
+|---|---|---|---|---|---|---|
+| `quiescence-extendsetup` | **65.0 %** (39-17-4) | **+23.3** | [+8.3, +38.3] | 64.6 | 4/60 | **feature HURTS** (`surprise`) |
+| `pricepivots` | 51.7 % (31-24-5) | +10.0 | [−6.7, +26.7] | 65.4 | 6/60 | no measurable effect |
+| `pricerecovery` | 46.7 % (28-31-1) | +5.0 | [−13.3, +21.7] | 59.8 | 1/60 | no measurable effect |
+| `quiescence-turn2speed` | 41.7 % (25-34-1) | +0.0 | [+0.0, +0.0] | 62.4 | 2/60 | no measurable effect |
+| `clock` | 41.7 % (25-34-1) | +0.0 | [+0.0, +0.0] | 62.3 | 2/60 | `identical` — see §D2 |
+| `realoppswitch` | 40.0 % (24-29-7) | −1.7 | [−20.0, +15.0] | 67.8 | 7/60 | no measurable effect, `stall` |
+| `urgency` | 40.0 % (24-22-14) | −1.7 | [−18.3, +15.0] | 75.2 | 14/60 | no measurable effect, `stall` |
+
+**Resolution check.** Half-widths on the flat rows are 15–17 win points, so the paired SE at 60 mirror
+battles is ≈ 7.5–8.5 — a touch coarser than the 6 the personas arena gives, because a mirror battle is
+two engines and ~62 turns instead of ~35. Only a large effect can clear its interval here, exactly as
+in §0. All seven rows are a single seed; none is quotable as a population statement.
+
+**The contradiction, and it is the finding.** `quiescence.extendSetup` was measured **HELPS +20.0
+[+10.0, +30.0]** on the re-anchored personas arena (§H) and now reads **HURTS +23.3 [+8.3, +38.3]** on
+the mirror. Both intervals exclude zero, both samples are 60 paired battles at seed 1337, and they
+point opposite ways. Neither instrument is obviously wrong: the personas baseline sits at 98.3 % with
+zero losses (§H's ceiling — it can show HARM and little else), while the mirror baseline sits at
+41.7 % with headroom both ways, which is the property §I built it for. What the mirror adds is that a
+**self-play** win rate also prices exploitability of a frozen twin, which is not the same question as
+strength against a human. So the honest status is **DISPUTED, one instrument each way**, and the knob
+stays where it ships until a higher-power row (500 battles, or a second seed, or a declared stronger
+opponent) resolves it. §C1 carries the same amendment.
+
+**What the mirror DID reproduce: `urgency`'s mechanism, twice.** Switching turn urgency off took the
+100-turn cap ties from **1/60 → 14/60** and the mean game from **62.3 → 75.2 turns**, which is A1's
+stated mechanism (commit past turn 25 instead of standing off) showing up on an instrument that never
+saw A1's adoption run. Its win interval is flat here for an arithmetic reason worth naming: the OFF
+variant took the baseline's 34 losses down to 22 and turned the difference into ties (1 → 14), so the
+*win indicator* barely moves while the score (win = 1, tie = ½) rises **+9.2**. For a row whose
+mechanism is converting decisive games into ties, the win-indicator bootstrap is the conservative
+statistic — quote both, and do not read `urgency`'s tie-flagged flat row as "urgency does nothing".
+Same shape, smaller: `realoppswitch` OFF moves win −1.7 and score +3.3 with cap ties 1 → 7.
+`pricerecovery` is the one row that moves turns the other way (59.8, capped 1/60).
+
+**The three new leaf corrections are all flat here, and that is not adoption evidence either way.**
+`realoppswitch`, `pricepivots` and `pricerecovery` ship ON because they are 1-ply *corrections* — the
+old cell priced a switch-in that was never named, a pivot as a plain attack, and a heal as a wasted
+turn — and `tests/tuning_check.js` §4 pins each one's arithmetic against a hand-computed board. On the
+mirror they are indistinguishable from noise at 60 battles, so the row to remember is
+`pricepivots`'s +10.0 leaning the *same* way as `extendsetup` (both suggest less caution is better in
+self-play): if a second instrument ever agrees, that pair is the next thing to price properly.

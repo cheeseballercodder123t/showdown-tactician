@@ -27,7 +27,7 @@ Five minutes to a working mental model:
    * **Rule 2 — frozen ground truth.** `test_engine.js` pins five canonical damage rolls.
    * **Rule 4 — one config.** Every tunable lives in [`src/config.js`](src/config.js);
      `tests/config_check.js` inventories all of them and proves live mutation flows through.
-3. **Run everything:** `npm test` — 28 suites, 39 s to 2 min depending on machine load (the two
+3. **Run everything:** `npm test` — 32 suites, 39 s to 2 min depending on machine load (the two
    figures are the same command on this machine), no runtime dependencies (the arena and
    ablation suites skip with a plain message without `@pkmn/sim`; CI runs them in a separate job
    with the install). Individual
@@ -311,8 +311,8 @@ tools/headless_arena/engine_bridge.js     a DOM-free session that runs the REAL 
 tools/run_ablation.js      the config-flag ablation runner: one arena batch per feature variant on
                            a shared seed, a table of win/loss/tie deltas against the baseline, and
                            a paired bootstrap that says when a delta is only noise
-tests/arena_check.js       the arena's own suite (125 checks; skips without @pkmn/sim)
-tests/ablation_check.js    the ablation runner's suite (251 checks; the live batch skips without
+tests/arena_check.js       the arena's own suite (157 checks; skips without @pkmn/sim)
+tests/ablation_check.js    the ablation runner's suite (269 checks; the live batch skips without
                            @pkmn/sim)
 tests/tactical_puzzles.js  the harvested-vaccine registry and runner; ships with zero puzzles
 ARCHITECTURE.md            frozen interface contract every module binds to
@@ -338,21 +338,21 @@ node tests/hud_check.js       # 175 checks: the seven HUD extras (stub DOM), the
 node tests/discrete_check.js  # 110 checks: the 16 discrete rolls, the exact KO count, EV pinning, residual order
 node tests/scout_check.js     #  78 checks: the scouting tool, the overlay, the pruner's re-weighting
 node tests/pressure_check.js  # 151 checks: the PP-stall pivot, the volatility charge, the format sentinel
-node tests/quiescence_check.js #  71 checks: the setup punisher, the boost table, the guards
+node tests/quiescence_check.js #  92 checks: the setup punisher, the boost table, the guards
 node tests/profile_check.js   #  80 checks: the opponent profiler (deviation, labels, clamping)
 node tests/entropy_check.js   #  48 checks: the scouting entropy and its assumed-response model
 node tests/wincon_check.js    #  56 checks: the win-condition bounty (refusals, payout)
 node tests/endgame_check.js   #  45 checks: the bounded endgame search and its honest rails
-node tests/arena_check.js     # 125 checks: the arena — runner, splicer, agent legality, mutator, harvester
+node tests/arena_check.js     # 157 checks: the arena — runner, splicer, agent legality, mutator, harvester
 node tests/invariants_check.js #  17 checks: the solver's invariants over perturbed boards
 node tests/ability_check.js   #  56 checks: the negative-space ability deduction (status, grounding, the gated absence rule,
                               #   and every observation that only LOOKS like proof)
-node tests/tuning_check.js    #  68 checks: the tuning tiers — the Elo band, turn urgency (adopted), comeback mode,
+node tests/tuning_check.js    # 112 checks: the tuning tiers — the Elo band, turn urgency (adopted), comeback mode,
                               #   and the pivot tax (measured, then rejected by the win-rate gate)
 node tests/preview_check.js   #  31 checks: the Turn-0 lead advisory (parser contract, 6x6 scoring, HUD card)
 node tests/mlp_check.js       #  48 checks: the residual head's gate, fail-safe and clamp (it ships off)
 node tests/dom_check.js       #  35 checks: the HUD's DOM lifecycle, driven through a stub parser
-node tests/ablation_check.js  # 251 checks: the ablation runner — --set and its refusals, each flag in a real
+node tests/ablation_check.js  # 269 checks: the ablation runner — --set and its refusals, each flag in a real
                               #   engine, the feature table, the aggregation/bootstrap maths, one live batch
 node tests/tactical_puzzles.js #   0 puzzles: the vaccine registry, green until a --harvest run writes a defect
 node tests/human_match_check.js # 140 checks: the human-move-match benchmark — what a replay DOES and does NOT say,
@@ -709,7 +709,7 @@ number by hand.
   the same 432 `_payoff` calls per busy turn, and the suite pins the per-cell counts. It is a config
   flag (`laplace.quiescence.enabled`) rather than a constant because that trade is a taste, not a fact.
 
-`tests/quiescence_check.js` (71 checks) pins the table's completeness, the override contract it
+`tests/quiescence_check.js` (92 checks) pins the table's completeness, the override contract it
 rides on, the arithmetic of the extra exchange as identities against the damage engine's own
 numbers, the three guards, purity and the cost.
 

@@ -302,6 +302,8 @@ class EngineSession {
     this.readout = null;
     /* The last accuracy frame forwarded, mirroring injected.js's `lastAccuracySignature`. */
     this._accuracySignature = null;
+    /* The raw `|request|` line this session's ranking is the answer to (see feed). */
+    this._rankedRequestLine = null;
   }
 
   /** Ingest the extension's own paste format. Throws with the parser's messages when it fails. */
@@ -327,7 +329,8 @@ class EngineSession {
    */
   feed(line, kind) {
     if (!line) return undefined;
-    if (typeof line === 'string' && line.lastIndexOf('|request|', 0) === 0) this._emitAccuracy(line);
+    const isRequest = typeof line === 'string' && line.lastIndexOf('|request|', 0) === 0;
+    if (isRequest) this._emitAccuracy(line);
     let out;
     try {
       out = this.boot.handleLine(line, kind);
@@ -340,7 +343,26 @@ class EngineSession {
       this.ranked = out;
       this.evaluations++;
       this.readout = this.boot.pendingReadout || (this.boot.engine && this.boot.engine.lastReadout) || null;
+      if (isRequest) this._rankedRequestLine = String(line);
       return out;
+    }
+    /* A DECISION FRAME THE ENGINE DID NOT ANSWER, WHICH IS NOT THE FRAME THE RANKING ANSWERS,
+     * CLEARS THE RANKING instead of leaving it in place. `topChoice()` is this session's answer to
+     * the request it was just handed, and a ranking computed for an EARLIER window is not an
+     * answer to this one: it describes a board that has moved on, so it can offer the body that
+     * has since become the active (or fainted) one, and a driver that trusts it writes a choice
+     * the sim rejects. Surface the refusal instead — `topChoice() === null` already means "the
+     * engine ranked nothing" everywhere else in this file, and the caller's fallback ladder
+     * produces a LEGAL choice, while a stale line does not.
+     *
+     * The exception is a re-delivery of the SAME frame: the sim re-sends a byte-identical request
+     * after `|error|[Invalid choice]`, and a reconnect replays one. The engine's own latch answers
+     * that with an empty array on purpose, and the ranking already held IS the answer to that exact
+     * window — so it is kept. The comparison is on the raw line, which is protocol data, not engine
+     * state: no second implementation of the engine's window identity lives here. */
+    if (isRequest && String(line) !== this._rankedRequestLine) {
+      this.ranked = null;
+      this.readout = null;
     }
     return undefined;
   }

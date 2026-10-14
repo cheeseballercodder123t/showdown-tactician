@@ -96,6 +96,30 @@ function invalidChoiceLines(log) {
   return (log || []).filter(function (l) { return l.indexOf('|error|[Invalid choice]') !== -1; });
 }
 
+/**
+ * Playable decision frames on one seat that got NO answer. Counted from the seat's own stream
+ * (`report.pXLog`) against the choices actually written for it: a frame counts only when the server
+ * put at least one legal action on it (`firstLegalChoice` is the arena's own reading of that), so
+ * the END of a battle — the sim asks for a replacement when the last body faints, and there is
+ * none — is not miscounted as a refusal. A frame the engine declines to rank but the driver could
+ * answer shows up here, which is the fact worth pinning: `stats.emptyRankings` alone cannot tell a
+ * real refusal from an unanswerable frame.
+ */
+function unansweredFrames(report, side) {
+  const log = side === 'p1' ? report.p1Log : report.p2Log;
+  const choices = side === 'p1' ? report.p1Choices : report.p2Choices;
+  let playable = 0;
+  (log || []).forEach(function (line) {
+    if (line.indexOf('|request|') !== 0) return;
+    let req = null;
+    try { req = JSON.parse(line.slice('|request|'.length)); } catch (e) { return; }
+    if (!req || req.wait) return;
+    if (!runner.firstLegalChoice(req)) return;
+    playable++;
+  });
+  return playable - (choices || []).length;
+}
+
 /* ------------------------------------------------------- 1. the engine bridge itself */
 
 function checkBridge() {
@@ -602,6 +626,122 @@ function checkWire() {
     typeof BattleStreams.BattleStream === 'function' && typeof BattleStreams.getPlayerStreams === 'function', '');
 }
 
+/* ------------------------- 3c. decision frames: one turn, more than one window */
+
+/**
+ * A TURN HOLDS MORE THAN ONE DECISION. The move request opens it; a faint — or a pivot move —
+ * closes it with a `forceSwitch` request carrying the SAME turn number. Two real defects lived in
+ * that seam, both measured in live mirror battles (both seats, 20 games, seed 1337):
+ *
+ *   1. `_onRequest` latched on the turn number alone, so the second window returned the FIRST
+ *      window's ranking. That ranking describes the bench as it was, so it could name the body that
+ *      had just come in and fainted, and the driver wrote `switch <that body>`:
+ *      `|error|[Invalid choice] Can't switch: You can't switch to an active Pokémon`. Measured on
+ *      the 20-battle mirror gate at seed 1337: 103 `|error|` lines, the answered-frame ledger at
+ *      -103 (103 playable frames needed the retry ladder), and 20 frames where no ranking came
+ *      back at all. Same gate after the fix: 0, 0, and 2 -- neither of the two a playable frame.
+ *   2. `_mergeMyTeamFromRequest` matched a body by the slot `parseIdent` INVENTED for a slotless
+ *      roster ident (`p1: Great Tusk` -> slot `'p1'`), then stamped that fake slot onto it. The
+ *      frame's later roster entries all then hit that same body (holes in HP and `isActive`), and
+ *      the ACTIVE body was left flagged inactive — which put it back on the switch menu.
+ *
+ * The checks below are the engine-level pins, in one deterministic session with no sim involved;
+ * `checkMirror` plays the games.
+ */
+function checkDecisionFrames() {
+  section('3c. a second decision window in one turn is evaluated, never answered with a stale ranking');
+
+  const PASTE = teams.SAMPLE_TEAMS.hazardStackBalance;
+  const session = bridge.createSession({ paste: PASTE });
+  const manager = session.boot.state;
+  const speciesOf = session.team.map(function (m) { return m.species || m.name; });
+  const idOf = function (s) { return String(s).toLowerCase().replace(/[^a-z0-9]/g, ''); };
+
+  /* ---- the ident parser: a side prefix is NOT a slot ---- */
+  const slotless = manager.parseIdent('p1: Great Tusk');
+  check('a slotless roster ident reports NO slot', slotless.slot === '', JSON.stringify(slotless));
+  check('...while still reporting its side and name',
+    slotless.side === 'p1' && slotless.name === 'Great Tusk', JSON.stringify(slotless));
+  const withSlot = manager.parseIdent('p2a: Garchomp');
+  check('a real battle ident keeps its slot', withSlot.slot === 'p2a', JSON.stringify(withSlot));
+
+  /* ---- a live board: turn 1, a move window, then a forced replacement ON THE SAME TURN ---- */
+  const roster = function (faintedAt) {
+    return session.team.map(function (mon, i) {
+      return {
+        ident: 'p1: ' + (mon.species || mon.name),
+        details: (mon.species || mon.name) + ', L50, M',
+        condition: i === faintedAt ? '0 fnt' : '100/100',
+        active: i === 0,
+        moves: (mon.moves || []).map(idOf)
+      };
+    });
+  };
+  session.feed('|switch|p1a: ' + speciesOf[0] + '|' + speciesOf[0] + ', L50, M|100/100');
+  session.feed('|switch|p2a: Garchomp|Garchomp, L50, M|100/100');
+  session.feed('|turn|1');
+
+  const moveReq = JSON.stringify({
+    side: { id: 'p1', name: 'Tactician', pokemon: roster(-1) },
+    active: [{ moves: (session.team[0].moves || []).map(function (name) {
+      return { move: name, id: idOf(name), pp: 16, maxpp: 16, target: 'normal' };
+    }) }],
+    rqid: 1
+  });
+  const ranked = session.feed('|request|' + moveReq);
+  check('the opening move window is ranked', Array.isArray(ranked) && ranked.length > 0,
+    Array.isArray(ranked) ? String(ranked.length) : String(ranked));
+  const topBefore = session.topChoice();
+  check('...and the session exposes a top line for it', !!topBefore, String(topBefore));
+
+  const board = manager.state;
+  const activeName = board.active && board.active.my ? board.active.my.species : null;
+  const offered = (board.legalActions.switches || []).map(function (s) { return s.name; });
+  check('the ACTIVE body is never in the legal switch list',
+    activeName !== null && offered.indexOf(activeName) === -1, 'active ' + activeName + ' offered in ' + JSON.stringify(offered));
+  check('...and every bench body is, once each',
+    offered.length === session.team.length - 1, JSON.stringify(offered));
+
+  /* The same frame again: still the SAME window, so the engine's answer stands (this is what the
+   * latch is for — the sim re-sends a byte-identical request after `|error|[Invalid choice]`). */
+  const repeated = session.feed('|request|' + moveReq);
+  check('a re-delivered identical frame does not re-rank', repeated === undefined, String(repeated));
+  check('...and the ranking that already answers it is KEPT, not discarded',
+    session.topChoice() === topBefore, String(session.topChoice()));
+
+  /* Now the faint, and the forced replacement on the SAME turn 1. */
+  session.feed('|faint|p1a: ' + speciesOf[0]);
+  const fsReq = JSON.stringify({ forceSwitch: [true], side: { id: 'p1', name: 'Tactician', pokemon: roster(0) } });
+  const fsRanked = session.feed('|request|' + fsReq);
+  check('a forceSwitch window on the SAME turn IS evaluated', Array.isArray(fsRanked) && fsRanked.length > 0,
+    Array.isArray(fsRanked) ? String(fsRanked.length) : String(fsRanked));
+  check('...and it ranks switch lines only',
+    (fsRanked || []).every(function (r) { return r.kind === 'switch'; }),
+    JSON.stringify((fsRanked || []).map(function (r) { return r.kind; })));
+  const names = (fsRanked || []).filter(function (r) { return r.kind === 'switch'; })
+    .map(function (r) { return r.name; });
+  check('the fainted body is NOT offered as its own replacement',
+    names.indexOf(speciesOf[0]) === -1, JSON.stringify(names));
+  check('...so every offered replacement is a live bench body',
+    names.length === session.team.length - 1, JSON.stringify(names));
+  check('the top line IS a replacement switch', /^switch /.test(session.topChoice() || ''), String(session.topChoice()));
+
+  /* A frame the engine refuses (the battle is over: every body fainted) reports the refusal rather
+   * than replaying the previous window's ranking as though it answered this one. */
+  session.feed('|faint|p1a: ' + speciesOf[1]);
+  const deadReq = JSON.stringify({
+    forceSwitch: [true],
+    side: { id: 'p1', name: 'Tactician', pokemon: session.team.map(function (mon, i) {
+      return { ident: 'p1: ' + (mon.species || mon.name), details: (mon.species || mon.name) + ', L50, M',
+        condition: '0 fnt', active: i === 1, moves: (mon.moves || []).map(idOf) };
+    }) }
+  });
+  const dead = session.feed('|request|' + deadReq);
+  check('a frame with no legal action left ranks nothing', dead === undefined, String(dead));
+  check('...and does NOT leave the previous window\u2019s ranking as this frame\u2019s answer',
+    session.topChoice() === null, String(session.topChoice()));
+}
+
 /* ------------------------------------------------- 3b. the self-play engine mirror */
 
 /**
@@ -631,16 +771,69 @@ async function checkMirror() {
   const packed = teams.toSimTeam(PASTE);
   const p1 = arena.createEngineAgent(bridge, PASTE);
   const mirror = new league.EngineMirrorAgent({ seed: 4, teamName: 'hazardStackBalance', team: PASTE });
+  /* BOTH SEATS DECLARE THE SAME DELIBERATION, as `run_arena --league mirror` does. The mirror states
+   * it inside its own session; without stating it for the engine seat too, that seat's clock measures
+   * a 0 ms lead on this single event loop, labels every turn 'auto' (0.25), and DELETES the
+   * opponent's switch replies from its matrix for the whole battle — so the two seats would be
+   * playing different games and their refusal counts would not be comparable. */
+  if (typeof p1.declareOpponentDeliberation === 'function') p1.declareOpponentDeliberation('normal');
   const report = await battle(p1, mirror, { p1Team: packed, p2Team: packed, seed: 11, maxTurns: 40 });
   check('the mirror answered real decision windows', mirror.mirrorRequests > 0, String(mirror.mirrorRequests));
   check('the mirror never threw', mirror.mirrorErrors === 0, String(mirror.mirrorErrors));
   check('the mirror kept the two seats symmetric (both are the same engine)',
     Math.abs(p1.stats.emptyRankings - mirror.mirrorEmpty) <= 3,
     'engine ' + p1.stats.emptyRankings + ' vs mirror ' + mirror.mirrorEmpty);
+  /* NEITHER SEAT MAY WRITE AN ILLEGAL CHOICE, and neither may leave a playable frame unanswered.
+   * Both were real, measured defects before the fixes this suite now pins: across the 20-battle
+   * mirror gate at seed 1337 the previous commit wrote 103 `|error|[Invalid choice]` lines and ran
+   * the answered-frame ledger at -103 (i.e. 103 playable frames needed the retry ladder), every one
+   * of them a forced replacement answered from a ranking computed for the move window that opened
+   * the same turn. */
+  const illegalP1 = invalidChoiceLines(report.p1Log);
+  const illegalP2 = invalidChoiceLines(report.p2Log);
+  check('the engine seat wrote no illegal choice', illegalP1.length === 0, JSON.stringify(illegalP1.slice(0, 2)));
+  check('the mirror seat wrote no illegal choice', illegalP2.length === 0, JSON.stringify(illegalP2.slice(0, 2)));
+  check('no PLAYABLE decision frame went unanswered on either seat',
+    unansweredFrames(report, 'p1') === 0 && unansweredFrames(report, 'p2') === 0,
+    'p1 ' + unansweredFrames(report, 'p1') + ' of ' + report.p1Choices.length +
+    ', p2 ' + unansweredFrames(report, 'p2') + ' of ' + report.p2Choices.length);
+
   const p2Subs = (report.substitutions || []).filter(function (s) { return s.side === 'p2'; }).length;
   check('the driver was not silently playing the mirror seat',
     p2Subs <= Math.max(4, report.p2Choices.length * 0.25), p2Subs + ' substitutions of ' + report.p2Choices.length + ' choices');
   check('the mirror game reached a real decision', /^(p1|p2|tie)$/.test(report.winner), report.winner);
+
+  /* THE 20-GAME GATE. `ARENA_MIRROR_GAMES=20 node tests/arena_check.js` re-runs the exact
+   * measurement these fixes were verified against (20 full battles at seed 1337, both seats), which
+   * is ~2 minutes of sim and therefore NOT part of a default `npm test` — the deterministic
+   * engine-level pins above are cheap and fail without the same fixes. It runs HERE, before the
+   * patch below replaces the process-wide sandbox, because the gate must measure the SHIPPED config
+   * on both seats. Opt-in, and it asserts the same two zeros. */
+  const games = (function () {
+    const n = parseInt(process.env.ARENA_MIRROR_GAMES || '', 10);
+    return isFinite(n) && n > 0 ? Math.min(n, 40) : 0;
+  })();
+  if (games > 0) {
+    let battles = 0, invalid = 0, unanswered = 0, refusals = 0, wins = 0;
+    for (let i = 0; i < games; i++) {
+      const seed = 1337 + i;
+      const seatP1 = arena.createEngineAgent(bridge, PASTE);
+      const seatP2 = new league.EngineMirrorAgent({ seed: seed, teamName: 'hazardStackBalance', team: PASTE });
+      if (typeof seatP1.declareOpponentDeliberation === 'function') seatP1.declareOpponentDeliberation('normal');
+      const rep = await battle(seatP1, seatP2, { p1Team: packed, p2Team: packed, seed: seed, maxTurns: 100 });
+      battles++;
+      invalid += invalidChoiceLines(rep.p1Log).length + invalidChoiceLines(rep.p2Log).length;
+      unanswered += unansweredFrames(rep, 'p1') + unansweredFrames(rep, 'p2');
+      refusals += seatP1.stats.emptyRankings + seatP2.mirrorEmpty;
+      if (rep.winner === 'p1') wins++;
+    }
+    check('the ' + games + '-game mirror gate ran every battle', battles === games, String(battles));
+    check('the ' + games + '-game mirror gate wrote NO illegal choice on either seat', invalid === 0, String(invalid));
+    check('the ' + games + '-game mirror gate left NO playable frame unanswered', unanswered === 0,
+      String(unanswered) + ' (raw refusal counters: ' + refusals + ')');
+    console.log('  (mirror gate: ' + games + ' battles, engine seat ' + wins + 'W-' + (games - wins) + 'L, illegal ' +
+      invalid + ', unanswered ' + unanswered + ', refusal counters ' + refusals + ')');
+  }
 
   /* THE FROZEN BASELINE — see the ordering note above. */
   const patched = bridge.loadHarness({
@@ -670,6 +863,7 @@ async function checkMirror() {
   checkBridge();
   await checkRunner();
   await checkPersonas();
+  checkDecisionFrames();
   checkMutator();
   await checkSplicer();
   await checkHarvester();
