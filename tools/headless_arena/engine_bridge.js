@@ -72,6 +72,10 @@ const CONFIG_FILE = 'src/config.js';
 const SIM_FORMAT_ID = 'gen9nationaldex';
 
 let cachedHarness = null;
+/* The FROZEN baseline sandbox, built only when a caller asks for it by name (`baseline: true`).
+ * Kept in its own slot so a self-play mirror can hold the shipped config while the process has a
+ * `--set` patch active — see the baseline branch in loadHarness. */
+let cachedBaseline = null;
 
 /**
  * Load the engine sandbox once per process. `setInterval` is stubbed because content.js boots on
@@ -99,6 +103,35 @@ function loadHarness(options) {
     throw new Error('engine_bridge.loadHarness: setArgs were given without an applyPatch function — ' +
       'refusing to build a sandbox that would look patched while measuring the shipped config');
   }
+  /* A FROZEN BASELINE, requested EXPLICITLY.
+   *
+   * Self-play needs the SHIPPED engine even while the process has a config patch active: a variant
+   * is measured against the baseline, so a mirror that shared the patch would be tested against
+   * itself and every variant's effect would cancel. This is therefore the ONE way to get an
+   * unpatched sandbox while a patch is live, and it is a deliberate, named request rather than the
+   * accidental fresh load the guard below refuses. It gets its own cache slot, built with no
+   * setArgs at all, so it can never overwrite the patched one. */
+  if (opts.baseline) {
+    if (wantsPatch) {
+      throw new Error('engine_bridge.loadHarness: `baseline` and `setArgs` are mutually exclusive — ' +
+        'a baseline IS the shipped config, so patching it is a contradiction, not a request');
+    }
+    if (cachedBaseline) return cachedBaseline;
+    const harness = require(HARNESS_PATH);
+    const baseOpts = opts.harnessOpts ? Object.assign({}, opts.harnessOpts) : {};
+    const sandbox = harness.loadAll({
+      setInterval: function () { return 0; },
+      clearInterval: function () { }
+    }, baseOpts);
+    const bST = sandbox.ST;
+    if (!bST || !bST.TacticianBoot) {
+      throw new Error('engine_bridge: the baseline harness loaded but ST.TacticianBoot is missing — ' +
+        'the engine manifest order in tests/harness.js no longer exposes the boot class');
+    }
+    cachedBaseline = { harness: harness, sandbox: sandbox, ST: bST, appliedSets: null, signature: '' };
+    return cachedBaseline;
+  }
+
   const signature = wantsPatch ? JSON.stringify(setArgs) : '';
   /* A caller with NO patch is asking for "this process's sandbox", so it takes the cache whatever
    * that cache holds — which is how every session built after run_arena's patched load ends up
@@ -254,7 +287,9 @@ class EngineSession {
     this.errors = [];
     this.requests = 0;
     this.evaluations = 0;
-    const loaded = loadHarness(options.fresh ? { fresh: true } : null);
+    /* `baseline: true` asks for the FROZEN shipped-config sandbox (see loadHarness), which is what
+     * a self-play mirror needs so a patched run prices the variant against the real baseline. */
+    const loaded = loadHarness(options.baseline ? { baseline: true } : (options.fresh ? { fresh: true } : null));
     this.ST = loaded.ST;
     const doc = options.doc || loaded.harness.createFakeDocument();
     this.boot = new this.ST.TacticianBoot({ doc: doc });

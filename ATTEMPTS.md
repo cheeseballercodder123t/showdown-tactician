@@ -83,7 +83,7 @@ wins** (16 of the 17) by making progress outrank passivity late in a game.
 |---|---|---|---|
 | C1 | **`quiescence` (the setup punisher)** — prices the opponent's boosted reply and their Protect inside the cell | **SUPERSEDED — the sign has FLIPPED.** The old reading was `feature HURTS`: removing the whole tier won **+19.3 [+12.0, +26.7]** (66.7 % → 86.0 %, cap ties 46/150 → 15/150), with the harm attributed entirely to `extendSetup`. Re-measured 2026-10-13 at the standard sample on the fixed instrument (see §H), switching `extendSetup` off **LOSES 20.0 [−30.0, −10.0]** (98.3 % → 78.3 %, 13 capped) — so the knob **HELPS** — while switching the whole tier off is **−5.0 [−11.7, +1.7]**, not measurable at this sample | **CLOSED 2026-10-13 — and it closed against the old verdict.** The open question was whether the harm survived the urgency change; it does not survive the *instrument* fix. The old number was taken on a build whose arena fed the engine a one-Pokemon team (§H), so it measured a crippled engine and is **not quotable**. On the fixed instrument the tier ships ON with a measurement **supporting** it. |
 | C2 | **VETO4 (`SPEED_SUICIDE`) firing on stale speed information** | 106 of the 177 elite clicks the guard refuses are this one code | unproven either way. The question is whether those refusals are boards where the human was right because the engine's speed estimate was blind to the field (an unrevealed Scarf, a weather ability, Tailwind). Answering it needs the **speed race itself instrumented**, which has not been done. Suppressing the rule is *not* an answer — see §F2. |
-| C3 | Smaller open defects | see the "Known — open, from the same review sweep" list in `CHANGELOG.md` (`residualOrder.trust` shipping at 1, Protosynthesis/Quark Drive Speed, `shelter`'s unverified effect, G-Max Steelsurge's flat 12.5 %, two HUDs double-handling a bench tap, `mon.knockOffSurvived` read but never written) and the deliberate-omission list in `BUGS_AUDIT_REPORT.md` | each is stated with its narrow fix; none is fixed |
+| C3 | Smaller open defects | see the "Known — open, from the same review sweep" list in `CHANGELOG.md` (`residualOrder.trust` shipping at 1, `shelter`'s unverified effect, G-Max Steelsurge's flat 12.5 %, two HUDs double-handling a bench tap, the Protosynthesis ceiling's sun/terrain case) and the deliberate-omission list in `BUGS_AUDIT_REPORT.md`. **TWO ARE NOW CLOSED** (2026-10-14): `mon.knockOffSurvived` was a read of nothing (the live field is `mon.itemKnockedOff`, now withheld for a Sticky Hold body), and the whole-`possibleAbilities` hard veto in VETO2 became a proof requirement. The Protosynthesis / Quark Drive SPEED misread is fixed for every speed layer, but the ceiling's sun/terrain-only case is not | four remain open, each with its narrow fix |
 
 ---
 
@@ -241,3 +241,30 @@ ARENA, neither of which could fail a test:
 cannot be measured at all until the opponent is stronger, and here "no measurable effect" mostly
 means **nothing left to win**, not "the feature does nothing". The `--battles 500` advice in §0 does
 not help: buying precision on a ceiling buys precision on zero. Strengthen the personas first.
+
+
+---
+
+## I. The self-play mirror (2026-10-14) — the instrument, un-ceiling'd
+
+§H ends on the blocker: the baseline wins **98.3 %** with **0 losses in 60 games**, so fourteen of the
+25 rows read 0.0 because there is nothing left to win, and `--battles 500` buys precision on zero.
+Strengthening the heuristic personas is one answer; seating the engine against **itself** is the other,
+and it needs no new opponent design.
+
+`--agent mirror` (alias `--league mirror`) in `run_arena.js` and `--mirror` in `run_ablation.js`:
+`EngineMirrorAgent` wraps a second `EngineSession` on the SAME team and answers p2's decision windows
+out of the engine's own ranking. Measured on seed 7 over 20 battles: **9-11** (45 %), avg 34.6 turns,
+against the personas' 20-0. That is a baseline with headroom in BOTH directions, which is the whole
+requirement.
+
+**The one design decision that matters.** The mirror runs the **shipped** config even when the run
+carries a `--set` patch. Sharing the patch would make the variant play itself: both seats would move
+together and every measured effect would cancel to zero — a table of zeros that reads as "these
+features do nothing". So `engine_bridge.loadHarness` gained a named `{baseline:true}` mode in its own
+cache slot (never patched, never the patched one), and a request for a baseline AND a patch is a
+refused contradiction.
+
+**What it does NOT fix.** The mirror is ONE opponent, and a self-play win rate says how the engine
+handles the engine — not how it handles a human (that is `tools/benchmark_human_match.js`'s question)
+or a ladder. Use it to price a variant's effect, not to claim strength.

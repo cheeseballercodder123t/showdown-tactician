@@ -50,8 +50,14 @@ const MUTATION_RATE = 0.10;
 const PERSONAS = [
   { id: 'anchor', label: 'Anchor', klass: 'StandardMetaAnchor', teamKey: 'hazardStackBalance' },
   { id: 'exploiter', label: 'Exploiter', klass: 'AntiTrickRoomExploiter', teamKey: 'trickRoomSweep' },
-  { id: 'chaos', label: 'Chaos', klass: 'LowLadderChaos', teamKey: 'ladderGimmick' }
+  { id: 'chaos', label: 'Chaos', klass: 'LowLadderChaos', teamKey: 'ladderGimmick' },
+  /* SELF-PLAY. The engine against a frozen copy of itself on the SAME team: the personas put the
+   * baseline at 98.3 % with no losses, so the instrument can only show harm. A mirror sits near
+   * 50 %, where a positive effect is measurable too (ATTEMPTS.md section H). `--league mirror` and
+   * `--agent mirror` are the same switch. */
+  { id: 'mirror', label: 'Mirror', klass: 'EngineMirrorAgent', teamKey: 'hazardStackBalance', mirror: true }
 ];
+const AGENT_IDS = PERSONAS.map(function (p) { return p.id; });
 
 const ANSI = {
   reset: '\u001b[0m', bold: '\u001b[1m', dim: '\u001b[2m',
@@ -73,7 +79,10 @@ function printUsage(out) {
     '  --battles <n>        Total battles to simulate (default: 100)',
     '  --mode <m>           full  = every battle from turn 1',
     '                       crucible = splice real replays from turn 8+ (default)',
-    '  --agent <a>          all | anchor | exploiter | chaos (default: all)',
+    '  --agent <a>          all | anchor | exploiter | chaos | mirror (default: all)',
+    '  --league <a>         alias for --agent. `mirror` pits the engine against a FROZEN copy of',
+    '                       itself on the same team (a ~50% baseline, where a positive effect is',
+    '                       measurable; the three personas sit at 98.3% with no headroom left)',
     '  --rating1 <n>        Declared ladder rating for the ENGINE seat, published on the sim\'s',
     '                       `|player|` line (default: none, so the rating field stays empty)',
     '  --rating2 <n>        Declared rating for the PERSONA seat, overriding the band the persona',
@@ -116,6 +125,7 @@ function parseArgs(argv) {
       case '--battles': opts.battles = Number(need(a, argv[++i])); break;
       case '--mode': opts.mode = String(need(a, argv[++i])).toLowerCase(); break;
       case '--agent': opts.agent = String(need(a, argv[++i])).toLowerCase(); break;
+      case '--league': opts.agent = String(need(a, argv[++i])).toLowerCase(); break;
       case '--seed': opts.seed = Number(need(a, argv[++i])); break;
       case '--max-turns': opts.maxTurns = Number(need(a, argv[++i])); break;
       case '--replay': opts.replay = String(need(a, argv[++i])); break;
@@ -150,8 +160,9 @@ function parseArgs(argv) {
   if (opts.mode !== 'full' && opts.mode !== 'crucible') {
     throw new SetupError('--mode must be full or crucible');
   }
-  if (['all', 'anchor', 'exploiter', 'chaos'].indexOf(opts.agent) === -1) {
-    throw new SetupError('--agent must be all, anchor, exploiter or chaos');
+  if (AGENT_IDS.concat(['all']).indexOf(opts.agent) === -1) {
+    throw new SetupError('--agent must be all, ' + AGENT_IDS.join(', ') +
+      ' (--league is the same switch)');
   }
   if (!Number.isFinite(opts.seed)) throw new SetupError('--seed must be a number');
   if (!Number.isFinite(opts.maxTurns) || opts.maxTurns < 1) throw new SetupError('--max-turns must be >= 1');
@@ -495,9 +506,13 @@ async function runOneBattle(ctx, personaId, index) {
    * persona that declares a band makes that tier priceable, and one that does not leaves the band
    * inert exactly as before (ratingFactor() returns 1 by design when the rating is null). */
   /* `--rating2` pins one value for every persona; otherwise the persona's own declared band. */
+  const personaDeclaredRating = (personaAgent && typeof personaAgent.rating === 'number') ? personaAgent.rating : null;
   const rating2 = (ctx.options.rating2 !== null && ctx.options.rating2 !== undefined)
     ? ctx.options.rating2
-    : ((personaAgent && typeof personaAgent.rating === 'number') ? personaAgent.rating : null);
+    /* A mirror has no ladder band of its own, so it borrows the ENGINE's declared rating: a
+     * self-play matchup where one seat is rated and the other is not would put the two seats in
+     * different `clock.ratingBands` worlds for no reason. */
+    : (personaSpec.mirror ? ctx.options.rating1 : personaDeclaredRating);
 
   /* State the opponent's deliberation before the battle runs. The arena has no network, so the
    * clock's estimator would read every turn as 'auto' (0.25) and DELETE their switch replies from
@@ -576,6 +591,14 @@ async function runOneBattle(ctx, personaId, index) {
   record.engineSkippedForeignRequests = engineAgent.stats.skippedForeignRequests;
   try { record.enginePipelineErrors = engineAgent.session.pipelineErrors().length; }
   catch (e) { record.enginePipelineErrors = 0; }
+  /* The mirror's OWN refusals, on the persona seat, reported the same way the engine's are: an
+   * empty ranking there is a fact about the mirror, not a battle the driver quietly won by
+   * substitution. Absent for the three heuristic personas. */
+  if (personaAgent && personaAgent.mirrorRequests !== undefined) {
+    record.mirrorRequests = personaAgent.mirrorRequests;
+    record.mirrorEmpty = personaAgent.mirrorEmpty;
+    record.mirrorErrors = personaAgent.mirrorErrors;
+  }
 
   // Loss -> permanent puzzle. The harvester decides whether the log contains a blunder it can
   // pin; a loss with no measurable drop is not a failure of this runner.

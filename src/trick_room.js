@@ -190,8 +190,11 @@
       const ability = this._abilityOf(mon);
       const abilityId = toID(ability);
       const item = this._itemOf(mon);
-      const paradoxBooster = !!mon.boosterActive ||
-        (U.PARADOX_ABILITIES.has(abilityId) && toID(item) === 'boosterenergy');
+      // A proven Booster Energy holder (ability + item) counts as boosted even before the protocol
+      // has set `boosterActive`; U.paradoxSpeedBoost then only applies the 1.5x when the boost is
+      // really a SPEED boost. Reading `boosterActive` flatly made an Attack-boosted Great Tusk look
+      // like it outsped us. See the helper's own notes.
+      const holdsBoosterEnergy = U.PARADOX_ABILITIES.has(abilityId) && toID(item) === 'boosterenergy';
       const res = U.computeSpeed(mon, {
         evs: mon.evs,
         ivs: mon.ivs,
@@ -203,7 +206,7 @@
         weather: f.weather || '',
         terrain: f.terrain || '',
         tailwind: !!(f.tailwind && f.tailwind[side]),
-        paradoxSpeedBoost: paradoxBooster,
+        paradoxSpeedBoost: U.paradoxSpeedBoost(mon, { active: !!mon.boosterActive || holdsBoosterEnergy }),
         unburden: !!mon.unburden
       });
       let speed = res.effective;

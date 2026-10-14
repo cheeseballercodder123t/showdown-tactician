@@ -29,6 +29,18 @@
   // distinct move in this stint" for the Choice-lock deduction.
   const FORCED_MOVE_IDS = new Set(['struggle']);
 
+  /**
+   * Which stat a `|-start|…|protosynthesis<stat>` / `quarkdrive<stat>` frame names, or null when
+   * the line is not one of those. @pkmn/sim emits the suffix on the ACTIVATION only
+   * (`|-start|p1a: Iron Valiant|quarkdrivespe`) and the bare, capitalised ability on the end
+   * (`|-end|p1a: Iron Valiant|Quark Drive`), so the two are parsed differently and both are cheap.
+   */
+  const BOOSTER_STAT_RE = /^(protosynthesis|quarkdrive)(atk|def|spa|spd|spe)$/;
+  function boosterStatOf(effect) {
+    const m = BOOSTER_STAT_RE.exec(String(effect || '').trim().toLowerCase());
+    return m ? m[2] : null;
+  }
+
   const VOLATILE_KEYS = [
     ['Substitute', 'substitute'],
     ['Leech Seed', 'leechseed'],
@@ -347,7 +359,13 @@
         // paradox tracking
         paradoxStintActive: false,
         paradoxActivatedThisStint: false,
-        paradoxBlacklistReason: null
+        paradoxBlacklistReason: null,
+        // WHICH stat the active Protosynthesis / Quark Drive boost is raising, from the protocol's
+        // own `|-start|p1a: X|protosynthesis<stat>` / `quarkdrive<stat>` frame ('atk'|'def'|'spa'|
+        // 'spd'|'spe'), or null when it has not been stated. `boosterActive` only says SOMETHING
+        // is boosted -- the abilities raise the HIGHEST stat, so a Roaring Moon boosted in Attack
+        // is not faster. Cleared on switch-in and on `|-end|`.
+        boostedStat: null
       };
     }
 
@@ -820,6 +838,7 @@
       mon.turnedThisTurn = false;
       mon.paradoxStintActive = U.isParadox(mon.species);
       mon.paradoxActivatedThisStint = false;
+      mon.boostedStat = null;                  // a fresh stint's boost is not stated until | -start |
       this._addStint(mon, slot);
 
       // Nobody else may keep this slot: a benched mon that still claims 'p2a' would make
@@ -855,6 +874,7 @@
     /** Called when a mon leaves the field: paradox Booster Energy inference + cleanup. */
     _endStint(mon, reason) {
       if (!mon) return;
+      mon.boostedStat = null;
       if (mon.paradoxStintActive && !mon.paradoxActivatedThisStint) {
         const weather = this.state.field.weather;
         const terrain = this.state.field.terrain;
@@ -1529,12 +1549,22 @@
         /* `Start of turn N: X is protected` handled through the move event */
       }
       if (/salt cure/i.test(effect)) mon.volatiles.saltcure = true;
+      // The sim STATES which stat the boost moved: `|-start|p2a: Roaring Moon|protosynthesisatk`.
+      // That suffix is the only evidence of a SPEED boost; `boosterActive` alone is not, because
+      // an Attack- or Special-Attack-boosted body is no faster at all. See boosterStatOf.
+      const boosted = boosterStatOf(effect);
+      if (boosted) mon.boostedStat = boosted;
     }
 
     _onEnd(event) {
       const mon = this._findBySlot(event.slot);
       if (!mon) return;
-      const lower = String(event.effect || '').toLowerCase();
+      const effect = String(event.effect || '');
+      const lower = effect.toLowerCase();
+      // `|-end|p1a: Great Tusk|Protosynthesis|[silent]` -- the boost ends and the stat is unknown
+      // again, so a later stint cannot inherit this one's Speed reading. The end frame carries the
+      // bare ability name (capitalised, no stat suffix), unlike the activation.
+      if (lower.indexOf('protosynthesis') !== -1 || lower.indexOf('quarkdrive') !== -1) mon.boostedStat = null;
       for (let i = 0; i < VOLATILE_KEYS.length; i++) {
         if (lower.indexOf(VOLATILE_KEYS[i][0].toLowerCase()) !== -1) {
           mon.volatiles[VOLATILE_KEYS[i][1]] = false;
@@ -2139,7 +2169,7 @@
         weather: st.field.weather,
         terrain: st.field.terrain,
         tailwind: st.field.tailwind[st.mySide],
-        paradoxSpeedBoost: my.boosterActive || false
+        paradoxSpeedBoost: U.paradoxSpeedBoost(my)
       });
       this.parser.speedHint = {
         mySpeed: speed.effective,

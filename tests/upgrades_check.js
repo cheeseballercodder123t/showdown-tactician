@@ -636,6 +636,109 @@ check('the observation the pruner used is the one the parser produced (not a fix
   Array.isArray(e2eFerro.damageDealt) && e2eFerro.damageDealt.length === 1 && e2eFerro.damageDealt[0].damagePercent === HIT,
   JSON.stringify(e2eFerro.damageDealt));
 
+/* ============================ 11. VETO2 needs a PROOF, and the paradox boost needs to be Speed */
+
+section('11. an ability immunity is vetoed only on a PROOF, and a paradox boost only when it is Speed');
+
+/* A guard with NO damage engine: VETO4/VETO5 then cannot preempt the rule under test, so a green
+ * line below can only be the ability rule's own answer. */
+const proofVeto = new ST.BlunderVetoGuard({});
+
+/** An opponent whose ability is only ever SUSPECTED, with each proof source opt-in. */
+function immuneOpp(opts) {
+  const o = opts || {};
+  return {
+    species: o.species || 'Great Tusk', id: U.toID(o.species || 'Great Tusk'),
+    revealedAbility: o.revealedAbility === undefined ? null : o.revealedAbility,
+    possibleAbilities: o.possibleAbilities || [],
+    candidateSets: o.candidateSets || [],
+    boosts: {}, hpPercent: 100, fainted: false
+  };
+}
+function vetoOf(moveName, opp) {
+  const st = contactState(90, {});
+  st.active.opp = opp;
+  return proofVeto.evaluateVetoes({ kind: 'move', name: moveName, moveId: U.toID(moveName) }, st, { v4: 0.1 });
+}
+
+/* THE DEFECT THIS PINS: feeding the species' whole `possibleAbilities` pool into immunityReason
+ * hard-vetoed a line at -9999 on a 1-in-3 guess, deleting the hedge the world sampler exists to
+ * price. Three proofs are accepted and a mere possibility is not. */
+const unproven = vetoOf('Earthquake', immuneOpp({ species: 'Hydreigon', possibleAbilities: ['Levitate', 'Hustle', 'Mold Breaker'] }));
+check('an UNCONFIRMED immunity ability is not hard-vetoed', unproven.isVetoed === false, JSON.stringify(unproven));
+const noPool = vetoOf('Earthquake', immuneOpp({ species: 'Hydreigon', possibleAbilities: [] }));
+check('an empty possibility pool definitely does not veto', noPool.isVetoed === false, JSON.stringify(noPool));
+const revealed = vetoOf('Earthquake', immuneOpp({ species: 'Hydreigon', revealedAbility: 'Levitate', possibleAbilities: ['Levitate', 'Hustle'] }));
+check('proof 1: a REVEALED immunity ability vetoes', revealed.isVetoed === true && revealed.code === 'ABILITY_IMMUNITY', JSON.stringify(revealed));
+const sole = vetoOf('Earthquake', immuneOpp({ species: 'Hydreigon', possibleAbilities: ['Levitate'] }));
+check('proof 2: the species having ONLY that ability vetoes', sole.isVetoed === true, JSON.stringify(sole));
+const agreed = vetoOf('Earthquake', immuneOpp({
+  species: 'Hydreigon', possibleAbilities: ['Levitate', 'Hustle'],
+  candidateSets: [{ ability: 'Levitate', moves: ['Earth Power'] }, { ability: 'Levitate', moves: ['Dark Pulse'] }]
+}));
+check('proof 3: every surviving candidate set carrying it vetoes', agreed.isVetoed === true, JSON.stringify(agreed));
+const split = vetoOf('Earthquake', immuneOpp({
+  species: 'Hydreigon', possibleAbilities: ['Levitate', 'Hustle'],
+  candidateSets: [{ ability: 'Levitate' }, { ability: 'Hustle' }]
+}));
+check('candidate sets that DISAGREE leave the line alone', split.isVetoed === false, JSON.stringify(split));
+const flying = vetoOf('Earthquake', immuneOpp({ species: 'Corviknight', possibleAbilities: ['Pressure', 'Mirror Armor', 'Big Pecks'] }));
+check('the Flying TYPE still vetoes on its own (no ability proof needed)', flying.isVetoed === true, JSON.stringify(flying));
+
+/* The same proof requirement governs the status half (Good as Gold). */
+const gag = vetoOf('Thunder Wave', immuneOpp({ species: 'Gholdengo', possibleAbilities: ['Good as Gold', 'Stall'] }));
+check('a status move into an UNCONFIRMED Good as Gold is not vetoed', gag.isVetoed === false, JSON.stringify(gag));
+const gagRevealed = vetoOf('Thunder Wave', immuneOpp({ species: 'Gholdengo', revealedAbility: 'Good as Gold' }));
+check('...but a REVEALED Good as Gold blocks it', gagRevealed.isVetoed === true && gagRevealed.code === 'ABILITY_IMMUNITY', JSON.stringify(gagRevealed));
+
+/* THE PARADOX STAT. The sim states which stat the boost moved, and that statement must reach the
+ * state, or an Attack-boosted Great Tusk is priced at 1.5x Speed (see the audit report). */
+const pb = new ST.BattleStateManager();
+const pp = new ST.ProtocolParser();
+pb.attachParser(pp);
+pb.setFormat('[Gen 9] National Dex OU');
+pp.feedAll([
+  '|player|p1|Me|1|1500', '|player|p2|Foe|2|1480', '|start',
+  '|switch|p1a: Corviknight|Corviknight, L50, M|100/100',
+  '|switch|p2a: Great Tusk|Great Tusk, L50, M|100/100',
+  '|turn|1',
+  '|-activate|p2a: Great Tusk|ability: Protosynthesis|[fromitem]',
+  '|-start|p2a: Great Tusk|protosynthesisatk'
+].join('\n'));
+const tusk = (pb.state.oppTeam || []).filter(function (m) { return m && U.toID(m.species) === 'greattusk'; })[0];
+check('the fixture actually has the opponent active', !!tusk, JSON.stringify((pb.state.oppTeam || []).map(function (m) { return m.species; })));
+check('the ability activation marks the boost active', !!tusk && tusk.boosterActive === true, String(tusk && tusk.boosterActive));
+eq('the |start| frame records WHICH stat moved', tusk && tusk.boostedStat, 'atk');
+pp.feedAll('|-end|p2a: Great Tusk|Protosynthesis|[silent]');
+eq('the |end| frame clears it', tusk.boostedStat, null);
+pp.feedAll('|-start|p2a: Great Tusk|protosynthesisspe');
+eq('a later activation overwrites it', tusk.boostedStat, 'spe');
+pp.feedAll('|switch|p2a: Corviknight|Corviknight, L50, M|100/100');
+eq('switching out clears it', tusk.boostedStat, null);
+pp.feedAll('|switch|p2a: Great Tusk|Great Tusk, L50, M|100/100');
+eq('...and a re-entry starts with no stated stat', tusk.boostedStat, null);
+
+/* The helper itself, then the ordering it feeds. Talonflame's highest stat IS Speed; Great Tusk's is Attack. */
+eq('a stated Speed boost counts', U.paradoxSpeedBoost({ species: 'Talonflame', boosterActive: true, boostedStat: 'spe' }, {}), true);
+eq('a stated Attack boost does NOT', U.paradoxSpeedBoost({ species: 'Great Tusk', boosterActive: true, boostedStat: 'atk' }, {}), false);
+eq('an unstated boost falls back to the highest stat (Talonflame: Speed)', U.paradoxSpeedBoost({ species: 'Talonflame', boosterActive: true }, {}), true);
+eq('...and Great Tusk\'s highest stat is Attack, so no speed boost', U.paradoxSpeedBoost({ species: 'Great Tusk', boosterActive: true }, {}), false);
+eq('a body with no active boost never counts', U.paradoxSpeedBoost({ species: 'Talonflame', boosterActive: false, boostedStat: 'spe' }, {}), false);
+eq('opts.active can assert the boost before boosterActive is set', U.paradoxSpeedBoost({ species: 'Talonflame', boostedStat: 'spe' }, { active: true }), true);
+
+/* The ordering test is a MIRROR, so the only thing that can flip `_opponentMovesFirst` is the 1.5x. */
+function paradoxOrdering(boosterActive, boostedStat) {
+  const mirrored = function (extra) {
+    return Object.assign({ species: 'Great Tusk', evs: {}, ivs: U.DEFAULT_IVS, nature: '', boosts: {}, hpPercent: 100 }, extra);
+  };
+  return new ST.BlunderVetoGuard({})._opponentMovesFirst(
+    { mySide: 'p1', field: { trickRoom: false } },
+    mirrored({}), mirrored({ boosterActive: boosterActive, boostedStat: boostedStat }));
+}
+eq('a mirror with no boost does not move first', paradoxOrdering(false, null), false);
+eq('...the same mirror WITH a Speed boost does move first', paradoxOrdering(true, 'spe'), true);
+eq('...but an ATTACK boost does not pretend to be Speed', paradoxOrdering(true, 'atk'), false);
+
 /* ================================================================== summary */
 
 console.log('\n=== summary ===');

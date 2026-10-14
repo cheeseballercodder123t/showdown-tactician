@@ -528,6 +528,132 @@ class LowLadderChaos extends BaseAgent {
   }
 }
 
+/* ----------------------------------------------------------------------------------- the mirror */
+
+/**
+ * SELF-PLAY: the extension's own decision engine, FROZEN, piloting the opposing team.
+ *
+ * WHY THE LEAGUE NEEDED IT. The three personas are heuristics, and the engine beats them 98.3 % with
+ * ZERO losses in 60 games, so the instrument sits at its ceiling: it can show HARM and essentially
+ * nothing else, and fourteen of the ablation table's rows read 0.0 for want of headroom rather than
+ * because the feature does nothing (ATTEMPTS.md section H). A mirror drops the baseline to ~50 %,
+ * where a change that helps is as visible as one that hurts — which is the only way to price the
+ * upper half of that table.
+ *
+ * FROZEN means the SHIPPED config even when the whole run carries a `--set` patch, so a paired
+ * ablation measures the patched p1 against the baseline p2. If both seats shared the patch the
+ * variant would be playing itself and every effect would cancel. See
+ * engine_bridge.loadHarness({ baseline: true }).
+ *
+ * It speaks the arena's frozen agent contract (`chooseAction(request, context)`), NOT the persona
+ * heuristic interface: it feeds its own side's protocol log into one EngineSession and answers each
+ * `|request|` with the engine's own top line, exactly as run_arena's p1 agent does. When the engine
+ * refuses to rank anything it returns null so the DRIVER's fallback ladder answers, and the refusal
+ * is counted (`mirrorEmpty`) rather than hidden.
+ */
+class EngineMirrorAgent extends BaseAgent {
+  constructor(options) {
+    options = options || {};
+    options.name = options.name || 'EngineMirror';
+    /* The mirror pilots the SAME team the engine under test does, so the matchup is symmetric. */
+    options.teamName = options.teamName || 'hazardStackBalance';
+    super(options);
+    /* The mirror is the shipped config by default; `baseline: false` makes it share the process's
+     * (possibly patched) sandbox, which is only useful for a same-config self-play run. */
+    this.baseline = options.baseline !== false;
+    this.mirrorRequests = 0;
+    this.mirrorEmpty = 0;
+    this.mirrorErrors = 0;
+    this._session = null;
+    this._watermark = 0;
+    this._lastFed = null;
+    this._side = null;
+  }
+
+  reset() {
+    super.reset();
+    this._session = null;
+    this._watermark = 0;
+    this._lastFed = null;
+    this._side = null;
+    this.mirrorRequests = 0;
+    this.mirrorEmpty = 0;
+    this.mirrorErrors = 0;
+  }
+
+  /** The one EngineSession, built lazily so a process that never seats the mirror pays nothing. */
+  session() {
+    if (this._session) return this._session;
+    const opts = { paste: this.team, name: this.name };
+    if (this.baseline) opts.baseline = true;
+    const session = bridge.createSession(opts);
+    /* Its opponent is the OTHER engine seat on this single event loop — the same ~0 ms lead the
+     * clock mis-reads on p1 (OpponentClock.declare) — so the mirror declares it too. */
+    if (typeof session.declareOpponentDeliberation === 'function') session.declareOpponentDeliberation('normal');
+    this._session = session;
+    return session;
+  }
+
+  /** One protocol line, skipping any `|request|` that is not this seat's own. */
+  _feed(session, line) {
+    if (!line) return;
+    if (typeof line === 'string' && line.lastIndexOf('|request|', 0) === 0 && this._side) {
+      let req = null;
+      try { req = JSON.parse(line.slice('|request|'.length)); } catch (e) { return; }
+      if (req && req.side && req.side.id && req.side.id !== this._side) return;
+    }
+    try { session.feed(line); this._lastFed = line; } catch (e) { this.mirrorErrors++; }
+  }
+
+  /** Feed everything the driver's log has added since the last call (the p1 agent's watermark). */
+  _feedTo(session, log) {
+    if (!Array.isArray(log) || !log.length) return;
+    if (this._watermark > 0 && log[this._watermark - 1] !== this._lastFed) {
+      let at = -1;
+      for (let i = log.length - 1; i >= 0; i--) { if (log[i] === this._lastFed) { at = i; break; } }
+      if (at < 0) return;
+      this._watermark = at + 1;
+    }
+    while (this._watermark < log.length) this._feed(session, log[this._watermark++]);
+  }
+
+  /** The engine's own line for one decision window, or null (the driver then falls back). */
+  _decide(session, request) {
+    try {
+      if (request.teamPreview) return bridge.teamPreviewOrder(request);
+      if (request.wait) return null;
+      if (request.forceSwitch) {
+        const ladder = session.choiceLadder(8);
+        for (let i = 0; i < ladder.length; i++) {
+          if (ladder[i].lastIndexOf('switch ', 0) === 0) return ladder[i];
+        }
+        this.mirrorEmpty++;
+        return null;
+      }
+      if (request.active) {
+        const top = session.topChoice();
+        if (top) return top;
+        this.mirrorEmpty++;
+        return null;
+      }
+      return null;
+    } catch (e) { this.mirrorErrors++; return null; }
+  }
+
+  chooseAction(request, context) {
+    const ctx = context || {};
+    if (ctx.side) this._side = ctx.side;
+    const session = this.session();
+    this._feedTo(session, ctx.log);
+    if (!request) return null;
+    this.mirrorRequests++;
+    const choice = this._decide(session, request);
+    // Our own outgoing frame, so this seat's clock is live too and the two seats stay symmetric.
+    if (choice) { try { session.noteOutgoing(choice); } catch (e) { this.mirrorErrors++; } }
+    return choice;
+  }
+}
+
 /* ---------------------------------------------------------------------------------- the league */
 
 /** One agent per persona, in the arena's stable order, ready to play the named team. */
@@ -545,11 +671,20 @@ function createLeague(options) {
 }
 
 const ALL_AGENTS = ['anchor', 'exploiter', 'chaos'];
+/* The league the CLI can seat, which is the three personas PLUS the self-play mirror. `ALL_AGENTS`
+ * stays the roster `createLeague` returns; `LEAGUE_IDS` is what `--agent`/`--league` validate against. */
+const LEAGUE_IDS = ALL_AGENTS.concat(['mirror']);
 
 function byId(id, options) {
   const league = createLeague(options);
   const map = { anchor: league[0], exploiter: league[1], chaos: league[2] };
-  if (!map[id]) throw new Error('league_agents: unknown agent "' + id + '" (have: ' + ALL_AGENTS.join(', ') + ')');
+  if (!map[id] && id !== 'mirror') {
+    throw new Error('league_agents: unknown agent "' + id + '" (have: ' + LEAGUE_IDS.join(', ') + ')');
+  }
+  if (id === 'mirror') {
+    const m = options || {};
+    return new EngineMirrorAgent({ seed: typeof m.seed === 'number' ? m.seed : 1, teamName: m.teamName });
+  }
   return map[id];
 }
 
@@ -575,9 +710,11 @@ module.exports = {
   StandardMetaAnchor: StandardMetaAnchor,
   AntiTrickRoomExploiter: AntiTrickRoomExploiter,
   LowLadderChaos: LowLadderChaos,
+  EngineMirrorAgent: EngineMirrorAgent,
   createLeague: createLeague,
   byId: byId,
   ALL_AGENTS: ALL_AGENTS,
+  LEAGUE_IDS: LEAGUE_IDS,
   PROTECT_FAMILY: PROTECT_FAMILY,
   legalMoves: legalMoves,
   benchOptions: benchOptions,

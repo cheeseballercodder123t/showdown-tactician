@@ -550,7 +550,11 @@ function printUsage(out) {
     '  --features <list>   Comma-separated feature ids, or "all" (default: all). See --list.',
     '  --seed <n>          Base seed, shared by every variant (default: ' + DEFAULT_SEED + ')',
     '  --max-turns <n>     Turn cap per battle (default: ' + DEFAULT_MAX_TURNS + ')',
-    '  --agent <a>         all | anchor | exploiter | chaos (default: all)',
+    '  --agent <a>         all | anchor | exploiter | chaos | mirror (default: all)',
+    '  --mirror            Shorthand for --agent mirror: seat the engine against a FROZEN copy of',
+    '                      itself. The personas put the baseline at 98.3% with no losses, so the',
+    '                      instrument has no headroom; a mirror sits near 50%, where a variant that',
+    '                      HELPS is measurable as well as one that hurts (ATTEMPTS.md section H).',
     '  --parallel <n>      Variants to run at once (default: 1)',
     '  --out <file>        Write the full JSON summary here',
     '  --keep-tmp          Keep the per-variant arena reports (for inspection)',
@@ -585,6 +589,8 @@ function parseArgs(argv) {
       case '--seed': opts.seed = Number(need(a, argv[++i])); break;
       case '--max-turns': opts.maxTurns = Number(need(a, argv[++i])); break;
       case '--agent': opts.agent = String(need(a, argv[++i])).toLowerCase(); break;
+      case '--league': opts.agent = String(need(a, argv[++i])).toLowerCase(); break;
+      case '--mirror': opts.agent = 'mirror'; break;
       case '--parallel': opts.parallel = Number(need(a, argv[++i])); break;
       case '--out': opts.out = String(need(a, argv[++i])); break;
       case '--keep-tmp': opts.keepTmp = true; break;
@@ -602,8 +608,8 @@ function parseArgs(argv) {
   if (!Number.isFinite(opts.parallel) || opts.parallel < 1 || Math.floor(opts.parallel) !== opts.parallel) {
     throw new arena.SetupError('--parallel must be a positive integer');
   }
-  if (['all', 'anchor', 'exploiter', 'chaos'].indexOf(opts.agent) === -1) {
-    throw new arena.SetupError('--agent must be all, anchor, exploiter or chaos');
+  if (['all', 'anchor', 'exploiter', 'chaos', 'mirror'].indexOf(opts.agent) === -1) {
+    throw new arena.SetupError('--agent must be all, anchor, exploiter, chaos or mirror');
   }
   return opts;
 }

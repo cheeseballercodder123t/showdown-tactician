@@ -393,6 +393,62 @@ throwsWith('an unknown corpus shape is refused', function () {
   extractor.extractDataset({ notes: 'nope' }, api);
 }, /array of replays/);
 
+/* ============================================ 5b. the dims the corpus cannot move */
+
+section('5b. six dims are structurally zero in the corpus, and here is exactly why');
+
+/* P4's second half. `tools/extract_training_data.js` builds a ProtocolParser, a BattleStateManager
+ * and a DenseStateEvaluator -- and nothing else. It never constructs ST.ArchetypePruner and never
+ * calls registerMyTeam, and `itemless`, `cannotBeChoice` and `liveSet` are written ONLY by
+ * src/set_pruner.js. So dims 66/67 (our active's choice-lock / itemless flags) and 72/73 (the
+ * opponent's) are constant 0 in every corpus row, and dims 120/121 are the Tera-threat pair, a hard
+ * 0 because Terastal Clause bans Tera in [Gen 9] National Dex OU. The export clamp in 2c zeroes
+ * them for the same reason it zeroes dim 41: a column no row can move is not a measurement. Each
+ * claim is proven by CONSTRUCTION -- the dims are live code, not dead -- because "constant zero in
+ * the artifact" and "the evaluator never writes it" are very different bugs. */
+(function () {
+  const ZERO_DIMS = [66, 67, 72, 73, 120, 121];
+  check('the extractor\'s own rows carry all six dims at exactly zero',
+    p1Won.rows.every(function (r) { return ZERO_DIMS.every(function (d) { return r.x[d] === 0; }); }),
+    JSON.stringify(p1Won.rows.map(function (r) { return ZERO_DIMS.map(function (d) { return r.x[d]; }); })));
+
+  const mk = function (extra) {
+    return Object.assign({
+      species: 'Great Tusk', id: 'greattusk', fainted: false, hpPercent: 100, boosts: {},
+      status: '', evs: {}, ivs: {}, nature: '', revealedMoves: ['Headlong Rush'],
+      liveSet: { moves: ['Headlong Rush'] }
+    }, extra);
+  };
+  const board = function (opts) {
+    const o = opts || {};
+    return {
+      mySide: 'p1', terastallizationBanned: o.banned !== false,
+      field: { hazards: { p1: {}, p2: {} }, trickRoom: false },
+      myTeam: [mk(o.my || {})], oppTeam: [mk(o.opp || {})],
+      active: { my: mk(o.my || {}), opp: mk(o.opp || {}) }
+    };
+  };
+  /* extractVector REUSES one Float32Array, so every reading is copied before the next call. */
+  const ev = new ST.DenseStateEvaluator();
+  const vec = function (o) { return Array.from(ev.extractVector(board(o))); };
+
+  const blank = vec({});
+  check('a board with nothing recorded leaves the four item dims at zero',
+    [66, 67, 72, 73].every(function (d) { return blank[d] === 0; }),
+    JSON.stringify([66, 67, 72, 73].map(function (d) { return blank[d]; })));
+  const locked = vec({ my: { cannotBeChoice: true, itemless: true }, opp: { cannotBeChoice: true, itemless: true } });
+  eq('the pruner\'s choice-lock flag is what dim 66 reads (ours)', locked[66], 1);
+  eq('...and its itemless flag is dim 67 (ours)', locked[67], 1);
+  eq('...the opponent\'s are dims 72 and 73', [locked[72], locked[73]], [1, 1]);
+
+  const teraBanned = vec({ banned: true, my: { terastallized: true }, opp: { terastallized: true } });
+  const teraAllowed = vec({ banned: false, my: { terastallized: true }, opp: { terastallized: true } });
+  const notTera = vec({ banned: false });
+  eq('with Tera BANNED a terastallized body still scores a hard zero', [teraBanned[120], teraBanned[121]], [0, 0]);
+  eq('...and with the ban lifted the same board scores the tera threat', [teraAllowed[120], teraAllowed[121]], [0.5, 0.5]);
+  eq('...while a board nobody terastallized on stays zero either way', [notTera[120], notTera[121]], [0, 0]);
+})();
+
 /* ======================================================= 6. degenerate inputs */
 
 section('6. degenerate datasets are refused, never fitted to NaN');

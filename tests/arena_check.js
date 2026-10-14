@@ -56,6 +56,7 @@ const league = require(path.join(ROOT, 'tools', 'headless_arena', 'league_agents
 const mutator = require(path.join(ROOT, 'tools', 'headless_arena', 'mutator.js'));
 const splicerModule = require(path.join(ROOT, 'tools', 'headless_arena', 'replay_splicer.js'));
 const harvesterModule = require(path.join(ROOT, 'tools', 'headless_arena', 'blunder_harvester.js'));
+const arena = require(path.join(ROOT, 'tools', 'run_arena.js'));
 
 const { TeamValidator, Teams, BattleStreams } = sim;
 
@@ -601,6 +602,67 @@ function checkWire() {
     typeof BattleStreams.BattleStream === 'function' && typeof BattleStreams.getPlayerStreams === 'function', '');
 }
 
+/* ------------------------------------------------- 3b. the self-play engine mirror */
+
+/**
+ * The mirror is the answer to the instrument's ceiling: the personas are beaten 98.3% with no
+ * losses, so a positive effect has nowhere to show. What has to hold is that the mirror is the SAME
+ * engine (so the matchup is symmetric) and that it reads the SHIPPED config even when the process
+ * carries a --set patch (so a variant is measured against the baseline, not against itself).
+ *
+ * Ordering note: the patch check runs LAST, because applying a patch replaces the PROCESS-WIDE
+ * sandbox and every later session would inherit it.
+ */
+async function checkMirror() {
+  section('3b. the engine mirror: self-play, and a baseline the patch cannot touch');
+  if (typeof league.EngineMirrorAgent !== 'function') {
+    check('EngineMirrorAgent is exported', false, typeof league.EngineMirrorAgent);
+    return;
+  }
+  check('EngineMirrorAgent is exported', true, '');
+  check('league_agents offers `mirror` as a seatable id',
+    Array.isArray(league.LEAGUE_IDS) && league.LEAGUE_IDS.indexOf('mirror') !== -1, JSON.stringify(league.LEAGUE_IDS));
+  const viaId = league.byId('mirror', { seed: 3, teamName: 'hazardStackBalance' });
+  check('byId("mirror") builds one', !!viaId && viaId.name === 'EngineMirror', viaId && viaId.name);
+
+  /* A REAL GAME, played BEFORE any patch exists, so both seats read the identical sandbox and the
+   * two seats' refusal rates are directly comparable. */
+  const PASTE = teams.SAMPLE_TEAMS.hazardStackBalance;
+  const packed = teams.toSimTeam(PASTE);
+  const p1 = arena.createEngineAgent(bridge, PASTE);
+  const mirror = new league.EngineMirrorAgent({ seed: 4, teamName: 'hazardStackBalance', team: PASTE });
+  const report = await battle(p1, mirror, { p1Team: packed, p2Team: packed, seed: 11, maxTurns: 40 });
+  check('the mirror answered real decision windows', mirror.mirrorRequests > 0, String(mirror.mirrorRequests));
+  check('the mirror never threw', mirror.mirrorErrors === 0, String(mirror.mirrorErrors));
+  check('the mirror kept the two seats symmetric (both are the same engine)',
+    Math.abs(p1.stats.emptyRankings - mirror.mirrorEmpty) <= 3,
+    'engine ' + p1.stats.emptyRankings + ' vs mirror ' + mirror.mirrorEmpty);
+  const p2Subs = (report.substitutions || []).filter(function (s) { return s.side === 'p2'; }).length;
+  check('the driver was not silently playing the mirror seat',
+    p2Subs <= Math.max(4, report.p2Choices.length * 0.25), p2Subs + ' substitutions of ' + report.p2Choices.length + ' choices');
+  check('the mirror game reached a real decision', /^(p1|p2|tie)$/.test(report.winner), report.winner);
+
+  /* THE FROZEN BASELINE — see the ordering note above. */
+  const patched = bridge.loadHarness({
+    setArgs: ['clock.enabled=false'],
+    applyPatch: function (ST, sets) { return arena.applyConfigPatch(ST, sets); }
+  });
+  const base = bridge.loadHarness({ baseline: true });
+  check('the frozen baseline and the patched sandbox are different sandboxes',
+    base.ST !== patched.ST, 'the same ST object');
+  check('the baseline holds the SHIPPED config', base.ST.configGet('clock.enabled', true) === true,
+    String(base.ST.configGet('clock.enabled', true)));
+  check('...while the process sandbox carries the patch', patched.ST.configGet('clock.enabled', false) === false,
+    String(patched.ST.configGet('clock.enabled', false)));
+  const baseSeat = bridge.createSession({ paste: PASTE, baseline: true });
+  check('a baseline session reads the shipped config, not the patch',
+    baseSeat.ST.configGet('clock.enabled', true) === true, String(baseSeat.ST.configGet('clock.enabled', true)));
+  let refused = false;
+  try { bridge.loadHarness({ baseline: true, setArgs: ['clock.enabled=false'], applyPatch: function () { } }); }
+  catch (e) { refused = /mutually exclusive/.test(e && e.message); }
+  check('a baseline requested WITH a patch is refused, not silently honoured', refused, '');
+}
+
 /* ---------------------------------------------------------------------- run everything */
 
 (async function main() {
@@ -612,6 +674,7 @@ function checkWire() {
   await checkSplicer();
   await checkHarvester();
   checkWire();
+  await checkMirror();
 
   console.log('\n=== summary ===');
   console.log('checks passed: ' + passed);

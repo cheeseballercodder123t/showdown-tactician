@@ -1065,16 +1065,25 @@ sim resolves the battle, its `TeamValidator` rules on legality, and its `|reques
 only source of what is legal this turn. RULE 1 holds inside `tools/` exactly as it does inside
 `src/`.
 
+**Self-play, and why the mirror is FROZEN.** At a 98.3 % baseline with zero losses the arena can show
+harm and almost nothing else (ATTEMPTS.md §H), so `--agent mirror` seats the engine against
+`EngineMirrorAgent`: a second `EngineSession` on the SAME team, answering p2 out of the engine's own
+ranking. The mirror reads the **shipped** config even when the run carries a `--set` patch, which is
+the only thing that makes a paired ablation meaningful — if both seats shared the patch the variant
+would play itself and every effect would cancel. `loadHarness({ baseline: true })` is that frozen
+sandbox, in its own cache slot so it can never be overwritten by (or overwrite) the patched one, and
+asking for a baseline AND a patch is a refusal rather than a request.
+
 Frozen surfaces — what the suites pin, and what the CLI calls:
 
 | module | surface |
 | --- | --- |
 | `sim_runner.js` | `new HeadlessBattleRunner(format)`, `initBattle(p1Pack, p2Pack, seed)`, `await runGame(p1Agent, p2Agent, maxTurns)`, `report()`, `close()`, `playBattle({...})` |
 | `replay_splicer.js` | `new ReplaySplicer(opts)`, `findCrucibleTurn(lines)`, `spliceAndResume(lines, turn, p1Agent, p2Agent, opts)`, `scan`, `extractTeams`, `extractTurnChoices`, `stateBeforeTurn`, `compareState`, `readReplayFile` |
-| `league_agents.js` | `createLeague(ids)`, `byId(id)`, `ALL_AGENTS`, `StandardMetaAnchor` / `AntiTrickRoomExploiter` / `LowLadderChaos` |
+| `league_agents.js` | `createLeague(ids)`, `byId(id)`, `ALL_AGENTS`, `LEAGUE_IDS`, `StandardMetaAnchor` / `AntiTrickRoomExploiter` / `LowLadderChaos` / `EngineMirrorAgent` |
 | `mutator.js` | `mutateTeam(packed, rate, { seed }) -> { packed, sets, changes, rejected, seed, mutationRate, inputErrors }`, `new SetMutator(opts)` |
 | `blunder_harvester.js` | `analyzeLoss(matchReport, sessionOrOptions)`, `generatePuzzleCode(analysis, options)`, `appendVaccineToFile(code, targetFile)`, `puzzleNameOf`, `SENTINEL` |
-| `engine_bridge.js` | `SIM_FORMAT_ID`, `createSession(opts)`, `EngineSession`, `choiceForRanked`, `teamPreviewOrder`, `loadHarness`, `loadSim` |
+| `engine_bridge.js` | `SIM_FORMAT_ID`, `createSession(opts)` (`{baseline:true}` = the frozen shipped config), `EngineSession`, `choiceForRanked`, `teamPreviewOrder`, `loadHarness({setArgs, applyPatch, baseline})`, `loadSim` |
 | `run_arena.js` | `parseArgs(argv)`, `main(argv)`, `createEngineAgent`, `renderSummary`, `applyConfigPatch(ST, sets)`, `parseConfigValue`, `formatConfigValue`, `SetupError` |
 | `run_ablation.js` | `parseArgs(argv)`, `main(argv)`, `FEATURES`, `buildVariants(ids)`, `validateFeaturePaths(variants)`, `arenaArgs(variant, opts, jsonPath)`, `summarizeRun(payload)`, `verifyPairing(base, variant)`, `pairedBootstrap(a, b, B, seed)`, `compareToBaseline(baseSummary, variantSummary, descriptor, opts)`, `renderTable(rows)` |
 | `benchmark_human_match.js` | `parseArgs(argv)`, `main(argv)`, `evaluateBattle(ST, U, replay, sides, opts)`, `scoreDecision(engine, state, cls, ctx)`, `classifySide(bucketLines, side)`, `extractChoices(replayLines)`, `summarize(records, meta)`, `wilson(k, n)`, `eloBand(rate)`, `strideSample(list, n)` |

@@ -102,7 +102,18 @@
 
     /* ------------------------------------------------------------- VETO 2 */
 
-    /** Attacking into a known ability immunity, or a status move into Good as Gold. */
+    /**
+     * Attacking into a confirmed ability immunity, or a status move into a confirmed Good as Gold.
+     *
+     * THE HARD VETO NEEDS A PROOF, NOT A SUSPICION. This rule used to feed the SPECIES' whole
+     * `possibleAbilities` list into `U.immunityReason`, so a Ground move into any body whose species
+     * can hold Levitate was hard-masked at -9999 even when Levitate was one of three unconfirmed
+     * possibilities -- and the world sampler already prices those worlds at 0 damage, so vetoing
+     * them is both redundant and wrong (it deletes the lines that hedge). BUGS_AUDIT_REPORT.md lists
+     * it: "feeding the whole possibleAbilities list into U.immunityReason can hard-veto every
+     * action." An ability is now PROVEN only by a reveal, by being the species' only possibility, or
+     * by every surviving candidate set carrying it (see _confirmedOppAbilities).
+     */
     vetoAbilityImmunity(action, state) {
       if (!action || action.kind !== 'move') return null;
       const opp = state && state.active ? state.active.opp : null;
@@ -110,23 +121,25 @@
       const moveName = action.name || action.moveId || '';
       const data = U.getMoveData(moveName);
       if (!data) return null;
-      const ability = opp.revealedAbility || opp.confirmedAbility ||
-        (opp.liveSet && opp.liveSet.ability) || null;
+      const proven = this._confirmedOppAbilities(opp);
       const item = opp.currentBattleItem || opp.confirmedItem || (opp.liveSet && opp.liveSet.item) || null;
       const species = opp.species || opp.id;
 
       // Ability-gated status moves (Good as Gold and friends).
       if (data.isStatus) {
-        if (ability && U.UNBLOCKABLE_STATUS_ABILITY.has(U.toID(ability)) && !this._bypassesAbility(moveName)) {
-          return this._veto(VETO_CODES.VETO2, 'Blocked by ' + ability + '.');
+        for (let i = 0; i < proven.length; i++) {
+          if (U.UNBLOCKABLE_STATUS_ABILITY.has(U.toID(proven[i])) && !this._bypassesAbility(moveName)) {
+            return this._veto(VETO_CODES.VETO2, 'Blocked by ' + proven[i] + '.');
+          }
         }
         return null;
       }
 
+      // Only the ABILITY half is filtered. The Flying type and an Air Balloon are facts the board
+      // states outright, so they still veto on their own.
       const reason = U.immunityReason(data.type, {
         species: species,
-        ability: ability,
-        abilities: opp.possibleAbilities || (ability ? [ability] : []),
+        abilities: proven,
         item: item,
         itemless: !!opp.itemless
       });
@@ -135,6 +148,35 @@
       // Ground moves are only blocked by Levitate/Flying when we did not use Gravity.
       return this._veto(VETO_CODES.VETO2,
         data.type + ' move into ' + reason + ' — immune target, the turn is lost.');
+    }
+
+    /**
+     * The abilities this opponent can be PROVEN to have, or [] when it can only be suspected.
+     *
+     * Three proofs, in the order they become available: a `revealedAbility` / `confirmedAbility`
+     * printed by the battle, a species whose whole ability list is a single entry, or an unbroken
+     * agreement across every set the pruner has left standing (`candidateSets` -- the pruner splices
+     * eliminated sets out, so membership IS the surviving pool). An empty result is the common case
+     * early in a game and is deliberately the CONSERVATIVE one: the caller then leaves the move
+     * alone instead of masking it.
+     */
+    _confirmedOppAbilities(opp) {
+      if (!opp) return [];
+      const revealed = opp.revealedAbility || opp.confirmedAbility || null;
+      if (revealed) return [revealed];
+      const pool = Array.isArray(opp.possibleAbilities) ? opp.possibleAbilities : [];
+      if (pool.length === 1) return pool.slice();
+      const sets = Array.isArray(opp.candidateSets) ? opp.candidateSets : [];
+      let agreed = null;
+      for (let i = 0; i < sets.length; i++) {
+        const s = sets[i];
+        if (!s) return [];
+        const id = U.toID(s.ability);
+        if (!id) return [];
+        if (agreed === null) agreed = { id: id, name: s.ability };
+        else if (agreed.id !== id) return [];
+      }
+      return agreed ? [agreed.name] : [];
     }
 
     _bypassesAbility(moveName) {
@@ -557,7 +599,10 @@
      * Absolute Speed of both bodies INCLUDING the field context. The comparison used to see
      * neither our item/ability (see _itemOf) nor the weather/terrain/Tailwind that the state
      * carries, so Swift Swim / Chlorophyll / Sand Rush / Slush Rush / Surge Surfer and
-     * Tailwind were invisible to VETO4.
+     * Tailwind were invisible to VETO4. The paradox boost is now read through
+     * U.paradoxSpeedBoost, which only counts it when the boosted stat is SPEED: Protosynthesis /
+     * Quark Drive raise the holder's highest stat, so an Attack-boosted Great Tusk was being
+     * scored at 1.5x Speed and made to look faster than it is.
      */
     _opponentMovesFirst(state, my, opp) {
       const field = (state && state.field) || {};
@@ -572,7 +617,7 @@
         weather: field.weather || '',
         terrain: field.terrain || '',
         tailwind: !!(field.tailwind && field.tailwind[side]),
-        paradoxSpeedBoost: !!my.boosterActive,
+        paradoxSpeedBoost: U.paradoxSpeedBoost(my),
         unburden: !!my.unburden
       }).effective;
       const oppSpeed = U.computeSpeed(opp, {
@@ -583,7 +628,7 @@
         weather: field.weather || '',
         terrain: field.terrain || '',
         tailwind: !!(field.tailwind && field.tailwind[oppSide]),
-        paradoxSpeedBoost: !!opp.boosterActive,
+        paradoxSpeedBoost: U.paradoxSpeedBoost(opp),
         unburden: !!opp.unburden
       }).effective;
       if (tr) return oppSpeed < mySpeed;      // slower acts first

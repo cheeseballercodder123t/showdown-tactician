@@ -858,8 +858,58 @@
     return computeSpeed(mon, {
       item: set.item,
       ability: set.ability,
-      paradoxSpeedBoost: PARADOX_ABILITIES.has(abilityId) && toID(set.item) === 'boosterenergy'
+      paradoxSpeedBoost: PARADOX_ABILITIES.has(abilityId) && toID(set.item) === 'boosterenergy' && highestStatIsSpeed(mon)
     }).effective;
+  }
+
+  /**
+   * Is Speed the HIGHEST of this body's five battle stats? Protosynthesis / Quark Drive raise the
+   * holder's highest stat, so this is the fallback the speed layers use when the protocol has not
+   * yet said which stat moved. Stats come from the library via `statTable` (or the set's own
+   * precomputed `mon.stats`); a strict maximum is required, so a tie between Attack and Speed
+   * reports Attack -- the conservative direction, since the alternative would over-apply a 1.5x
+   * Speed multiplier and make the engine believe it is slower than it is.
+   */
+  function highestStatIsSpeed(mon) {
+    if (!mon) return false;
+    let stats = mon.stats;
+    if (!stats || typeof stats.spe !== 'number') {
+      stats = statTable(mon.species || mon.name, {
+        ivs: mon.ivs, evs: mon.evs, level: mon.level, nature: mon.nature
+      });
+    }
+    if (!stats) return false;
+    const order = ['atk', 'def', 'spa', 'spd', 'spe'];
+    let best = -Infinity, bestStat = null;
+    for (let i = 0; i < order.length; i++) {
+      const v = stats[order[i]];
+      if (typeof v === 'number' && v > best) { best = v; bestStat = order[i]; }
+    }
+    return bestStat === 'spe';
+  }
+
+  /**
+   * Is this body's ACTIVE Protosynthesis / Quark Drive boost raising SPEED?
+   *
+   * `boosterActive` says only that SOMETHING is boosted -- and the abilities raise the holder's
+   * HIGHEST stat, which is Speed for Iron Valiant and Attack for Great Tusk. Reading `boosterActive`
+   * as a flat 1.5x Speed multiplier therefore scored an Attack-boosted Great Tusk as outrunning us,
+   * and VETO4 refused legitimate lines on that blindness (BUGS_AUDIT_REPORT.md, the VETO4 entry).
+   * `mon.boostedStat` is the sim's own statement of which stat moved (`|-start|p1a: X|
+   * protosynthesisatk`), so it decides whenever it is known; only when it is unknown does the set's
+   * real highest stat decide. `opts.active` lets a caller treat a body with a PROVEN Booster Energy
+   * (ability + item, the pre-sampled fallback trick_room.js already used) as boosted even before
+   * `boosterActive` has been set.
+   */
+  function paradoxSpeedBoost(mon, opts) {
+    if (!mon) return false;
+    opts = opts || {};
+    const active = opts.active !== undefined ? !!opts.active : !!mon.boosterActive;
+    if (!active) return false;
+    const stat = mon.boostedStat;
+    if (stat === 'spe') return true;
+    if (stat === 'atk' || stat === 'def' || stat === 'spa' || stat === 'spd') return false;
+    return highestStatIsSpeed(mon);
   }
 
   /* ---------------------------------------------------------------- fuzzy */
@@ -1043,6 +1093,8 @@
     paralysisMultiplier: paralysisMultiplier,
     computeSpeed: computeSpeed,
     maxSpeedForSet: maxSpeedForSet,
+    highestStatIsSpeed: highestStatIsSpeed,
+    paradoxSpeedBoost: paradoxSpeedBoost,
 
     levenshtein: levenshtein,
     closestSpeciesName: closestSpeciesName,

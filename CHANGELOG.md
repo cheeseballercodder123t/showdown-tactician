@@ -38,6 +38,45 @@ baseline, so it cannot be re-priced here at all. Raising `--battles` does not fi
 on a ceiling is precision on zero. The personas have to get stronger before the upper half of this
 table can be re-measured. Full table and reasoning: `ATTEMPTS.md` §H.
 
+### Added — the self-play mirror
+
+The personas are beaten 98.3% with zero losses, so the arena can show HARM and almost nothing else
+(ATTEMPTS.md section H). `EngineMirrorAgent` seats the engine against a FROZEN copy of itself on the
+same team, putting the baseline near 50% where a gain is as visible as a loss. `--agent mirror`
+(alias `--league mirror`) in run_arena.js, `--mirror` in run_ablation.js.
+
+The mirror keeps the SHIPPED config even when the run carries a `--set` patch — otherwise a paired
+ablation would test the variant against itself and every effect would cancel. `engine_bridge`'s
+`loadHarness` grew a named `{baseline:true}` mode in its own cache slot, and refuses a baseline
+requested together with a patch. Pinned in tests/arena_check.js section 3b, which plays a real mirror
+game (both seats the same engine: 18 empty rankings each over six games) and checks the two-sandbox
+split. Seed 7, 20 battles: 9-11, avg 34.6 turns.
+
+### Fixed — the two open veto defects, and the six columns the corpus cannot move
+
+- **VETO2 hard-vetoed on a SUSPICION.** `vetoAbilityImmunity` fed the species' whole
+  `possibleAbilities` pool into `U.immunityReason`, so a Ground move into any body whose species *can*
+  hold Levitate was masked at −9999 even when Levitate was one of three unconfirmed possibilities —
+  and the world sampler already prices those worlds at 0 damage, so the hard veto both deleted the
+  hedging lines and measured nothing (`BUGS_AUDIT_REPORT.md` lists it). An ability is now PROVEN only
+  by a battle reveal, by being the species' only possibility, or by every surviving `candidateSets`
+  entry carrying it. The Flying type and an Air Balloon are facts the board states outright, so they
+  still veto on their own.
+- **VETO4 read `boosterActive` as a flat 1.5x SPEED boost.** Protosynthesis / Quark Drive raise the
+  holder's HIGHEST stat, and the protocol states which one: `|-start|p2a: X|protosynthesisatk`. The
+  state manager now parses that suffix onto `mon.boostedStat` (cleared on `|-end|` and on switch-in)
+  and `U.paradoxSpeedBoost` applies the multiplier only when the boosted stat is Speed — falling back
+  to the set's real highest stat when the protocol has not said. Measured against the sim: an
+  Attack-boosted Great Tusk (`protosynthesisatk`, highest stat Atk) was being scored as though it
+  outran the field.
+- **Six dims are structurally zero in the corpus, and the artifact now says so.** Dims 66/67/72/73
+  (each active's choice-lock and itemless flags) are written only by `src/set_pruner.js`, which
+  `tools/extract_training_data.js` never runs; dims 120/121 are the Tera-threat pair, a hard 0 because
+  Terastal Clause bans Tera in `[Gen 9] National Dex OU`. They now join 41/47 in the export clamp, and
+  `tests/weights_check.js` §5b proves each by construction (the four item dims move when the fields
+  are set, and the Tera pair moves when the ban is lifted), so "constant zero" is distinguished from
+  "dead code".
+
 ### Fixed
 
 - **The arena was scoring a DIFFERENT engine, two ways, and neither one failed a test.**
@@ -284,9 +323,13 @@ than the bug. Stated here rather than hidden:
   clause, not `move:`" — while the pruner's own comment warns that a switch-in, a consumed berry or
   a weather heal can reorder the same block. The narrow fix is to require the bracket's two bodies
   to be the ones the move order already named.
-- **Protosynthesis / Quark Drive Speed** can be 1.5x from sun / Electric Terrain WITHOUT Booster
-  Energy, and `maxSpeedForSet` applies that multiplier only when the set holds the item. The new
-  refusal predicate names this in place; the fix is in the ceiling, not the refusal.
+- **Protosynthesis / Quark Drive Speed** was read as a flat 1.5x whenever `boosterActive` was set,
+  but the abilities raise the holder's HIGHEST stat — and the protocol states which one
+  (`|-start|p2a: X|protosynthesisatk`). That suffix is now parsed onto `mon.boostedStat` (cleared on
+  `|-end|` and on switch-in) and `U.paradoxSpeedBoost` applies the multiplier only when the boosted
+  stat is Speed, falling back to the set's real highest stat when the protocol has not said; the speed
+  layers (VETO4, `trick_room.js`) and the per-set ceiling all use it. **STILL OPEN:** the ceiling does
+  not model a sun / Electric-Terrain activation on a set carrying no Booster Energy.
 - **`shelter`'s real effect is unverified.** It is out of both wrong lists but deliberately NOT
   added to `SETUP_MOVES`/`SETUP_BOOSTS`: the vendored dex carries no effect data for it, and this
   table's contract is single-correct-value game rules, so guessing a boost would be worse than the
@@ -299,9 +342,10 @@ than the bug. Stated here rather than hidden:
   existing strip from the DOM while `_benchBound` is a per-instance flag, so a second HUD adopts the
   first's strip, adds a second delegated listener, and one tap fires both. `bindDrawer` is also the
   one render path that trusts a cached node without a liveness check.
-- **`mon.knockOffSurvived` is documented and read but never written** (`ARCHITECTURE.md`,
-  `src/set_pruner.js`) — harmless as an `||` alternative, but the documented control surface is
-  wrong. Either write it or drop it.
+- ~~**`mon.knockOffSurvived` is documented and read but never written** (`ARCHITECTURE.md`,
+  `src/set_pruner.js`)~~ **CLOSED** — the dead alternative is dropped, the live field it duplicated is
+  `mon.itemKnockedOff`, and that flag is now also withheld for a body that can hold Sticky Hold
+  (`_canHoldStickyHold`). See the P5 entry in the Unreleased notes.
 
 ### Changed
 
