@@ -1144,6 +1144,22 @@ async function main(argv) {
   if (opts.help) { printUsage(); return 0; }
   if (opts.list) { renderFeatureList(); return 0; }
 
+  /* Validate the request BEFORE asking whether the sim is present. A misspelt feature id is a
+   * setup error in every checkout, and the sim guard is a SKIP that exits 0 — so validating after
+   * it would let `--features nope` report success on a clone with no `npm install` and fail only
+   * where the sim happens to be present. Order matters: the check that can REFUSE must run before
+   * the one that can EXCUSE. */
+  let ids;
+  let variants;
+  try {
+    ids = resolveFeatureIds(opts.features);
+    variants = buildVariants(ids);
+    validateFeaturePaths(variants);
+  } catch (e) {
+    console.error('ablation setup failed: ' + e.message);
+    return 2;
+  }
+
   /* The arena needs @pkmn/sim, which the other suites deliberately do not. A clone that runs
    * `npm test` without `npm install` must still verify everything else, so a missing sim is a
    * SKIP with exit 0 that says exactly what was not measured. */
@@ -1154,17 +1170,6 @@ async function main(argv) {
     console.log('  The ablation runner drives tools/run_arena.js, which needs the sim.');
     console.log('  `npm install` adds it (@pkmn/sim is a devDependency). Nothing was measured.');
     return 0;
-  }
-
-  let ids;
-  let variants;
-  try {
-    ids = resolveFeatureIds(opts.features);
-    variants = buildVariants(ids);
-    validateFeaturePaths(variants);
-  } catch (e) {
-    console.error('ablation setup failed: ' + e.message);
-    return 2;
   }
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-ablation-'));
