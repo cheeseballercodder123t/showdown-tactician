@@ -65,6 +65,11 @@
       // a rating is a prior about the PLAYER while the deliberation label is a measurement of the
       // turn.
       this.rating = (typeof opts.rating === 'number' && isFinite(opts.rating)) ? opts.rating : null;
+      /* A driver may STATE how the opponent plays instead of letting the estimator infer it from
+       * latency — see declare(). null means "measure it", which is what the extension always does.
+       * Deliberately NOT cleared by reset(): the declaration is an input from the driver (like the
+       * team), not a per-battle reading, and the one driver that sets it does so once per session. */
+      this.declared = null;
       this.reset();
     }
 
@@ -148,7 +153,25 @@
       return 'normal';
     }
 
-    label() { return this.last ? this.last.label : 'unknown'; }
+    label() { return this.declared || (this.last ? this.last.label : 'unknown'); }
+
+    /**
+     * declare(label) — a DRIVER states the opponent's deliberation instead of letting the estimator
+     * measure it. Only the headless arena calls this, and it needs it because both of its players run
+     * in ONE process on a synchronous event loop: the measured `lead` is ~0 ms on every turn, so the
+     * estimator labels EVERY turn 'auto' (0.25), which is below `clock.switchKeepThreshold` and
+     * therefore DELETES the opponent's switch replies from the matrix for the whole battle. That is
+     * an artifact of the arena having no network, not a reading about a player, and a baseline built
+     * on it silently measures a different game.
+     *
+     * 'normal' is the identity (`switchPrior.normal` is 1.0), so an arena that declares it gets the
+     * unmodified matrix and can price the clock only by declaring a fast or slow opponent on purpose.
+     * An unrecognised label is ignored rather than guessed at. Nothing in the extension calls this.
+     */
+    declare(label) {
+      this.declared = (label === 'auto' || label === 'normal' || label === 'agonised') ? label : null;
+      return this;
+    }
 
     /**
      * setRating(rating) — the opponent's ladder rating, read from the protocol. Inert unless
@@ -201,6 +224,7 @@
         myLastMs: this.last ? this.last.mySubmitMs : null,
         meanMs: this.history.length ? Math.round(sum / this.history.length) : null,
         label: this.label(),
+        declared: this.declared,
         switchFactor: this.switchFactor(),
         rating: this.rating,
         ratingFactor: this.ratingFactor()

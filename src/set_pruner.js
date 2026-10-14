@@ -395,10 +395,11 @@
       // gone — the mon held something, so it is not itemless.
       if (mon.itemConsumed || mon.boosterConsumed || mon.itemRemoved) return 'itemless-consumed';
 
-      // The "Knock Off dealt damage with no -enditem" trigger: `knockOffSurvived` is the flag
-      // BattleStateManager records for it, `itemKnockedOff` is the same observation when it is
-      // supplied directly (and is how the caller-level contract is phrased).
-      const itemWasIrremovable = !!(mon.itemless || mon.itemKnockedOff || mon.knockOffSurvived);
+      // The "Knock Off dealt damage with no -enditem" trigger. `itemKnockedOff` is the ONE flag
+      // for it — BattleStateManager._resolveKnockOffs writes it, and callers of this method may
+      // supply it directly. It is deliberately withheld for a body that can carry Sticky Hold,
+      // because the ability produces the identical observation on a set whose item is ordinary.
+      const itemWasIrremovable = !!(mon.itemless || mon.itemKnockedOff);
       if (!itemWasIrremovable) return 'unknown';
 
       // Everything that could have been removed has been ruled out already.

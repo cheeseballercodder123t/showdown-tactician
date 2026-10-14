@@ -213,6 +213,70 @@ check('128 dims: weightsFull is the intercept followed by the 128 coefficients',
 check('128 dims: the fit converged rather than hitting the cap',
   report.converged === true, 'iterations ' + report.iterations + ', converged ' + report.converged);
 
+/* ================================================= 2c. the support clamp on export */
+
+section('2c. a dim the corpus cannot identify is never exported as a coefficient');
+
+/* The artifact is three views of ONE coefficient vector — weights128, weightsFull and spec — and a
+ * dim zeroed at one view but not the others is how an extrapolation reaches a consumer that loaded
+ * the artifact directly. This corpus plants a SPARSE column of the exact shape that produced
+ * +54.72 at dim 41 and -50.34 at dim 47: 1 on a handful of rows and 0 on the rest. That near-
+ * constant column has a TINY sample standard deviation, and the fitter standardizes internally then
+ * converts back to raw space by dividing by that sd — so a modest standardized coefficient becomes
+ * an order-of-magnitude raw one. Planting large sparse VALUES (40/80/120) would not: those inflate
+ * the sd and the conversion cancels, which is why the support clamp, not the fit, is the fix. */
+(function () {
+  const rng = mulberry32(20260103);
+  const N = 3000, SPARSE_DIM = 37, SPARSE_ROWS = 8;
+  const PLANTED = { 0: 2.5, 12: -2.0 };                     // identified: non-zero on every row
+  const rows = [];
+  for (let i = 0; i < N; i++) {
+    const x = new Array(128);
+    let z = 0;
+    for (let j = 0; j < 128; j++) { x[j] = (rng() - 0.5) * 1.4; z += (PLANTED[j] || 0) * x[j]; }
+    x[SPARSE_DIM] = i < SPARSE_ROWS ? 1 : 0;
+    z += 8 * x[SPARSE_DIM];
+    rows.push({ x: x, y: rng() < sigmoid(z) ? 1 : 0 });
+  }
+  const X = rows.map(function (q) { return q.x; });
+  const y = rows.map(function (q) { return q.y; });
+  /* The clamp can only be shown to DO something against the raw fit it replaces. */
+  const raw = fitter.fitLogistic(X, y, { lambda: 0.5, maxIter: 30, tol: 1e-6 });
+  check('the raw fit really does extrapolate a large coefficient from those ' + SPARSE_ROWS + ' rows',
+    Math.abs(raw.coef[SPARSE_DIM]) > 5, String(raw.coef[SPARSE_DIM]));
+
+  const r = fitter.run({ rows: rows }, { lambda: 0.5, holdout: 5, maxIter: 30, tol: 1e-6 });
+  const sparse = r.lowSupport.filter(function (e) { return e.dim === SPARSE_DIM; })[0];
+  check('...and run() reports the dim as low-support with its exact non-zero count',
+    !!sparse && sparse.nonzero === SPARSE_ROWS, JSON.stringify(r.lowSupport));
+  eq('...so the exported coefficient is exactly 0, whatever the fit produced',
+    r.weights128[SPARSE_DIM], 0);
+  check('...the export names the dim it zeroed', r.clampedDims.indexOf(SPARSE_DIM) !== -1,
+    JSON.stringify(r.clampedDims));
+  check('...the identified dims are untouched',
+    Object.keys(PLANTED).every(function (k) { return r.clampedDims.indexOf(k | 0) === -1; }),
+    JSON.stringify(r.clampedDims));
+  check('...and the spec is derived from the EXPORTED vector, so the three views agree',
+    JSON.stringify(r.spec) === JSON.stringify(fitter.mapToSpec(r.weights128)));
+  check('...with the sparse dim zero in every view',
+    r.spec.boosts[SPARSE_DIM - 36] === 0 && r.weightsFull[SPARSE_DIM + 1] === 0,
+    JSON.stringify({ boosts: r.spec.boosts[SPARSE_DIM - 36], full: r.weightsFull[SPARSE_DIM + 1] }));
+
+  /* The clamp is the EXPORT step, so a report that was never fitted cannot be clamped into one, and
+   * a stored artifact can be brought in line without the corpus. */
+  const clamped = fitter.clampReport({ weights128: new Array(128).fill(1), intercept: 0.25,
+    lowSupport: [{ dim: 3, nonzero: 2, positives: 1 }], features: 128,
+    spec: fitter.mapToSpec(new Array(128).fill(1)) });
+  check('clampReport zeroes the stored dim in every view and re-derives the spec',
+    clamped.weights128[3] === 0 && clamped.weightsFull[4] === 0 && clamped.clampedDims[0] === 3 &&
+    JSON.stringify(clamped.spec) === JSON.stringify(fitter.mapToSpec(clamped.weights128)),
+    JSON.stringify(clamped.clampedDims));
+  check('...and leaves every other coefficient alone',
+    clamped.weights128[2] === 1 && clamped.weights128[4] === 1 && clamped.intercept === 0.25);
+  throwsWith('clampReport refuses a report with no coefficients',
+    function () { fitter.clampReport({}); }, /weights128/);
+})();
+
 /* =========================================================== 3. the hold-out split */
 
 section('3. the hold-out split is deterministic, disjoint and complete');
@@ -571,6 +635,23 @@ if (artifactAttempt.ok) {
     JSON.stringify(artifact.lowSupport));
   check('...under the threshold the fitter declares', artifact.lowSupportThreshold === 20,
     String(artifact.lowSupportThreshold));
+  /* THE EXPORT CLAMP. An unidentifiable dim must not ship as a coefficient at all: this artifact
+   * used to carry +54.72 at dim 41 and -50.34 at dim 47 while the ADOPTED spec (− and the live
+   * evaluator vector) had them zeroed, so the same vector had two disagreeing views and only a
+   * reader that went through src/config.js got the adopted one. The fitter now zeroes these dims on
+   * export, which makes the invariant below the artifact's own, not a convention its readers keep. */
+  check('every low-support dim is exported as exactly zero',
+    artifact.lowSupport.every(function (e) { return artifact.weights128[e.dim] === 0; }),
+    JSON.stringify(artifact.lowSupport.map(function (e) { return [e.dim, artifact.weights128[e.dim]]; })));
+  check('...and the artifact names the dims its export clamp zeroed',
+    Array.isArray(artifact.clampedDims) &&
+    JSON.stringify(artifact.clampedDims.filter(function (d) { return d < 128; }).sort(function (a, b) { return a - b; })) ===
+      JSON.stringify(artifact.lowSupport.filter(function (e) { return e.dim < 128; })
+        .map(function (e) { return e.dim; }).sort(function (a, b) { return a - b; })),
+    JSON.stringify(artifact.clampedDims));
+  check('...so the two accuracy dims the adoption decided about are zero in the ARTIFACT too',
+    artifact.weights128[41] === 0 && artifact.weights128[47] === 0,
+    artifact.weights128[41] + ' / ' + artifact.weights128[47]);
 
   /* THE ADOPTION PIN. src/config.js now carries the artifact's `spec` at the 4-decimal precision
    * the config file holds, with the unidentifiable dims zeroed: the accuracy dims 41/47, whose

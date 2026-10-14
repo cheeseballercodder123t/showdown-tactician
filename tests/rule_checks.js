@@ -109,6 +109,29 @@ const FEED = function (b, lines) { b.parser.feedAll(lines.join('\n')); };
     lando && JSON.stringify({ survived: lando.itemKnockedOff, removed: lando.itemRemoved }));
   ok('knockoff: removed item is ruled out', lando && lando.itemRuledOut.indexOf('Rocky Helmet') !== -1, lando && JSON.stringify(lando.itemRuledOut));
 
+  // Sticky Hold defeats the SAME Knock Off, so a surviving item stops being evidence that the item
+  // is irremovable: the deduction is withheld and the sampler prices those worlds instead. Without
+  // the guard, every removable item left Gastrodon's candidate pool on an ordinary Assault Vest.
+  const b3 = boot(true);
+  FEED(b3, [
+    '|switch|p1a: Great Tusk|Great Tusk, L50, M|100/100',
+    '|switch|p2a: Gastrodon|Gastrodon, L50, M|100/100',
+    '|turn|1',
+    '|move|p1a: Great Tusk|Knock Off|p2a: Gastrodon',
+    '|-damage|p2a: Gastrodon|70/100',
+    '|turn|2'
+  ]);
+  const gastro = b3.st.oppTeam.find(function (m) { return m && U.toID(m.species) === 'gastrodon'; });
+  ok('knockoff: a Sticky Hold body is never marked irremovable',
+    gastro && gastro.itemKnockedOff === false && gastro.itemIsIrremovable === false,
+    gastro && JSON.stringify({ survived: gastro.itemKnockedOff, irremovable: gastro.itemIsIrremovable }));
+  ok('knockoff: the withheld inference is recorded, with the reason',
+    gastro && gastro.itemEvidence.join(' ').indexOf('Sticky Hold') !== -1, gastro && JSON.stringify(gastro.itemEvidence));
+  ok('knockoff: a Sticky Hold body keeps its removable items', (function () {
+    const pool = b3.pruner.prune(gastro, b3.st);
+    return pool.length > 0 && pool.some(function (s) { return s.item && !U.isMegaStone(s.item) && !U.isZCrystal(s.item); });
+  })(), gastro && JSON.stringify((gastro.candidateSets || []).map(function (s) { return s.item; })));
+
   // Ladder verdict with both format locks spent => proven itemless (Acrobatics / Unburden).
   const pruner = new S.ST.ArchetypePruner();
   const state = { formatLocks: { oppHasMegaEvolved: true, oppHasUsedZMove: true }, oppTeam: [], myTeam: [] };

@@ -149,16 +149,18 @@ const FEATURES = [
     expect: 'helps',
     note: 'Off stops charging a low-accuracy move for the downside of missing it, so a 70% ' +
       'nuke is priced as 70% of its raw damage.',
-    /* NOT A NEUTRAL RESULT WHEN THIS ROW IS FLAT. The charge needs the move's accuracy, and
-     * `LaplaceEngine._accuracyOf` reads `state.moveAccuracy`, which only `src/injected.js`
-     * populates (the `|stacc|` snapshot read from the CLIENT's own dex). @pkmn/sim emits no such
-     * line, so in the arena the table is empty, every penalty is 0, and toggling the flag cannot
-     * change a single decision. Measured: this row reproduced the baseline battle for battle at 60
-     * battles a side. Price volatility with a real client stream, not with this runner. */
-    caveat: 'UNPRICEABLE IN THIS HARNESS: the charge needs the move accuracy from state.moveAccuracy, ' +
-      'which only the injected |stacc| snapshot populates. The sim emits no |stacc|, so the penalty ' +
-      'is always 0 and toggling the flag cannot change a decision. A flat row here means "not ' +
-      'measurable here", NOT "the tier does nothing".'
+    /* PRICEABLE NOW, and it was not before. The charge needs the move's accuracy and
+     * `LaplaceEngine._accuracyOf` reads `state.moveAccuracy`, which only src/injected.js populates
+     * from the client's own `|stacc|` snapshot. The sim emits no such line, so this row used to
+     * reproduce the baseline battle for battle at 60 battles a side for a HARNESS reason. The
+     * bridge now forwards that frame itself, from the sim's dex — the same data the client's dex
+     * carries — so the table is populated and the charge is live. */
+    caveat: 'ARRIVED AND NOT DECISIVE HERE: engine_bridge now forwards |stacc| from the sim dex, so ' +
+      'the accuracy table is populated and the charge is live — tests/ablation_check.js section 7 ' +
+      'pins that end to end. Toggling the flag still changed no battle at 24 a side, but that is now ' +
+      'a fact about the CHARGE rather than about a missing input: the sample teams carry almost no ' +
+      'sub-100% move worth evaluating, and a 10% penalty on Iron Head or Ruination is too small to ' +
+      'flip a top line. Before the frame existed the row was flat for a harness reason — ATTEMPTS.md D1.'
   },
   {
     id: 'clock',
@@ -168,17 +170,22 @@ const FEATURES = [
     patch: { 'clock.enabled': false },
     expect: 'neutral',
     note: 'Off keeps their switch replies in the matrix no matter how fast they answered.',
-    /* THE MECHANISM IS VERIFIED, not inferred from a flat score. `OpponentClock._close()` returns
+    /* THE MECHANISM, WHICH USED TO MAKE THIS ROW FLAT AND NOW MAKES IT LIVE. `_close()` returns
      * early unless `mySubmitTs` is set, and that is set only by an OUTGOING `/choose` line tagged
-     * `kind === 'send'`. The arena's agent returns a choice string to the sim runner, which writes
-     * it to the player stream — the boot never sees a `/choose` line. So the clock's history stays
-     * empty, `label()` stays 'unknown', and `switchPrior.unknown` is 1.0, which is exactly what
-     * `clock.enabled = false` does (no re-weight at all). Measured: this row reproduced the baseline
-     * battle for battle at 60 battles a side. Pinned in tests/ablation_check.js. */
-    caveat: 'INERT IN THIS HARNESS: the clock only records a sample when it sees OUR OWN outgoing ' +
-      '/choose line, and the arena answers the sim runner directly instead of sending one. The ' +
-      'history stays empty, the label stays `unknown`, and clock.switchPrior.unknown = 1.0 is ' +
-      'exactly what clock.enabled = false does. A flat row here is "not measurable here".'
+     * `kind === 'send'`. The arena's agent answers the sim runner directly, so the boot never saw
+     * such a line: the history stayed empty, `label()` stayed 'unknown', and `switchPrior.unknown`
+     * of 1.0 is exactly what `clock.enabled = false` does. run_arena now calls noteOutgoing() at
+     * the moment it decides, which is when a client sends it. `expect` is left as the prior it was
+     * written with (it was a prior about an unmeasurable row) rather than re-fitted to a result. */
+    caveat: 'LIVE, BUT ITS INPUT IS NOW DECLARED: the arena sends our own /choose frame, so the ' +
+      'clock accumulates real samples. That immediately exposed an artifact — both arena players ' +
+      'share one event loop, so the measured lead was ~0 ms, every turn labelled `auto` (0.25), and ' +
+      '0.25 is below switchKeepThreshold, which DELETED their switch replies from the matrix for the ' +
+      'whole battle. A +28.3 win-point swing first measured here priced that artifact and is ' +
+      'retracted. run_arena now DECLARES the opponent pace (`normal` = the identity by default, ' +
+      '`--deliberation auto` for a fast one), so a flat row against a neutral opponent is CORRECT — ' +
+      'price this tier by declaring a fast or slow opponent, not by expecting the arena to invent ' +
+      'one.'
   },
   {
     id: 'damage-evidence',
@@ -375,11 +382,14 @@ const FEATURES = [
       'leave the reply space (lowFactor 0.05 < switchKeepThreshold 0.5), while a high-ladder one ' +
       'gets them boosted. The point is anti-mid-ladder throwing: over-predicting a double-switch ' +
       'against a player who just clicks their best attack is how a bot donates games.',
-    caveat: 'INERT IN THIS HARNESS: the band needs the opponent\'s rating, which the protocol only ' +
-      'carries on a `|player|p2|Name|avatar|1480` line. tools/headless_arena/sim_runner.js creates ' +
-      'both players without a `rating` option, so @pkmn/sim emits `|player|p2|Adversary||` with an ' +
-      'empty field; state.opponentRating stays null and OpponentClock.ratingFactor() returns 1 by ' +
-      'design. A flat row here is "not measurable here", NOT evidence about the band.'
+    caveat: 'MEASURABLE NOW, WITH A DECLARED RATING: the band needs the opponent\'s rating, which ' +
+      'the protocol carries on `|player|p2|Name|avatar|1480`. Each persona now declares the band its ' +
+      'name implies (anchor 1700 / exploiter 1500 / chaos 1100) and sim_runner passes it to the sim, ' +
+      'so all three bands are exercised in one sweep. Re-anchored at the standard sample (60 battles ' +
+      'a side, seed 1337): it changes how long battles run but not who wins (delta win 0.0), so the ' +
+      'band is cheap now and not decisive in this corpus — which, with the baseline at 98.3%, may be ' +
+      'the ceiling talking rather than the band. A seat with no rating still leaves the row inert, ' +
+      'which is the pre-existing behaviour.'
   },
   {
     /* ADOPTED 2026-10-12, so this row is measured the way every shipped-ON tier here is: by
@@ -412,12 +422,11 @@ const FEATURES = [
     note: 'On, the volatility charge is scaled by where the 128D evaluator puts the board: sharpened ' +
       '(x2) when we are up by winMargin, softened (x0.4) when we are down by lossMargin. The design ' +
       'is prospect theory: protect a lead with minimum variance, take the swing when behind.',
-    caveat: 'UNPRICEABLE IN THIS HARNESS: comeback scales ONLY the volatility charge, and ' +
-      'LaplaceEngine._volatilityDelta returns a zero penalty before it ever reaches that scale when ' +
-      'state.moveAccuracy is empty — which it always is in the arena, because only src/injected.js ' +
-      'populates it from the client\'s own |stacc| snapshot and @pkmn/sim emits no |stacc|. Any ' +
-      'multiplier on a charge of 0 is 0, so a flat row here means "not measurable here", NOT that ' +
-      'comeback mode does nothing. Same cause as the volatility row above.'
+    caveat: 'SAME ARRIVED-NOT-DECISIVE STATE AS VOLATILITY: comeback scales ONLY the volatility ' +
+      'charge, so it was 0 x anything while the arena had no accuracy table. engine_bridge now ' +
+      'forwards |stacc| and the charge is non-zero, so the multiplier is live — but the charge ' +
+      'itself changed no decision at 24 battles a side, so nothing changed here either. This row ' +
+      'cannot be decisive until the row it multiplies is.'
   },
   {
     /* THE PIVOT TAX — the one tier here whose motivation is a HUMAN-MATCH measurement, and the one

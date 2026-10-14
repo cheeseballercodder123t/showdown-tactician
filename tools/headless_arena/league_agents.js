@@ -246,6 +246,21 @@ class BaseAgent {
         this.teamName + '" is not one of: ' + teams.SAMPLE_ORDER.join(', ') + ')');
     }
     this.decisions = [];
+    /* The ladder band this persona MODELS. A DECLARED input, like its team — not a measurement.
+     * The arena carries it to the sim's `|player|` line, where the engine's `clock.ratingBands`
+     * reads it, so a persona with no rating leaves that band inert (BaseAgent.DEFAULT_RATING is
+     * null on purpose: an unrated seat must behave exactly as it did before this existed). */
+    const declaredRating = options.rating === undefined ? this.constructor.DEFAULT_RATING : options.rating;
+    this.rating = (typeof declaredRating === 'number' && isFinite(declaredRating)) ? declaredRating : null;
+    /* How fast this persona is DECLARED to think. 'normal' is the identity for the clock's switch
+     * prior, and it is the default for every persona on purpose: the arena cannot measure
+     * deliberation (both players share one event loop, so latency is ~0 ms), and letting the
+     * estimator read that as 'auto' would prune their switch replies from the matrix in EVERY
+     * baseline battle. A persona that means to model a fast or slow player declares it here; the
+     * CLI can override it for a controlled run. */
+    const declaredThinking = options.thinking === undefined ? this.constructor.DEFAULT_THINKING : options.thinking;
+    this.thinking = (declaredThinking === 'auto' || declaredThinking === 'normal' || declaredThinking === 'agonised')
+      ? declaredThinking : 'normal';
   }
 
   reset() { this.rng.reset(); this.decisions = []; }
@@ -537,6 +552,21 @@ function byId(id, options) {
   if (!map[id]) throw new Error('league_agents: unknown agent "' + id + '" (have: ' + ALL_AGENTS.join(', ') + ')');
   return map[id];
 }
+
+/* Each persona's declared ladder band. The NAME is the claim — an "anchor" opponent plays the
+ * standard meta and a "chaos" one is low ladder — and the three land in the three bands
+ * `clock.ratingBands` distinguishes (low <= 1350, mid, high >= 1650), so one sweep exercises all
+ * three rather than pinning every opponent to one value. */
+BaseAgent.DEFAULT_RATING = null;              // a persona that declares nothing carries no rating
+/* Neutral by default: see the thinking note in the BaseAgent constructor. NO persona overrides this
+ * today — pricing the clock requires declaring a fast or slow opponent on purpose (`--deliberation`). */
+BaseAgent.DEFAULT_THINKING = 'normal';
+StandardMetaAnchor.DEFAULT_THINKING = 'normal';
+AntiTrickRoomExploiter.DEFAULT_THINKING = 'normal';
+LowLadderChaos.DEFAULT_THINKING = 'normal';
+StandardMetaAnchor.DEFAULT_RATING = 1700;
+AntiTrickRoomExploiter.DEFAULT_RATING = 1500;
+LowLadderChaos.DEFAULT_RATING = 1100;
 
 module.exports = {
   mulberry32: mulberry32,

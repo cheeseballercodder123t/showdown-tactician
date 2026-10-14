@@ -798,9 +798,12 @@ class ReplaySplicer {
     if (typeof R.HeadlessBattleRunner !== 'function') {
       throw new Error('replay_splicer: sim_runner.js does not export HeadlessBattleRunner');
     }
-    const battle = new R.HeadlessBattleRunner(bridge().SIM_FORMAT_ID);
+    /* The declared ratings ride the constructor so the spliced battle publishes the same
+     * `|player|` line a full arena game does; a null leaves the field empty. */
+    const battle = new R.HeadlessBattleRunner(bridge().SIM_FORMAT_ID,
+      { rating1: options.rating1, rating2: options.rating2 });
     if (typeof battle.initBattle !== 'function') {
-      throw new Error('replay_splicer: HeadlessBattleRunner has no initBattle(p1TeamPacked, p2TeamPacked, seed)');
+      throw new Error('replay_splicer: HeadlessBattleRunner has no initBattle(p1TeamPacked, p2TeamPacked, seed, opts)');
     }
     battle.initBattle(p1Packed, p2Packed, seed);
 

@@ -74,6 +74,14 @@ function printUsage(out) {
     '  --mode <m>           full  = every battle from turn 1',
     '                       crucible = splice real replays from turn 8+ (default)',
     '  --agent <a>          all | anchor | exploiter | chaos (default: all)',
+    '  --rating1 <n>        Declared ladder rating for the ENGINE seat, published on the sim\'s',
+    '                       `|player|` line (default: none, so the rating field stays empty)',
+    '  --rating2 <n>        Declared rating for the PERSONA seat, overriding the band the persona',
+    '                       itself declares (default: that persona\'s own)',
+    '  --deliberation <d>   auto | normal | agonised — how fast the opponent is DECLARED to think.',
+    '                       The arena cannot measure this (both players share one event loop, so',
+    '                       latency is ~0 ms), so it must be stated; `normal` is the identity and the',
+    '                       default. Setting `auto` prices the clock tier against a fast opponent.',
     '  --mutate             Fuzz the persona team (item/EV/coverage mutation)',
     '  --harvest            Synthesize a regression puzzle for every loss',
     '  --seed <n>           Base RNG seed (default: ' + DEFAULT_SEED + ')',
@@ -96,7 +104,7 @@ function parseArgs(argv) {
   const opts = {
     battles: 100, mode: 'crucible', agent: 'all', mutate: false, harvest: false,
     seed: DEFAULT_SEED, maxTurns: 100, replay: null, mutateRate: MUTATION_RATE,
-    json: null, quiet: false, help: false, sets: []
+    json: null, quiet: false, help: false, sets: [], rating1: null, rating2: null, deliberation: null
   };
   const need = function (flag, value) {
     if (value === undefined) throw new SetupError(flag + ' needs a value');
@@ -112,6 +120,9 @@ function parseArgs(argv) {
       case '--max-turns': opts.maxTurns = Number(need(a, argv[++i])); break;
       case '--replay': opts.replay = String(need(a, argv[++i])); break;
       case '--mutate-rate': opts.mutateRate = Number(need(a, argv[++i])); break;
+      case '--rating1': opts.rating1 = Number(need(a, argv[++i])); break;
+      case '--rating2': opts.rating2 = Number(need(a, argv[++i])); break;
+      case '--deliberation': opts.deliberation = String(need(a, argv[++i])).toLowerCase(); break;
       case '--set': opts.sets.push(String(need(a, argv[++i]))); break;
       case '--json': opts.json = String(need(a, argv[++i])); break;
       case '--mutate': opts.mutate = true; break;
@@ -124,6 +135,17 @@ function parseArgs(argv) {
   }
   if (!Number.isFinite(opts.battles) || opts.battles < 0 || Math.floor(opts.battles) !== opts.battles) {
     throw new SetupError('--battles must be a non-negative integer');
+  }
+  /* A rating is a declared input, so a non-number is a setup error rather than a silently empty
+   * field that would leave clock.ratingBands inert while the run looked fine. */
+  ['rating1', 'rating2'].forEach(function (key) {
+    if (opts[key] === null) return;
+    if (!Number.isFinite(opts[key])) throw new SetupError('--' + key + ' must be a number');
+  });
+  /* A deliberation is a declared input too: an unknown value would be silently ignored by the clock
+   * and the run would look neutral while the caller believed it was pricing a fast opponent. */
+  if (opts.deliberation !== null && ['auto', 'normal', 'agonised'].indexOf(opts.deliberation) === -1) {
+    throw new SetupError('--deliberation must be auto, normal or agonised');
   }
   if (opts.mode !== 'full' && opts.mode !== 'crucible') {
     throw new SetupError('--mode must be full or crucible');
@@ -311,6 +333,40 @@ function createEngineAgent(bridge, paste, options) {
     return null;
   }
 
+  /**
+   * The one decision path: it returns the engine's own line and NEVER records the outgoing frame,
+   * so `chooseAction` below stays the single place that says "we clicked this".
+   */
+  function decide(request, context) {
+    try {
+      const ctx = context || {};
+      // If the driver calls observe(), it is already feeding us and the shared log would double
+      // every event: trust the driver and stay out of its way.
+      if (stats.observations === 0) feedNewLines(ctx.log);
+      if (!request) return null;
+      stats.requests++;
+      if (request.teamPreview) return bridge.teamPreviewOrder(request);
+      if (request.wait) return null;
+      if (request.forceSwitch) {
+        const choice = pick('switch ');
+        if (choice) return choice;
+        stats.emptyRankings++;
+        return null;
+      }
+      if (request.active) {
+        let top = null;
+        try { top = session.topChoice(); } catch (e) { stats.errors++; }
+        if (top) return top;
+        stats.emptyRankings++;
+        return null;
+      }
+      return null;
+    } catch (e) {
+      stats.errors++;
+      return null;
+    }
+  }
+
   return {
     name: options.name || 'Tactician',
     engine: true,
@@ -322,34 +378,23 @@ function createEngineAgent(bridge, paste, options) {
       feedLine(line);
     },
     reset: function () { },
+    /** The arena STATES the opponent's deliberation; see OpponentClock.declare. */
+    declareOpponentDeliberation: function (label) {
+      try { return session.declareOpponentDeliberation(label); } catch (e) { stats.errors++; return false; }
+    },
+    /**
+     * The engine's own line, AND the outgoing `/choose` frame the client's injector would send.
+     * That frame is the only thing that moves the opponent clock (OpponentClock._close returns early
+     * unless an outgoing line set mySubmitTs), so without it the clock's history stays empty and
+     * neither `clock.enabled` nor `clock.ratingBands` can be priced in the arena. It is recorded
+     * here, at the moment we decide, which is when the client sends it.
+     */
     chooseAction: function (request, context) {
-      try {
-        const ctx = context || {};
-        // If the driver calls observe(), it is already feeding us and the shared log would double
-        // every event: trust the driver and stay out of its way.
-        if (stats.observations === 0) feedNewLines(ctx.log);
-        if (!request) return null;
-        stats.requests++;
-        if (request.teamPreview) return bridge.teamPreviewOrder(request);
-        if (request.wait) return null;
-        if (request.forceSwitch) {
-          const choice = pick('switch ');
-          if (choice) return choice;
-          stats.emptyRankings++;
-          return null;
-        }
-        if (request.active) {
-          let top = null;
-          try { top = session.topChoice(); } catch (e) { stats.errors++; }
-          if (top) return top;
-          stats.emptyRankings++;
-          return null;
-        }
-        return null;
-      } catch (e) {
-        stats.errors++;
-        return null;
+      const choice = decide(request, context);
+      if (choice) {
+        try { session.noteOutgoing(choice); } catch (e) { stats.errors++; }
       }
+      return choice;
     }
   };
 }
@@ -419,7 +464,14 @@ async function runOneBattle(ctx, personaId, index) {
     mutated: !!(ctx.personaTeams[personaId] && ctx.personaTeams[personaId].mutated)
   };
 
-  const engineAgent = createEngineAgent(ctx.bridge, ctx.enginePacked);
+  /* The engine gets the PASTE, the sim gets the packed team. This is not cosmetic: the engine's
+   * `parseTeam` reads a Pokepaste (that is what src/content.js hands it from storage), and given a
+   * sim-packed string it parses ONE body whose species is the whole packed line. Measured before
+   * this fix: `session.team.length === 1` and 48 turns of "Can't make choices: You sent choices for
+   * 54 Pokemon" retries per battle against the anchor persona, each silently substituted by the
+   * driver's fallback. The suite never caught it because tests/arena_check.js builds its session
+   * from the paste — the same path a browser takes — while the arena passed the packed one. */
+  const engineAgent = createEngineAgent(ctx.bridge, ctx.engineTeamText);
   let personaAgent = null;
   const personaTeam = ctx.personaTeams[personaId] || {};
   try {
@@ -438,12 +490,31 @@ async function runOneBattle(ctx, personaId, index) {
     try { personaAgent.reset(); } catch (e) { /* a reset that throws must not kill the battle */ }
   }
 
+  /* The opponent's DECLARED ladder rating. The sim publishes it as `|player|p2|Name|avatar|RATING`
+   * and the engine turns that into state.opponentRating, which `clock.ratingBands` reads — so a
+   * persona that declares a band makes that tier priceable, and one that does not leaves the band
+   * inert exactly as before (ratingFactor() returns 1 by design when the rating is null). */
+  /* `--rating2` pins one value for every persona; otherwise the persona's own declared band. */
+  const rating2 = (ctx.options.rating2 !== null && ctx.options.rating2 !== undefined)
+    ? ctx.options.rating2
+    : ((personaAgent && typeof personaAgent.rating === 'number') ? personaAgent.rating : null);
+
+  /* State the opponent's deliberation before the battle runs. The arena has no network, so the
+   * clock's estimator would read every turn as 'auto' (0.25) and DELETE their switch replies from
+   * the matrix for the whole game; the declaration replaces that artifact with a stated input, and
+   * 'normal' is the identity. See OpponentClock.declare and tests/ablation_check.js section 7. */
+  const deliberation = ctx.options.deliberation || (personaAgent && personaAgent.thinking) || 'normal';
+  if (typeof engineAgent.declareOpponentDeliberation === 'function') {
+    engineAgent.declareOpponentDeliberation(deliberation);
+  }
+
   let report = null;
   if (ctx.mode === 'crucible' && ctx.crucible) {
     try {
       const result = await ctx.splicer.spliceAndResume(
         ctx.crucible.lines, ctx.crucible.turn, engineAgent, personaAgent,
-        { teams: { p1: ctx.enginePacked, p2: ctx.personaPacked(personaId) }, seed: seed, maxTurns: ctx.options.maxTurns }
+        { teams: { p1: ctx.enginePacked, p2: ctx.personaPacked(personaId) }, seed: seed,
+          maxTurns: ctx.options.maxTurns, rating1: ctx.options.rating1, rating2: rating2 }
       );
       // The splicer hands back the battle's MatchReport with its own fidelity report attached as
       // `.spliced`; accept a flat report too so either shape keeps working.
@@ -473,7 +544,8 @@ async function runOneBattle(ctx, personaId, index) {
   if (!report) {
     try {
       const runner = new ctx.Runner(ctx.formatId);
-      runner.initBattle(ctx.enginePacked, ctx.personaPacked(personaId), seed);
+      runner.initBattle(ctx.enginePacked, ctx.personaPacked(personaId), seed,
+        { rating1: ctx.options.rating1, rating2: rating2 });
       report = await runner.runGame(engineAgent, personaAgent, ctx.options.maxTurns);
     } catch (e) {
       record.error = 'battle failed: ' + (e && e.message);
@@ -509,7 +581,7 @@ async function runOneBattle(ctx, personaId, index) {
   // pin; a loss with no measurable drop is not a failure of this runner.
   if (ctx.options.harvest && ctx.harvester && report && record.winner === 'p2') {
     try {
-      const analysis = ctx.harvester.analyzeLoss(report, harvestHandle(engineAgent.session, ctx.bridge, ctx.enginePacked));
+      const analysis = ctx.harvester.analyzeLoss(report, harvestHandle(engineAgent.session, ctx.bridge, ctx.engineTeamText));
       if (analysis && analysis.blunderTurn) {
         const code = ctx.harvester.generatePuzzleCode(analysis);
         ctx.harvester.appendVaccineToFile(code, PUZZLE_FILE);
@@ -768,10 +840,14 @@ async function main(argv) {
     })()
     : null;
 
+  notes.push('opponent deliberation: declared ' +
+    (options.deliberation || 'normal (per persona)') +
+    ' — the arena cannot measure latency, so this is stated, not read');
+
   const ctx = {
     options: options, specs: specs, mode: mode, crucible: crucible, splicer: splicer,
     harvester: harvester, bridge: bridge, Runner: Runner, formatId: formatId,
-    enginePacked: enginePacked, engineTeamKey: engineTeam.key,
+    enginePacked: enginePacked, engineTeamText: engineTeam.text, engineTeamKey: engineTeam.key,
     personaTeams: personaTeams,
     personaPacked: function (id) { return personaPacked[id]; },
     baseSeed: options.seed, useColor: useColor, harvested: 0, harvestFailures: 0, fallbacks: 0,

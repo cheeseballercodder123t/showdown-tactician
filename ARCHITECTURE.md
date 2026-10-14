@@ -1010,11 +1010,13 @@ number the solver already consumes, so an off tier is the exact identity.
 All three shipped `enabled: false` while unmeasured. **`laplace.urgency` is now ADOPTED (`true`)** —
 the one tier to clear the config-flag ablation gate (60 battles/arm, all three personas, one seed,
 paired bootstrap: win rate 68.3% → 96.7%, Δ +28.3 points, 95% CI [+18.3, +40.0], and the 100-turn
-cap ties collapsed 17/60 → 1/60). `laplace.comeback` and `clock.ratingBands` remain off, and their
-flat ablation rows are 
-"not measurable in this harness" rather than evidence about them: comeback scales a volatility
-charge the arena cannot price (no `|stacc|` from @pkmn/sim), and the band needs a ladder rating the
-arena never supplies (`|player|p2|Name|avatar|` with an empty last field). The `--set` mechanism
+cap ties collapsed 17/60 → 1/60). `laplace.comeback` and `clock.ratingBands` remain off. Their rows
+used to be flat for a HARNESS reason — comeback scales a volatility charge the arena could not price
+(@pkmn/sim emits no `|stacc|`) and the band needs a ladder rating the arena never supplied
+(`|player|p2|Name|avatar|` with an empty last field) — and that blindness is now CLOSED: the bridge
+emits all three client frames, the band is exercised across the three declared persona bands, and
+only the volatility charge itself (too small to flip a line against these movepools) is still not
+decisive. See ATTEMPTS.md §D for the measurement on each row. The `--set` mechanism
 behind those rows is itself pinned — a pruner-family flag is captured at LOAD time, so the arena
 applies its patch from inside `loadHarness`, the moment `src/config.js` has run.
 

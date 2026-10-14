@@ -886,6 +886,30 @@
     }
 
     /**
+     * Can this body hold Sticky Hold?
+     *
+     * The ability defeats Knock Off outright, so "the item survived" stops being evidence of an
+     * IRREMOVABLE item the moment the species can carry it — Muk, Gastrodon, Accelgor and friends
+     * would otherwise have every removable item struck out of their candidate pool on the strength
+     * of an ordinary Assault Vest. `itemKnockedOff` is what src/set_pruner.js derives its ladder
+     * from and what src/world_sampler.js prunes removable items with, so the inference is withheld
+     * at the source rather than patched at each reader.
+     *
+     * A revealed ability settles it. Otherwise the pruner's surviving pool is consulted when it is
+     * populated, and the dex's own list (`U.getAbilities`, the ability boundary) when it is not.
+     */
+    _canHoldStickyHold(mon) {
+      if (!mon) return false;
+      if (mon.revealedAbility && U.toID(mon.revealedAbility) === 'stickyhold') return true;
+      const abilities = (mon.possibleAbilities && mon.possibleAbilities.length)
+        ? mon.possibleAbilities : U.getAbilities(mon.species);
+      for (let i = 0; i < abilities.length; i++) {
+        if (U.toID(abilities[i]) === 'stickyhold') return true;
+      }
+      return false;
+    }
+
+    /**
      * Rule 1 — hazards up + a switch-in that took no damage while holding no immunity
      * item/type/ability ⇒ confirmed Heavy-Duty Boots.
      */
@@ -1448,6 +1472,13 @@
         mon.knockOffTurn = null;
         mon.knockOffSawDamage = false;
         if (fainted || !sawDamage || mon.itemKnockedOff || mon.itemRemoved) continue;
+        // Sticky Hold produces this exact observation without the item being irremovable, so the
+        // deduction is not sound for a body that can carry it: the sampler prices those worlds.
+        if (this._canHoldStickyHold(mon)) {
+          this._addItemEvidence(mon, 'Knock Off dealt damage with no -enditem, but ' + mon.species +
+            ' can hold Sticky Hold: the surviving item is not evidence of an irremovable one');
+          continue;
+        }
         mon.itemKnockedOff = true;
         this._addItemEvidence(mon, 'Knock Off dealt damage with no -enditem: item is irremovable or absent');
       }

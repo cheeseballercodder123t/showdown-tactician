@@ -184,17 +184,21 @@ function checkConfigReachesEngine() {
   /* THE VOLATILITY ROW, PINNED AT ITS CAUSE.
    *
    * The first real ablation sweep came back with the volatility variant reproducing the baseline
-   * battle for battle. That is NOT "the tier does nothing": the charge needs the move's accuracy,
+   * battle for battle. That was NOT "the tier does nothing": the charge needs the move's accuracy,
    * and `_accuracyOf` reads `state.moveAccuracy`, which only src/injected.js populates from the
-   * client's own `|stacc|` snapshot. @pkmn/sim emits no `|stacc|`, so inside the arena every
-   * penalty is 0 and the flag cannot change a decision. All three steps are pinned here so the
-   * finding is a proof rather than an inference from identical scores. */
+   * client's own `|stacc|` snapshot. @pkmn/sim emits no `|stacc|`, so every penalty in the arena
+   * was 0 and the flag could not change a decision.
+   *
+   * The arena no longer has that hole — engine_bridge now forwards the frame from the sim's dex,
+   * which is what section 7 asserts — so these three steps are pinned as the MECHANISM of the tier
+   * rather than as the explanation of a flat row: an empty table still charges nothing, a populated
+   * one charges exactly the lost upside, and the flag still gates it. */
   const fb = ST.util.getMoveData('Focus Blast');
   check('precondition: Focus Blast is a damaging 70% move in the dex',
     !!fb && fb.basePower > 0 && fb.isStatus === false, fb && (fb.basePower + 'bp'));
   const volEngine = new ST.LaplaceEngine({});
   const volAction = { kind: 'move', name: 'Focus Blast', moveId: 'focusblast' };
-  eq('no accuracy telemetry at all (the arena): the penalty is zero even with the tier ON',
+  eq('an EMPTY accuracy table (what the arena used to have): penalty zero even with the tier ON',
     volEngine._volatilityDelta(volAction, { moveAccuracy: {} }, null, 100).penalty, 0);
   eq('...and therefore toggling the flag cannot change anything', (function () {
     const inverse2 = patchAndRevert(ST, { 'laplace.volatility.enabled': false });
@@ -219,11 +223,15 @@ function checkConfigReachesEngine() {
    *
    * The sweep came back with `clock.enabled = false` reproducing the baseline battle for battle,
    * against the author's expectation that dropping their switch replies would change something. The
-   * reason is that the clock never accumulates a single sample in the arena: `_close()` returns
+   * reason is that the clock never accumulated a single sample in the arena: `_close()` returns
    * early unless `mySubmitTs` is set, and that is set only by an OUTGOING `/choose` line (kind
-   * 'send'). The arena's agent returns a choice string to the sim runner, which writes it to the
-   * player stream — the boot never sees a `/choose` — so `history` stays empty, `label()` stays
-   * 'unknown', and `switchPrior.unknown` of 1.0 is exactly what `enabled: false` does. */
+   * 'send'). The arena's agent returned a choice string to the sim runner, which wrote it to the
+   * player stream — the boot never saw a `/choose` — so `history` stayed empty, `label()` stayed
+   * 'unknown', and `switchPrior.unknown` of 1.0 is exactly what `enabled: false` does.
+   *
+   * run_arena now calls `session.noteOutgoing()` at the moment it decides, so the live path is the
+   * second half of this block and section 7 asserts it through the bridge. The dead path is kept
+   * because it is the counterfactual that proves the line is what moves the clock. */
   let clockNow = 100;
   const quietClock = new ST.OpponentClock({ now: function () { return clockNow; } });
   quietClock.note('|request|' + JSON.stringify({ rqid: 1 }), 'recv');
@@ -249,7 +257,7 @@ function checkConfigReachesEngine() {
   check('...and clock.enabled = false is what makes the arena row flat',
     new ST.OpponentClock({ enabled: false }).snapshot().switchFactor === 1, '');
   check('the clock feature carries its caveat in the table',
-    /INERT IN THIS HARNESS/.test((ablation.FEATURES.filter(function (f) { return f.id === 'clock'; })[0] || {}).caveat || ''), '');
+    /LIVE, BUT ITS INPUT IS NOW DECLARED/.test((ablation.FEATURES.filter(function (f) { return f.id === 'clock'; })[0] || {}).caveat || ''), '');
 
   /* The five board-state vetoes, driven through their own fixtures. Each is a real decision the
    * guard makes differently, which is what the ablation is actually measuring. */
@@ -706,7 +714,7 @@ function checkAggregation() {
     function (text) { noNotes += text + '\n'; });
   eq('a run with nothing to say prints nothing', [noNotes, returned], ['', []]);
   check('the volatility feature carries its caveat in the table itself',
-    /UNPRICEABLE IN THIS HARNESS/.test((ablation.FEATURES.filter(function (f) { return f.id === 'volatility'; })[0] || {}).caveat || ''), '');
+    /ARRIVED AND NOT DECISIVE HERE/.test((ablation.FEATURES.filter(function (f) { return f.id === 'volatility'; })[0] || {}).caveat || ''), '');
 
   const errRow = ablation.compareToBaseline(flatBase, mkSummary([['p1', 10]]),
     { id: 'e', label: 'e', tier: 't', setArgs: [] }, { bootstrap: 50 });
@@ -853,6 +861,79 @@ function checkAggregation() {
     subReport.every(function (r) { return r.applied.every(function (a) { return a.from !== a.to; }); }), true);
 }
 
+/* ============================================ 7. the client frames the arena now supplies */
+
+/**
+ * THE CLIENT FRAMES. Three inputs the SHIPPED engine reads and a raw sim player stream does not
+ * carry, each of which a real client emits and the arena used to omit — and omitting any of them
+ * does not fail a battle, it makes rows of the table silently measure nothing. That is the failure
+ * mode this whole suite exists to catch, so each is asserted where the fix lives, at the bridge:
+ *
+ *   |stacc|   the move's accuracy, the ONLY input laplace.volatility acts on (and so the only
+ *             thing laplace.comeback scales).
+ *   /choose   our own outgoing click, tagged 'send' — the only line that can move the clock.
+ *   |player|  the opponent's rating, which clock.ratingBands reads.
+ */
+function checkClientFrames() {
+  section('7. the client frames the arena supplies (accuracy, /choose, rating)');
+  const bridge = require(path.join(ROOT, 'tools', 'headless_arena', 'engine_bridge.js'));
+  const paste = require(path.join(ROOT, 'tools', 'headless_arena', 'teams.js')).SAMPLE_TEAMS.hazardStackBalance;
+
+  /* 1. The accuracy table. The dex is the sim's, so this is the one part that needs the sim. */
+  if (simAvailable) {
+    const session = bridge.createSession({ paste: paste });
+    eq('the engine parses the PASTE the arena hands it (not the packed team the sim gets)',
+      session.team.length, 6);
+    session.feed('|request|' + JSON.stringify({
+      active: [{ moves: [{ move: 'Focus Blast', id: 'focusblast' }, { move: 'Close Combat', id: 'closecombat' }] }],
+      side: { id: 'p1', pokemon: [{ moves: ['focusblast', 'closecombat'] }] }
+    }));
+    const board = session.boot.state && session.boot.state.state;
+    eq('...and the bridge forwards |stacc| for the menu', board && board.moveAccuracy && board.moveAccuracy.focusblast, 70);
+    check('...so the volatility charge is live in the arena',
+      new session.ST.LaplaceEngine({})._volatilityDelta(
+        { kind: 'move', name: 'Focus Blast', moveId: 'focusblast' }, board, null, 100).penalty < 0, 'charge was 0');
+  } else {
+    console.log('  SKIPPING the |stacc| frame: the dex it reads is the sim\'s, and @pkmn/sim is not installed.');
+  }
+
+  /* 2. Our own outgoing /choose — the one line that can set mySubmitTs. No sim needed. */
+  const live = bridge.createSession({ paste: paste });
+  live.noteOutgoing('move headlongrush');
+  live.feed('|turn|2');
+  live.noteOutgoing('move headlongrush');
+  live.feed('|turn|3');
+  const clock = live.boot.clock && live.boot.clock.snapshot();
+  check('noteOutgoing() gives the clock a sample', !!clock && clock.samples >= 2, clock && String(clock.samples));
+  check('...so the label leaves unknown', !!clock && clock.label !== 'unknown', clock && clock.label);
+  check('...so the switch column is actually re-weighted', !!clock && clock.switchFactor !== 1, clock && String(clock.switchFactor));
+
+  /* THE ARTIFACT, and then the declaration that removes it.
+   *
+   * Both of the arena's players share one event loop, so the lead the clock measures is ~0 ms on
+   * every turn. That is below fastMs, so the estimator labels EVERY turn 'auto' (0.25) — and 0.25 is
+   * below switchKeepThreshold (0.5), which DELETES the opponent's switch replies from the matrix for
+   * the entire battle. A baseline run built on that is not measuring deliberation, it is measuring
+   * the absence of a network. run_arena therefore DECLARES the opponent's pace instead (default
+   * 'normal', whose prior is the identity); these checks pin the artifact and the declaration. */
+  check('with no declaration the arena reads as auto — the artifact',
+    !!clock && clock.label === 'auto' && clock.switchFactor === 0.25, clock && (clock.label + ' / ' + clock.switchFactor));
+  eq('declaring normal is the identity for the switch column',
+    (live.declareOpponentDeliberation('normal'), live.boot.clock.snapshot().switchFactor), 1);
+  eq('...and the snapshot marks the label as DECLARED, not measured',
+    live.boot.clock.snapshot().declared, 'normal');
+  eq('declaring a slow opponent raises it instead',
+    (live.declareOpponentDeliberation('agonised'), live.boot.clock.snapshot().switchFactor), 1.6);
+  eq('an unrecognised label is ignored rather than guessed at',
+    (live.declareOpponentDeliberation('sideways'), live.boot.clock.snapshot().declared), null);
+
+  /* 3. The rating clock.ratingBands reads. No sim needed: it is a protocol line. */
+  live.feed('|player|p2|Adversary||1700');
+  const rated = live.boot.state && live.boot.state.state;
+  eq('a |player| rating reaches the state', rated && rated.opponentRating, 1700);
+  eq('...and the clock', live.boot.clock && live.boot.clock.snapshot().rating, 1700);
+}
+
 /* ======================================================================= 6. the real CLI */
 
 async function checkEndToEnd() {
@@ -916,6 +997,28 @@ async function checkEndToEnd() {
       payload.rows[1].verdict === 'no measurable effect at this sample size' ||
       payload.rows[1].flags.indexOf('unpaired') !== -1, payload.rows[1].verdict);
   }
+
+  /* THE ENGINE'S OWN TEAM, pinned through the CLI because that is where the bug was. run_arena
+   * handed the engine the sim-PACKED team string while every suite — and a browser — hands it a
+   * Pokepaste. `parseTeam` reads a paste, so the engine played with ONE body whose species was the
+   * whole packed line: it then offered `switch <packed team>` as a legal option, the sim rejected it
+   * ("Can't make choices: You sent choices for 54 Pokemon"), and the driver SILENTLY substituted
+   * the rejection, so the battle was partly no longer the engine's. Caught here at one fixed seed:
+   * with the packed input this record carried 10 rejected choices, with the paste it carries 0. */
+  const arenaOut = path.join(tmpDir, 'arena.json');
+  const arenaRun = spawnSync(process.execPath, [path.join(ROOT, 'tools', 'run_arena.js'),
+    '--battles', '1', '--agent', 'anchor', '--mode', 'full', '--seed', '7', '--json', arenaOut, '--quiet'],
+    { cwd: ROOT, encoding: 'utf8', timeout: 600000 });
+  eq('one real full battle exits 0', arenaRun.status, 0);
+  let arenaPayload = null;
+  try { arenaPayload = JSON.parse(fs.readFileSync(arenaOut, 'utf8')); } catch (e) { arenaPayload = null; }
+  const rec = arenaPayload && arenaPayload.records && arenaPayload.records[0];
+  check('the arena wrote a battle record', !!rec, arenaOut);
+  if (rec) {
+    eq('the engine submitted no choice the sim rejected', rec.battleErrors, 0);
+    eq('...and never had to fall back on an empty ranking', rec.engineEmptyRankings, 0);
+    eq('...and logged no pipeline error', rec.enginePipelineErrors, 0);
+  }
   fs.rmSync(tmpDir, { recursive: true, force: true });
 }
 
@@ -927,6 +1030,7 @@ async function checkEndToEnd() {
   checkFeatureTable();
   checkArgs();
   checkAggregation();
+  checkClientFrames();
   await checkEndToEnd();
 
   console.log('\n=== summary ===');

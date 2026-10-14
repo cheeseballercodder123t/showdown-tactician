@@ -436,6 +436,16 @@ function main() {
     eq('tempo: ten dimensions', dims.filter(function (d) { return typeof tv[d] === 'number'; }).length, 10);
     check('tempo: every dimension is in range', dims.every(function (d) { return tv[d] >= -1 && tv[d] <= 1; }), JSON.stringify(tv));
     eq('tempo: TR urgency is 0 with TR off', tv.v1, 0);
+    // `dims` must be a SNAPSHOT of the reused Float32 buffer, not the buffer itself: it used to be
+    // handed out by reference, so one caller writing to it moved every later vector.
+    const dimsA = tempo.computeVector(battleState).dims;
+    const dimsB = tempo.computeVector(battleState).dims;
+    check('tempo: each call returns its own dims, not the reused buffer', dimsA !== dimsB, typeof dimsA + ' vs ' + typeof dimsB);
+    const before = dimsB[1];
+    dimsA[1] = -42;
+    const dimsC = tempo.computeVector(battleState).dims;
+    close('tempo: writing to a returned dims cannot corrupt the next vector', dimsC[1], before, 1e-6);
+    check('tempo: the dims snapshot keeps its kind and width', dimsC instanceof Float32Array && dimsC.length === 10, Object.prototype.toString.call(dimsC) + ' len ' + dimsC.length);
     const rhythmState = JSON.parse(JSON.stringify(battleState));
     rhythmState.protect.oppTurnsSinceLastProtect = 1;
     rhythmState.active.opp.hp = 60;

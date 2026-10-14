@@ -32,6 +32,30 @@
  *   driving (a player stream carries the public log plus that side's own request, which is
  *   exactly what a real client sees) and read the array it hands back.
  *
+ * THE CLIENT FRAMES THIS FILE EMULATES (and why the arena was measuring a different engine)
+ *   A real client emits three things that a raw @pkmn/sim player stream does not, and the engine
+ *   reads all three. Without them three tiers in the ablation table could not be priced at all,
+ *   and one of them (`clock`, which SHIPS ON) was silently inert, so the arena was scoring an
+ *   engine with the clock disabled:
+ *
+ *     1. `|stacc|<moveid>|<accuracy>` — src/injected.js forwards the client's own dex accuracy for
+ *        every move on the roster. This table is the ONLY input `laplace.volatility` acts on (see
+ *        `LaplaceEngine._accuracyOf`), and `laplace.comeback` scales nothing but that charge, so
+ *        with an empty table both tiers are provably 0 and their rows are flat for a harness
+ *        reason, not a policy reason. `_emitAccuracy()` below forwards the same frame from the
+ *        sim's dex, which is the same data the client fetches.
+ *     2. `/choose <choice>` tagged `kind === 'send'` — our own outgoing click. `OpponentClock._close`
+ *        returns early unless an outgoing line set `mySubmitTs`, so with no such line the clock's
+ *        history stays empty, its label stays `unknown`, and `switchPrior.unknown` of 1.0 is
+ *        exactly what `clock.enabled = false` does. `noteOutgoing()` says it.
+ *     3. `|player|pX|Name|avatar|RATING` — carried by `>player`'s `rating` field (`battle.js` emits
+ *        `options.rating || ''`). `clock.ratingBands` reads it; the sim emits an empty field unless
+ *        a rating is supplied, so the band is inert by omission, not by design.
+ *
+ *   The three are emitted only as far as the engine can read them, and each is a NO-OP when its
+ *   input is unavailable: no sim means no accuracy frame (the previous behaviour), and an
+ *   unrated player means no rating. Nothing here invents a value the protocol did not carry.
+ *
  * Run the self-check with:  node tools/headless_arena/engine_bridge.js
  */
 'use strict';
@@ -118,6 +142,72 @@ function loadSim() {
   return require('@pkmn/sim');
 }
 
+/* --------------------------------------------------------------- client telemetry */
+
+/**
+ * The move table the CLIENT would read. In a browser this is the page's own dex; here it is the
+ * sim's, which is the same data (@pkmn/sim vendors the Showdown dex, `accuracy` and the `true`
+ * that means "cannot miss" included). Resolved lazily and cached, so the bridge keeps loading in
+ * a checkout with no devDependencies — a missing sim is "no telemetry", not a throw.
+ */
+let cachedMoveDex = undefined;
+function clientMoveDex() {
+  if (cachedMoveDex !== undefined) return cachedMoveDex;
+  cachedMoveDex = null;
+  try {
+    const sim = loadSim();
+    if (sim && sim.Dex && sim.Dex.moves && typeof sim.Dex.moves.get === 'function') cachedMoveDex = sim.Dex.moves;
+  } catch (e) { cachedMoveDex = null; }
+  return cachedMoveDex;
+}
+
+/**
+ * Every move id a `|request|` makes visible: the active body's own menu plus the whole roster.
+ * This is the set src/injected.js walks (`roster[i].moveSlots`) when it decides what to forward.
+ */
+function legalMoveIds(request) {
+  const ids = [];
+  const seen = Object.create(null);
+  const push = function (id) {
+    const key = String(id || '').toLowerCase();
+    if (!key || seen[key]) return;
+    seen[key] = true;
+    ids.push(key);
+  };
+  const active = (request && request.active) || [];
+  for (let i = 0; i < active.length; i++) {
+    const moves = (active[i] && active[i].moves) || [];
+    for (let j = 0; j < moves.length; j++) if (moves[j] && moves[j].id) push(moves[j].id);
+  }
+  const roster = (request && request.side && request.side.pokemon) || [];
+  for (let i = 0; i < roster.length; i++) {
+    const moves = (roster[i] && roster[i].moves) || [];
+    for (let j = 0; j < moves.length; j++) push(moves[j]);
+  }
+  return ids;
+}
+
+/**
+ * The `|stacc|<moveid>|<accuracy>` frames src/injected.js emits from the client's own dex, so the
+ * arena's engine reads the accuracy table a browser build reads. Returns [] when the dex can't be
+ * resolved or nothing is known, which is exactly the old behaviour — never a fabricated accuracy.
+ * A numeric 0 is skipped for the same reason the parser skips it (there is no such roll).
+ */
+function accuracyLines(request) {
+  const dex = clientMoveDex();
+  if (!dex) return [];
+  const ids = legalMoveIds(request);
+  const lines = [];
+  for (let i = 0; i < ids.length; i++) {
+    const move = dex.get(ids[i]);
+    if (!move || move.exists === false) continue;
+    const acc = move.accuracy;
+    if (!(acc === true || (typeof acc === 'number' && isFinite(acc) && acc > 0))) continue;
+    lines.push('|stacc|' + ids[i] + '|' + acc);
+  }
+  return lines;
+}
+
 /* --------------------------------------------------------------------- actions */
 
 /**
@@ -175,6 +265,8 @@ class EngineSession {
     }
     this.ranked = null;
     this.readout = null;
+    /* The last accuracy frame forwarded, mirroring injected.js's `lastAccuracySignature`. */
+    this._accuracySignature = null;
   }
 
   /** Ingest the extension's own paste format. Throws with the parser's messages when it fails. */
@@ -193,12 +285,17 @@ class EngineSession {
   /**
    * Feed one protocol line. Returns the ranked action array when the line opened a decision
    * window, otherwise undefined. Never throws: a hostile line becomes an entry in `errors`.
+   *
+   * `kind` is the live injector's own tag ('send' for our outgoing /choose, 'recv'/'poll' for the
+   * stream) and is passed through untouched, because the opponent clock's whole estimator keys off
+   * it — that is the only difference between a line the engine acted on and one it merely saw.
    */
-  feed(line) {
+  feed(line, kind) {
     if (!line) return undefined;
+    if (typeof line === 'string' && line.lastIndexOf('|request|', 0) === 0) this._emitAccuracy(line);
     let out;
     try {
-      out = this.boot.handleLine(line);
+      out = this.boot.handleLine(line, kind);
     } catch (e) {
       this.errors.push('handleLine: ' + (e && e.message));
       return undefined;
@@ -211,6 +308,51 @@ class EngineSession {
       return out;
     }
     return undefined;
+  }
+
+  /**
+   * Forward the accuracy frame the client would forward, immediately BEFORE the request is parsed
+   * — the order a real client's log carries it in. Deduped on the forwarded lines, exactly as
+   * injected.js dedupes on the visible ids, so a 100-turn battle sends the table once per real
+   * change rather than once per turn.
+   */
+  _emitAccuracy(requestLine) {
+    let request = null;
+    try { request = JSON.parse(requestLine.slice('|request|'.length)); } catch (e) { return; }
+    const lines = accuracyLines(request);
+    if (!lines.length) return;
+    const signature = lines.join(';');
+    if (signature === this._accuracySignature) return;
+    this._accuracySignature = signature;
+    for (let i = 0; i < lines.length; i++) this.feed(lines[i]);
+  }
+
+  /**
+   * Our own outgoing choice, in the form the client's injector forwards it: `kind === 'send'`.
+   * A driver that answers the sim directly — as the arena does — must say so here, or the clock
+   * can never leave `unknown` and neither `clock.enabled` nor `clock.ratingBands` can be priced.
+   * A leading `>p1 `/`>p2 ` is stripped, because choices on a player stream are bare (fact (b)).
+   */
+  noteOutgoing(choice) {
+    if (!choice || typeof choice !== 'string') return false;
+    const bare = choice.replace(/^>[^\s]+\s+/, '').trim();
+    if (!bare) return false;
+    this.feed('/choose ' + bare, 'send');
+    return true;
+  }
+
+  /**
+   * Declare the opponent's deliberation for this session (see OpponentClock.declare). The arena's
+   * two players share one event loop, so the measured lead is ~0 ms on every turn and the clock
+   * would label all of them 'auto' — 0.25, below switchKeepThreshold, which DELETES the opponent's
+   * switch replies from the matrix for the whole battle. Declaring 'normal' is the identity, so the
+   * baseline measures the engine rather than the absence of a network.
+   */
+  declareOpponentDeliberation(label) {
+    const clock = this.boot && this.boot.clock;
+    if (!clock || typeof clock.declare !== 'function') return false;
+    clock.declare(label);
+    return true;
   }
 
   /** Feed many lines; the last decision window seen wins. */
@@ -296,13 +438,32 @@ if (require.main === module) {
   session.feed('|turn|1');
   const req = JSON.stringify({
     side: { id: 'p1', name: 'Tactician', pokemon: [{ ident: 'p1: Great Tusk', details: 'Great Tusk, L50, M', condition: '100/100', active: true, moves: ['headlongrush'] }] },
-    active: [{ moves: [{ move: 'Headlong Rush', id: 'headlongrush', pp: 16, maxpp: 16, target: 'normal' }, { move: 'Close Combat', id: 'closecombat', pp: 8, maxpp: 8, target: 'normal' }] }],
+    active: [{ moves: [{ move: 'Headlong Rush', id: 'headlongrush', pp: 16, maxpp: 16, target: 'normal' }, { move: 'Close Combat', id: 'closecombat', pp: 8, maxpp: 8, target: 'normal' },
+      { move: 'Focus Blast', id: 'focusblast', pp: 8, maxpp: 8, target: 'normal' }, { move: 'Rapid Spin', id: 'rapidspin', pp: 64, maxpp: 64, target: 'normal' }] }],
     rqid: 1
   });
   const ranked = session.feed('|request|' + req);
   console.log('ranked lines:', Array.isArray(ranked) ? ranked.length : 0, '| top:', session.topChoice(), '| bestScore:', session.bestScore());
   console.log('pipeline errors:', JSON.stringify(session.pipelineErrors()));
   console.log('sample:'); console.log(JSON.stringify(session.ranked && session.ranked.slice(0, 4), null, 1));
+  /* The three client frames, read back off the engine: the accuracy table the volatility charge
+   * needs, the clock that only our own outgoing /choose can move, and the rating the band reads. */
+  const board = session.boot.state && session.boot.state.state;
+  const acc = (board && board.moveAccuracy) || {};
+  const accIds = Object.keys(acc);
+  console.log('|stacc| forwarded for', accIds.length, 'move(s):', JSON.stringify(accIds.slice(0, 8)));
+  console.log('  Focus Blast accuracy the engine now holds:', acc.focusblast, '(70 = chargeable; undefined = the old blind arena)');
+  const engine = session.boot.engine;
+  const charge = engine && typeof engine._volatilityDelta === 'function'
+    ? engine._volatilityDelta({ kind: 'move', name: 'Focus Blast', moveId: 'focusblast' }, board, null, 100)
+    : null;
+  console.log('  volatility charge on Focus Blast:', charge && charge.penalty, '|', charge && charge.why);
+  session.noteOutgoing('move headlongrush'); session.feed('|turn|2');
+  session.noteOutgoing('move headlongrush'); session.feed('|turn|3');
+  const clockSnap = session.boot.clock ? session.boot.clock.snapshot() : null;
+  console.log('clock after our own /choose lines:', JSON.stringify(clockSnap && {
+    samples: clockSnap.samples, floorMs: clockSnap.floorMs, label: clockSnap.label, switchFactor: clockSnap.switchFactor
+  }));
   const expected0 = /^Great Tusk$/;
   console.log('team preview order:', teamPreviewOrder({ side: { pokemon: [{}, {}, {}] } }, 2), '| first mon is Great Tusk:', expected0.test(session.team[0].species));
 }

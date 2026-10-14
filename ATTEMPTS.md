@@ -53,7 +53,7 @@ Two traps the tooling now refuses to let you fall into:
 
 | # | attempt | mechanism | evidence | status |
 |---|---|---|---|---|
-| A1 | **Turn urgency** (`laplace.urgency`) | bounded, ramping bonus for COMMITTING rows (a real attack or a setup move) over passive ones past `startTurn`, multiplied at `breakoutTurn`; re-ranks rows, cannot override a veto | 60 paired battles, all three personas, seed 1337: win **68.3 % → 96.7 %**, Δ **+28.3 [+18.3, +40.0]**, and the 100-turn cap ties — *every* tie the baseline played — **17/60 → 1/60**; p90 turns 101 → 89 | **ADOPTED** 2026-10-12 |
+| A1 | **Turn urgency** (`laplace.urgency`) | bounded, ramping bonus for COMMITTING rows (a real attack or a setup move) over passive ones past `startTurn`, multiplied at `breakoutTurn`; re-ranks rows, cannot override a veto | 60 paired battles, all three personas, seed 1337: win **68.3 % → 96.7 %**, Δ **+28.3 [+18.3, +40.0]**, and the 100-turn cap ties — *every* tie the baseline played — **17/60 → 1/60**; p90 turns 101 → 89. **Re-anchored 2026-10-13** on the fixed instrument: Δ **0.0**, flagged `stall` — but the baseline is now **98.3 %** win, so the benefit urgency delivered *has become the baseline*. That is a ceiling, **not a refutation**: an instrument that already wins every game cannot price what made it win. Re-pricing urgency needs a stronger opponent, not a longer run | **ADOPTED** 2026-10-12 |
 | A2 | **The fitted 128D vector at a measured scale** | `fitScale` 52.2 restores the evaluator's influence on the blend | held-out AUC **0.670 → 0.705** | **ADOPTED** |
 | A3 | **Memoisation of the hot damage/name path** (`toID`, `getMoveData`, the id→raw index) | pure caching, no policy change | real boards: mean **96.3 ms → 30.7 ms**, p95 **132.7 ms → 47.5 ms**; bit-identical — same 432 `_payoff` cells, same vector, same rankings to 17 significant figures over 390 boards | **ADOPTED** |
 
@@ -67,7 +67,7 @@ wins** (16 of the 17) by making progress outrank passivity late in a game.
 
 | # | attempt | mechanism | measured | status |
 |---|---|---|---|---|
-| B1 | **The pivot tax** (`laplace.switchTax`, id `switch-tax`) | flat score drag on every SWITCH row, so a pivot must beat the best attack by `points` before it takes the top line; folded into the mix matrix *and* the row score | **agreement went UP**: top-1 **31.7 % → 44.0 %** (contested 25.5 % → 31.9 %), pivot rate 55.4 % → 29.2 %. **Strength went down**: 96.7 % → 70.0 %, Δ **−26.7 [−38.3, −15.0]**, and the 100-turn cap ties came back **1/60 → 18/60** (30 % stall, capped games only 4.1 of 12 bodies down — a standoff) | **REJECTED**; ships OFF, row kept in the table |
+| B1 | **The pivot tax** (`laplace.switchTax`, id `switch-tax`) | flat score drag on every SWITCH row, so a pivot must beat the best attack by `points` before it takes the top line; folded into the mix matrix *and* the row score | **agreement went UP**: top-1 **31.7 % → 44.0 %** (contested 25.5 % → 31.9 %), pivot rate 55.4 % → 29.2 %. **Strength went down**: 96.7 % → 70.0 %, Δ **−26.7 [−38.3, −15.0]**, and the 100-turn cap ties came back **1/60 → 18/60** (30 % stall, capped games only 4.1 of 12 bodies down — a standoff) | **REJECTED**; ships OFF, row kept in the table. **Re-anchored 2026-10-13** on the fixed instrument and the rejection is CONFIRMED, now in the arena as well as in agreement: `switch-tax` **HURTS, −31.7 [−43.3, −20.0]** (98.3 % → 66.7 %, 20 capped games, flagged `surprise` against its `expect: helps`) |
 | B2 | **The residual head** (`config.evaluator.mlp.enabled`) | 128 → 16 → 1 ReLU correction on the frozen linear score, bounded to ±150 | rebuilt corpus 3,521 battles → 107,024 rows: **0.7145 → 0.7144**, median **−0.0001**, CI **[−0.0011, +0.0009]**, ahead in **40.8 %** of resamples. Five further configurations (80/300 epochs, `l2` 1e-2 / 1e-1, a 4-unit net) also failed; the best posted +0.0012 with a CI straddling zero | **REJECTED**. Note where its gate lives: this row has **no arena row** — it is gated by `tools/train_mlp_residual.js`'s own battle-level hold-out plus paired bootstrap, not by `run_ablation.js`. `lib/mlp-residual.js` ships as `null` so a stray config edit cannot switch it on |
 | B3 | **Cross-product features** (`tools/select_cross_features.js`, `--crosses`) | products of the 128D vector's own dimensions | **0.7005** projected on the battle-level hold-out against the adopted vector's **0.7049**; median 0.0000, CI **[−0.0047, +0.0015]**, ahead in **41 %** of resamples | **REJECTED** (a documented negative result) |
 | B4 | **Naive MLP early-stopping** | selected the gain on the *training-half* AUC | train **0.8616** vs held-out **0.6757** — a large apparent win that was a large loss. Rows are consecutive turns of ONE battle and share its label, so the effective n is the ~2,800 battles, not the ~85,000 rows. Fixed with a grouped split **inside** the training half; on that corpus the inner-validation minimum was at **epoch 0** | **REJECTED** (kept behind `--no-early-stop` as a diagnostic) |
@@ -81,25 +81,31 @@ wins** (16 of the 17) by making progress outrank passivity late in a game.
 
 | # | attempt | measured | why it is still open |
 |---|---|---|---|
-| C1 | **`quiescence` (the setup punisher)** — prices the opponent's boosted reply and their Protect inside the cell | **feature HURTS**: removing the whole tier wins **+19.3 [+12.0, +26.7]** (66.7 % → 86.0 %) and cuts cap ties **46/150 → 15/150**. The harm is **entirely** `extendSetup` (switching it off reproduces the master switch *battle for battle*); `blockProtect` changed nothing | **The tier still ships ON, and this is the single most valuable open measurement in the repo.** It was measured on the **pre-urgency** build (baseline 66.7 %, 46/150 capped). Turn urgency has since removed exactly the standoff pathology `quiescence` was blamed for (baseline now 96.7 %, 1/60 capped), so the number **has not been re-measured on the current build** and must not be quoted as if it had. Re-run it: `node tools/run_ablation.js --features quiescence,quiescence-extendsetup --battles 60 --seed 1337`. |
+| C1 | **`quiescence` (the setup punisher)** — prices the opponent's boosted reply and their Protect inside the cell | **SUPERSEDED — the sign has FLIPPED.** The old reading was `feature HURTS`: removing the whole tier won **+19.3 [+12.0, +26.7]** (66.7 % → 86.0 %, cap ties 46/150 → 15/150), with the harm attributed entirely to `extendSetup`. Re-measured 2026-10-13 at the standard sample on the fixed instrument (see §H), switching `extendSetup` off **LOSES 20.0 [−30.0, −10.0]** (98.3 % → 78.3 %, 13 capped) — so the knob **HELPS** — while switching the whole tier off is **−5.0 [−11.7, +1.7]**, not measurable at this sample | **CLOSED 2026-10-13 — and it closed against the old verdict.** The open question was whether the harm survived the urgency change; it does not survive the *instrument* fix. The old number was taken on a build whose arena fed the engine a one-Pokemon team (§H), so it measured a crippled engine and is **not quotable**. On the fixed instrument the tier ships ON with a measurement **supporting** it. |
 | C2 | **VETO4 (`SPEED_SUICIDE`) firing on stale speed information** | 106 of the 177 elite clicks the guard refuses are this one code | unproven either way. The question is whether those refusals are boards where the human was right because the engine's speed estimate was blind to the field (an unrevealed Scarf, a weather ability, Tailwind). Answering it needs the **speed race itself instrumented**, which has not been done. Suppressing the rule is *not* an answer — see §F2. |
 | C3 | Smaller open defects | see the "Known — open, from the same review sweep" list in `CHANGELOG.md` (`residualOrder.trust` shipping at 1, Protosynthesis/Quark Drive Speed, `shelter`'s unverified effect, G-Max Steelsurge's flat 12.5 %, two HUDs double-handling a bench tap, `mon.knockOffSurvived` read but never written) and the deliberate-omission list in `BUGS_AUDIT_REPORT.md` | each is stated with its narrow fix; none is fixed |
 
 ---
 
-## D. INERT HERE — flat for a harness reason, not because of the feature
+## D. WAS INERT HERE — harness blindness, since supplied
 
-These are the rows that a careless reader reports as "measured neutral". They are not: the feature's
-input never arrives in the arena, or the situation it acts on never arises there, or the knob is a
-shipped-empty control. In every case toggling it **cannot** change a decision, so the flat row is a
-statement about this harness.
+These are the rows that a careless reader reports as "measured neutral". Four of them were not
+neutral at all: the feature's input never arrived in the arena, so toggling the flag **could not**
+change a decision and the flat row was a statement about the harness, not the feature.
+
+**That hole has since been closed.** `tools/headless_arena/engine_bridge.js` now emits the three
+client frames a raw sim stream omits — `|stacc|` from the sim's dex, our own outgoing `/choose`
+tagged `send`, and (through `sim_runner`) the `|player|` rating — so D1–D4 are priced by this
+runner now. Each row below keeps the cause it was filed with and carries the measurement that
+replaced the verdict. D5 is the one that is still inert here for the original reason: its input
+arrives and the situation simply never arises.
 
 | # | feature | why it is flat here | how to price it for real |
 |---|---|---|---|
-| D1 | `laplace.volatility` (the tilt/accuracy charge) | `_accuracyOf` reads `state.moveAccuracy`, which only `src/injected.js` populates, from the client's own **stacc** accuracy snapshot; `@pkmn/sim` emits no such line, so the penalty is always 0 | a real client stream — `bench/bench.html`, not this runner |
-| D2 | `clock` (opponent clock prior) | `OpponentClock._close()` returns early unless `mySubmitTs` is set, and that is set only by an **outgoing `/choose`** line; the arena's agent answers the sim runner directly and never sends one, so the history stays empty and `switchPrior.unknown` stays 1.0 — which is exactly what `enabled: false` does | drive the engine through a real browser session |
-| D3 | `clock.ratingBands` (Elo switch bands) | needs the opponent's ladder rating, which the protocol carries only as a fifth field on the **player** line; the arena creates both players with no `rating` option, so `state.opponentRating` stays `null` and `ratingFactor()` returns 1 by design | a run that injects ratings; or the live client |
-| D4 | `laplace.comeback` | scales **only** the volatility charge, and that charge is 0 in the arena (D1) — any multiplier on 0 is 0 | same as D1 |
+| D1 | `laplace.volatility` (the tilt/accuracy charge) | **FIXED, ARRIVES, STILL NOT DECISIVE.** `_accuracyOf` reads `state.moveAccuracy`, which only `src/injected.js` populated from the client's own **stacc** snapshot; `@pkmn/sim` emits no such line, so the penalty was always 0. The bridge now forwards that frame from the sim's dex (the same data the client's dex carries), and `tests/ablation_check.js` §7 pins it. Toggling the flag still changed no battle at 24 a side — now because the charge is too small to flip a line against these movepools (a 10% penalty on Iron Head or Ruination), not because the input is missing | nothing further needed to measure it; a corpus whose teams actually lean on sub-100% moves |
+| D2 | `clock` (opponent clock prior) | **ARRIVES — and reading it took a second fix.** `_close()` returns early unless `mySubmitTs` is set, and that is set only by an **outgoing `/choose`** line; the arena answered the sim runner directly and never sent one, so the history stayed empty. `run_arena` now sends it, which made the clock live — and immediately exposed a second defect: with both players on one event loop the measured lead is ~0 ms, so it labelled **every** turn `auto` (0.25), below `switchKeepThreshold`, DELETING their switch replies for the whole battle. The arena therefore **declares** the opponent's pace now (`normal` = identity by default; `--deliberation auto` prices a fast one). **The +28.3 first reported here is retracted** — it priced that artifact | a declared fast/slow opponent (`--deliberation`), or the live client |
+| D3 | `clock.ratingBands` (Elo switch bands) | **FIXED, MEASURABLE.** Needs the opponent's ladder rating, carried only as a fifth field on the **player** line; the arena created both players with no `rating` option, so `state.opponentRating` stayed `null` and `ratingFactor()` returned 1 by design. Each persona now **declares** the band its name implies (anchor 1700 / exploiter 1500 / chaos 1100) and `sim_runner` passes it to the sim, so one sweep exercises all three. Measured at 24 a side: the flag changed at least one battle (no `identical` row), while the win-rate interval still included zero — read it against a 100% baseline, so harm is visible here long before gain | a stronger opponent, so the baseline is not at the ceiling |
+| D4 | `laplace.comeback` | **FIXED, SAME STATE AS D1.** Scales **only** the volatility charge, which was 0 in the arena — any multiplier on 0 is 0. The charge is now non-zero, so the multiplier is live; but the charge changed no decision at 24 a side, so nothing changed here either. This row cannot be decisive until the row it multiplies is | same as D1 |
 | D5 | `quiescence-blockprotect` | **INERT IN THIS CORPUS, NOT DEAD CODE.** `tests/quiescence_check.js` proves the shield blocks our move inside the cell and that `blockProtect: false` reproduces the legacy 1-ply number exactly — so the knob works and its input does arrive. Their Protect simply never landed on a cell where the block flipped the choice | a corpus where a shield lands on a flipped decision |
 | D6 | `pruner.scout`, `usage` (overlay) | **documented controls**: they ship with empty overlays, so flat is the *expected* result and a non-zero delta there would be the bug | populate the overlay (monthly cron / `scout_replays.js`) |
 
@@ -158,7 +164,7 @@ dead idea under a new name.
 
 | if your idea is… | we already tried | verdict | what that tells you |
 |---|---|---|---|
-| **a flat score drag/boost applied to a whole class of action** | the pivot tax (B1), turn urgency (A1), the volatility charge (D1) | 1 adopted, 1 rejected, 1 unpriceable | it *can* work — but only A1 did, and its mechanism was **relative re-ranking that converted lost positions into wins**, not the suppression of a behaviour. Ask which of those yours is |
+| **a flat score drag/boost applied to a whole class of action** | the pivot tax (B1), turn urgency (A1), the volatility charge (D1) | 1 adopted, 1 rejected, 1 arrived-but-not-decisive | it *can* work — but only A1 did, and its mechanism was **relative re-ranking that converted lost positions into wins**, not the suppression of a behaviour. Ask which of those yours is |
 | **suppressing a hard rule to see what it costs** | VETO4 suppression (F2), the veto-family rows (E3) | refuted as a cause / flat | measure the premise before building the softened rule (that is what killed B5) |
 | **"our agreement with human logs goes up, so we got stronger"** | the pivot tax (B1), cross features (B3), the residual head (B2) | all rejected | not a valid inference in this repo. Run the gate |
 | **adding a learned correction term to the evaluator** | the residual head (B2), cross products (B3) | both rejected, both on a battle-level hold-out with a paired bootstrap | two independent negatives. A new one needs a **grouped** split (B4), a hold-out over whole battles, and a CI that excludes zero — and it must not be selected on a training-half gain |
@@ -196,3 +202,42 @@ dead idea under a new name.
 points (so only a large effect clears its interval — 15 of 19 rows were flat in the first sweep); and
 the three personas are heuristics, so a win rate here says how the engine handles *those shapes* and
 nothing about a ladder rating.
+
+---
+
+## H. The re-anchor (2026-10-13) — which verdicts moved, and why
+
+The instrument changed, so every number above it predates the change. Two defects, both in the
+ARENA, neither of which could fail a test:
+
+1. `run_arena` handed the engine the sim-**packed** team string while the browser and every suite
+   hand it a Pokepaste, so `parseTeam` registered **one** body whose species was the whole packed
+   line. The engine then offered `switch <the whole packed team>`, the sim rejected it ("You sent
+   choices for 54 Pokemon"), and the driver silently substituted each rejection — a large share of
+   the battle was no longer the engine's. For any earlier row, "the engine won" meant the engine
+   *plus its fallbacks* won.
+2. Three frames a real client emits were never emitted: `|stacc|` (the accuracy table
+   `laplace.volatility` reads, and so the only thing `laplace.comeback` scales), our own outgoing
+   `/choose` (the only line that can move the clock), and the `|player|` rating
+   (`clock.ratingBands`). D1–D4 above were unpriceable because of this, not because of the features.
+
+**The baseline moved 68.3 % → 98.3 %** win (60 battles a side, all three personas, seed 1337,
+`--parallel 6`, 15 min 45 s). The instrument had been scoring a materially weaker engine.
+
+| row | before (broken instrument) | after (re-anchored) | reading |
+|---|---|---|---|
+| baseline | 68.3 %, 17/60 capped | **98.3 %**, 2 capped | the floor moved 30 win points |
+| **C1** `quiescence-extendsetup` | HURTS, +19.3 [+12.0, +26.7] | **HELPS, +20.0 [+10.0, +30.0]** | **sign flipped**; the shipped knob is now supported |
+| **A1** `urgency` | HELPS, +28.3 [+18.3, +40.0] | 0.0 | **ceiling, not refutation** — no headroom left |
+| **B1** `switch-tax` | REJECTED (agreement up, −26.7 strength) | **HURTS, −31.7 [−43.3, −20.0]** | rejection confirmed, now on strength alone |
+| **D2** `clock` | inert (`identical`) | ~~HELPS, +28.3~~ **RETRACTED** | **the +28.3 prices an ARTIFACT, not deliberation.** The arena's two players share one event loop, so the lead is ~0 ms every turn and the clock labelled all of them `auto` (0.25) — below `switchKeepThreshold`, which DELETED their switch replies from the matrix for the whole battle. The run now DECLARES the opponent's pace (identity by default), so this row measures a stated opponent, not the lack of a network |
+| **D3** `elo-band` | inert (`identical`) | moves turns, Δ win 0.0 | cheap now — but not decisive in this corpus |
+| D1/D4 `volatility`, `comeback` | unpriceable | arrive, Δ win 0.0 | input present; the charge is too small to flip a line |
+| `wincon` | `identical` | changes battles, Δ win 0.0 | newly non-inert |
+| `profile` | non-inert (−3.3) | `identical` | newly inert |
+
+**The ceiling, stated plainly — this is the headline caveat.** The baseline now wins 98.3 % with
+**0 losses in 60 games**, and every row that reads 0.0 is at that ceiling. Fourteen of the 25 rows
+cannot be measured at all until the opponent is stronger, and here "no measurable effect" mostly
+means **nothing left to win**, not "the feature does nothing". The `--battles 500` advice in §0 does
+not help: buying precision on a ceiling buys precision on zero. Strengthen the personas first.

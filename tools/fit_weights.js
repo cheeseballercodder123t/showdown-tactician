@@ -523,7 +523,8 @@ function run(payload, options) {
   const score = function (X) { return X.map(function (x) { return scoreOf(model, x); }); };
   const aucTrain = auc(score(trainX), trainY);
   const aucTest = auc(score(testX), testY);
-  const spec = dim === DIM ? mapToSpec(model.coef, crosses) : null;
+  // `spec` is derived AFTER the support clamp below: it has to summarise the coefficients this run
+  // EXPORTS, not the raw fit, or the artifact ships a spec that disagrees with its own weights128.
 
   // Per-dim support, over the features actually fitted (the cross dims included): how many rows
   // carried a non-zero value, and how many of those were positives. The counts are what makes a
@@ -538,6 +539,24 @@ function run(payload, options) {
     }
     if (nonzero < LOW_SUPPORT_ROWS) lowSupport.push({ dim: j, nonzero: nonzero, positives: positives });
   }
+
+  /* THE SUPPORT CLAMP. A coefficient fitted from a handful of non-zero rows is an extrapolation, not
+   * a measurement, and nothing stops it from being huge: in the shipped 3,712-battle corpus dim 41
+   * (an accuracy boost slot) came out at +54.72 off FIVE non-zero rows, and dim 47 at -50.34 off
+   * seventeen, out of 111,820 — an order of magnitude past every identified dim.
+   *
+   * The clamp belongs HERE, on the export, and not on each consumer. `weights128`, `weightsFull` and
+   * `spec` are three views of one coefficient vector; zeroing them at the reader is how they drift
+   * apart, which is exactly what happened: src/config.js adopted the zeroed spec and the vector, while
+   * the artifact kept shipping +54.7 / -50.3 for anyone who loaded weights128 directly.
+   *
+   * A dim with ZERO non-zero rows is already 0 out of the fit (a constant column has no variance, so
+   * its standardized coefficient is exactly 0) and is clamped for the same stated reason. */
+  const clampedDims = lowSupport.filter(function (e) { return e.dim >= 0 && e.dim < dim; })
+    .map(function (e) { return e.dim; });
+  const coefExport = model.coef.slice();
+  for (let c = 0; c < clampedDims.length; c++) coefExport[clampedDims[c]] = 0;
+  const spec = dim === DIM ? mapToSpec(coefExport, crosses) : null;
 
   const report = {
     lambda: lambda,
@@ -559,22 +578,57 @@ function run(payload, options) {
     aucTrain: aucTrain,
     aucTest: aucTest,
     intercept: model.intercept,
-    weights128: model.coef.slice(0, DIM),
-    weightsFull: [model.intercept].concat(model.coef),
-    spec: spec
+    weights128: coefExport.slice(0, DIM),
+    weightsFull: [model.intercept].concat(coefExport),
+    spec: spec,
+    clampedDims: clampedDims
   };
   // Cross fields only exist when crosses were fitted, so a 128-dim artifact stays byte-identical.
   if (crosses.length) {
     report.crossPairs = crosses;
-    report.weightsCross = model.coef.slice(DIM);
+    report.weightsCross = coefExport.slice(DIM);
   }
   return report;
+}
+
+/**
+ * Re-apply the export clamp to a STORED report, in place of a re-fit.
+ *
+ * A shipped artifact carries its own `lowSupport` counts and its own coefficients, and the clamp is
+ * a pure function of those two things — so an artifact fitted before the clamp existed can be brought
+ * in line with what `run()` now exports without the corpus. Every other field (the AUCs, the sample
+ * and battle counts, the provenance) is left exactly as it was fitted, and `clampedDims` records
+ * which dims this pass zeroed so the file never has to be read as "the raw fit".
+ */
+function clampReport(report) {
+  if (!report || !Array.isArray(report.weights128)) {
+    throw new Error('clampReport expects a report carrying weights128');
+  }
+  const out = JSON.parse(JSON.stringify(report));
+  const crossW = Array.isArray(out.weightsCross) ? out.weightsCross : [];
+  const pairs = Array.isArray(out.crossPairs) ? out.crossPairs : [];
+  const full = out.weights128.concat(crossW);
+  const support = Array.isArray(out.lowSupport) ? out.lowSupport : [];
+  const dims = [];
+  support.forEach(function (e) {
+    if (!e || typeof e.dim !== 'number' || e.dim < 0 || e.dim >= full.length) return;
+    full[e.dim] = 0;
+    if (dims.indexOf(e.dim) === -1) dims.push(e.dim);
+  });
+  out.weights128 = full.slice(0, DIM);
+  if (crossW.length) out.weightsCross = full.slice(DIM);
+  out.weightsFull = [out.intercept].concat(full);
+  out.clampedDims = dims;
+  // The spec is derived, so it is re-derived here rather than edited slot by slot: that is what keeps
+  // "the stored spec is exactly what mapToSpec computes from the stored coefficients" true.
+  if (out.features === full.length) out.spec = mapToSpec(full, pairs.length ? pairs : undefined);
+  return out;
 }
 
 /* ---------------------------------------------------------------------------- CLI */
 
 function parseArgs(argv) {
-  const out = { input: null, out: 'lib/trained-weights.json', lambda: 0.5, holdout: 5, maxIter: 25, quiet: false, crosses: null };
+  const out = { input: null, out: 'lib/trained-weights.json', lambda: 0.5, holdout: 5, maxIter: 25, quiet: false, crosses: null, clamp: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--input' || a === '-i') out.input = argv[++i];
@@ -584,6 +638,7 @@ function parseArgs(argv) {
     else if (a === '--holdout') out.holdout = parseInt(argv[++i], 10);
     else if (a === '--max-iter') out.maxIter = parseInt(argv[++i], 10);
     else if (a === '--quiet') out.quiet = true;
+    else if (a === '--clamp') out.clamp = argv[++i];
     else if (a === '--help' || a === '-h') out.help = true;
     else throw new Error('unknown argument: ' + a);
   }
@@ -595,6 +650,26 @@ function main(argv) {
   if (opts.help) {
     console.log('usage: node tools/fit_weights.js --input training_data.json [--crosses crosses.json] ' +
       '[--lambda 0.5] [--holdout 5] [--max-iter 25] [--out lib/trained-weights.json]');
+    console.log('       node tools/fit_weights.js --clamp lib/trained-weights.json [--out <file>]');
+    return 0;
+  }
+  // The corpus is gitignored and is not in a fresh clone, so a stored artifact cannot be re-fitted.
+  // The clamp is a pure function of the report's own coefficients and its own support counts, so it
+  // can be re-applied to a file — which is what brings an artifact fitted before the clamp in line
+  // with what the fitter now exports. It reports itself as a clamp pass, never as a fit.
+  if (opts.clamp) {
+    const stored = JSON.parse(fs.readFileSync(path.resolve(ROOT, opts.clamp), 'utf8'));
+    const clamped = clampReport(stored);
+    const clampedTarget = path.resolve(ROOT, opts.out);
+    fs.mkdirSync(path.dirname(clampedTarget), { recursive: true });
+    fs.writeFileSync(clampedTarget, JSON.stringify(clamped, null, 2) + '\n');
+    if (!opts.quiet) {
+      console.log('clamp pass over ' + opts.clamp + ' (no corpus, no re-fit: coefficients and counts\n' +
+        '  are the stored ones, only the low-support dims are zeroed)');
+      console.log('  zeroed dims (<' + clamped.lowSupportThreshold + ' non-zero rows): ' +
+        (clamped.clampedDims.length ? clamped.clampedDims.join(' ') : 'none'));
+      console.log('wrote ' + path.relative(ROOT, clampedTarget));
+    }
     return 0;
   }
   if (!opts.input) throw new Error('--input is required');
@@ -620,6 +695,8 @@ function main(argv) {
       (report.lowSupport.length
         ? report.lowSupport.map(function (e) { return e.dim + '(' + e.nonzero + ')'; }).join(' ')
         : 'none'));
+    console.log('  zeroed on export (the support clamp): ' +
+      (report.clampedDims.length ? report.clampedDims.join(' ') : 'none'));
     console.log('wrote ' + path.relative(ROOT, target));
     console.log('\n' + specSnippet(report.spec));
   }
@@ -635,7 +712,7 @@ module.exports = {
   columnStats: columnStats, fitLogistic: fitLogistic, scoreOf: scoreOf, auc: auc,
   splitIndices: splitIndices, mapToSpec: mapToSpec, specSnippet: specSnippet, round: round,
   rowsOf: rowsOf, matrixOf: matrixOf, appendCrosses: appendCrosses, validatePairs: validatePairs,
-  pairsOf: pairsOf, run: run, parseArgs: parseArgs, main: main
+  pairsOf: pairsOf, run: run, clampReport: clampReport, parseArgs: parseArgs, main: main
 };
 
 if (require.main === module) {

@@ -11,7 +11,80 @@ reaches a verdict.
 
 ## Unreleased
 
+### Measured — the arena re-anchor
+
+With the engine finally getting a real team and the three client frames, the whole sweep was re-run at
+the repo's standard sample (`--battles 60 --parallel 6 --seed 1337`: 26 variants, 1,560 battles,
+15 min 45 s, **0 errors**) to find which verdicts the broken instrument had been hiding.
+
+**The baseline moved 68.3 % → 98.3 %** — and that is the finding: the arena had been scoring a
+materially weaker engine, so every row measured before this dates from a different experiment.
+
+| row | before | after | reading |
+|---|---|---|---|
+| **C1** `quiescence-extendsetup` | HURTS, +19.3 [+12.0, +26.7] | **HELPS, +20.0 [+10.0, +30.0]** (98.3 % → 78.3 %, 13 capped) | **sign flipped**; the shipped-ON knob is now supported |
+| **B1** `switch-tax` | REJECTED (agreement +12.3, strength −26.7) | **HURTS, −31.7 [−43.3, −20.0]** | rejection CONFIRMED, now on strength alone |
+| **D2** `clock` | inert (`identical`) | ~~HELPS, +28.3~~ **RETRACTED** | the +28.3 priced an **artifact**: both arena players share one event loop, so every turn measured ~0 ms, took the label `auto` (0.25) and pruned their switch replies from the matrix for the whole battle. The run now declares the pace (identity by default) |
+| **A1** `urgency` | HELPS, +28.3 [+18.3, +40.0] | 0.0, flagged `stall` | **ceiling, not a refutation** — see below |
+| **D3** `elo-band` | inert (`identical`) | changes turns, Δ win 0.0 | cheap now; not decisive |
+| `wincon` / `profile` | `identical` / non-inert | non-inert / `identical` | swapped sides |
+| D1/D4 `volatility`, `comeback` | unpriceable | arrive, Δ win 0.0 | input present; the charge is too small to flip a line |
+
+**The one caveat that governs the rest — the instrument is at its ceiling.** The baseline now wins
+98.3 % with **zero losses in 60 games**, so the sweep can detect HARM and essentially nothing else:
+fourteen of the twenty-five rows read 0.0 and most of those mean "nothing left to win", not "the
+feature does nothing". A1's 0.0 is the clearest case — the +28.3 it was adopted on is now the
+baseline, so it cannot be re-priced here at all. Raising `--battles` does not fix this; a precision
+on a ceiling is precision on zero. The personas have to get stronger before the upper half of this
+table can be re-measured. Full table and reasoning: `ATTEMPTS.md` §H.
+
 ### Fixed
+
+- **The arena was scoring a DIFFERENT engine, two ways, and neither one failed a test.**
+
+  **(1) The engine was handed a team it could not parse.** `run_arena` gave the engine the
+  sim-PACKED team string (`ctx.enginePacked`) while every suite and the browser give it a Pokepaste.
+  `parseTeam` reads a paste, so the engine registered **one** body whose species was the entire
+  packed line: it offered `switch <the whole packed team>` as a legal option, the sim rejected it
+  ("Can't make choices: You sent choices for 54 Pokemon, but this is a singles game"), and
+  `sim_runner` walked its fallback ladder over every rejection — so a large share of the battle was
+  decided by the DRIVER, not the engine, and the report counted the rejected choices nowhere. The
+  suite missed it because `tests/arena_check.js` builds its session from the paste (the path a
+  browser takes) while the arena passed the packed one. Measured on seed 7 vs the anchor: packed in,
+  `session.team.length === 1` and 48 rejected choices; paste in, 6 and **0**.
+
+  **(2) Three frames a real client emits were never emitted.** `|stacc|<moveid>|<accuracy>` (the only
+  input `laplace.volatility` acts on, and so the only thing `laplace.comeback` scales), our own
+  outgoing `/choose` tagged `kind === 'send'` (the only line that can set the clock's `mySubmitTs`),
+  and the `|player|pX|…|rating` field `clock.ratingBands` reads. Without them those tiers could not
+  change a decision by construction, so their flat rows were statements about the harness. The
+  bridge now emits all three — accuracy from the sim's dex, which is the same data the client's dex
+  carries — and `run_arena` calls `session.noteOutgoing()` when it decides. Each persona also now
+  DECLARES the band its name implies (anchor 1700 / exploiter 1500 / chaos 1100), so one sweep
+  exercises all three ratings bands.
+
+  **Guards, each verified load-bearing by reverting the fix and watching it fail:**
+  `tests/ablation_check.js` §7 pins the three frames at the bridge (accuracy table populated, clock
+  samples > 0 with `switchFactor !== 1`, rating on the state), and a new end-to-end check drives one
+  real battle through the CLI and asserts the engine no longer submits a choice the sim rejects
+  (reverting to the packed team fails it with `got=50 want=0`; removing the `|stacc|` emission fails
+  two §7 checks). 264 checks, up from 251.
+
+  **Measured after the fix** (seed 1337, paired, `--parallel 4`): disabling `clock` appeared to cost
+  **37.5 win points** (100% → 62.5%, flagged `stall`) — **RETRACTED.** That swing priced an artifact
+  of the harness, not deliberation: both arena players share one event loop, so the clock measured
+  ~0 ms of lead on every turn, labelled them all `auto` (0.25), and 0.25 is below
+  `clock.switchKeepThreshold`, which deleted the opponent's switch replies from the matrix for the
+  whole battle. The run now **declares** the opponent's pace (`normal` = the identity by default;
+  `--deliberation auto` prices a fast opponent), and section 7 of `tests/ablation_check.js` pins both
+  the artifact and the declaration. The clock tier is therefore live and honest, but its input is a
+  stated one — a flat row against a neutral opponent is the correct answer, not a measurement gap. `clock.ratingBands` changed at least one battle at 24 a side (the run no longer reports an
+  `identical` row) while its win-rate interval still included zero. `volatility` and `comeback`
+  ARRIVE now and still changed no battle at 24 a side — which is a fact about the charge, not about a
+  missing input: the sample teams carry almost no sub-100% move worth evaluating, so a 10% penalty on
+  Iron Head or Ruination is too small to flip a top line. Read every row of this table with the
+  ceiling in mind: the baseline wins **100%** against these three personas, so this arena shows harm
+  far more easily than gain.
 
 - **Showdown's new client decorated 0 of 4 move buttons — a silent no-op.** `_moveIdOf` resolved the
   classic client's `data-move` and then fell back to `U.toID(button.textContent)`. The new client
@@ -270,7 +343,9 @@ than the bug. Stated here rather than hidden:
     creates both players without a `rating` option, so @pkmn/sim emits
     `|player|p2|Adversary||` (verified against the sim), `state.opponentRating` stays null, and
     `OpponentClock.ratingFactor()` returns the identity by design.
-  - **`comeback` — unpriceable in this harness, same cause as `volatility`.** It scales only the
+  - **`comeback` — unpriceable in this harness, same cause as `volatility`** *(since fixed: the
+    bridge supplies the accuracy frame and the charge is live, though it still flips no line against
+    these movepools — see the Unreleased entry and ATTEMPTS.md D4)*. It scales only the
     volatility charge, and `_volatilityDelta` returns a zero penalty before it reaches that scale
     when `state.moveAccuracy` is empty — which it always is in the arena, because only
     `src/injected.js` populates it from the client's own `|stacc|` snapshot.
@@ -493,7 +568,8 @@ than the bug. Stated here rather than hidden:
   `quiescence`, `opponent_clock`'s `enabled`), so one variant per process is the only honest
   arrangement; and applying the same patch twice reports the same `from`/`to`, which the ablation's
   echo check depends on.
-- **`tests/ablation_check.js`** — 241 checks. It does not stop at `configGet`: after each patch it
+- **`tests/ablation_check.js`** — 241 checks when written (264 after the client-frame work above).
+  It does not stop at `configGet`: after each patch it
   builds a real `LaplaceEngine` and asserts the ENGINE changed, per flag, because a patch that only
   moved the config object would make every variant a baseline-vs-baseline comparison reported as
   "these features do nothing". It also pins every declared patch to a real FLIP of its leaf (a
@@ -513,7 +589,8 @@ than the bug. Stated here rather than hidden:
   row is flagged and the run prints a footnote saying to check the flag's INPUT before concluding
   anything about the feature. The first sweep produced exactly one such row, and it is a real
   defect in the harness rather than a verdict on the tier: **the volatility charge is
-  unpriceable in the arena.** `_accuracyOf` reads `state.moveAccuracy`, which only
+  unpriceable in the arena.** *(Since fixed: the bridge forwards `|stacc|` from the sim's dex. See
+  the Unreleased entry.)* `_accuracyOf` reads `state.moveAccuracy`, which only
   `src/injected.js` populates from the client's own `|stacc|` snapshot, and `@pkmn/sim` emits no
   such line — so the penalty is always 0 and toggling `laplace.volatility.enabled` cannot change a
   single decision. Measured: the variant reproduced the baseline battle for battle (41/2/17 wins,

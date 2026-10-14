@@ -268,6 +268,17 @@ function computeSwingTurn(fullLog) {
  * deterministically across the four lanes; null gets the fixed default. Determinism matters more
  * than elegance here: a seed that varied per run would make every arena number unreproducible.
  */
+/**
+ * A ladder rating for the `>player` frame, or null. `@pkmn/sim` writes `options.rating || ''` into
+ * the protocol's `|player|pX|name|avatar|rating` line and the engine's `_onPlayer` reads that
+ * field, so a null here is an EMPTY rating field — the previous behaviour — never a invented 0.
+ */
+function normalizeRating(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Math.round(Number(value));
+  return isFinite(n) ? n : null;
+}
+
 function normalizeSeed(seed) {
   if (seed === null || seed === undefined) return DEFAULT_SEED.slice();
   let values = Array.isArray(seed) ? seed.slice() : [seed];
@@ -294,6 +305,10 @@ class HeadlessBattleRunner {
     this.timeoutMs = typeof options.timeoutMs === 'number' ? options.timeoutMs : DEFAULT_TIMEOUT_MS;
     this.name1 = options.name1 || 'Tactician';
     this.name2 = options.name2 || 'Adversary';
+    /* Declared ladder ratings for the two seats, published on the `|player|` line. A null leaves
+     * the field empty (what every pre-existing run did), so this is opt-in per seat. */
+    this.rating1 = normalizeRating(options.rating1);
+    this.rating2 = normalizeRating(options.rating2);
     this.packed = { p1: null, p2: null };
     this.players = null;
     this.stream = null;
@@ -315,7 +330,7 @@ class HeadlessBattleRunner {
   }
 
   /** Start a battle. Returns `this` so a caller can chain `initBattle(...).runGame(...)`. */
-  initBattle(p1TeamPacked, p2TeamPacked, seed) {
+  initBattle(p1TeamPacked, p2TeamPacked, seed, options) {
     if (typeof p1TeamPacked !== 'string' || !p1TeamPacked) {
       throw new Error('initBattle: p1TeamPacked must be a sim-packed team string');
     }
@@ -327,6 +342,11 @@ class HeadlessBattleRunner {
     this.packed.p1 = p1TeamPacked;
     this.packed.p2 = p2TeamPacked;
     this.seed = normalizeSeed(seed === undefined ? null : seed);
+    /* Per-battle overrides, so one runner can seat two differently-rated players without being
+     * rebuilt between games. An absent value falls back to the constructor's. */
+    const seats = options || {};
+    const rating1 = seats.rating1 === undefined ? this.rating1 : normalizeRating(seats.rating1);
+    const rating2 = seats.rating2 === undefined ? this.rating2 : normalizeRating(seats.rating2);
     this.stream = new sim.BattleStreams.BattleStream();
     this.players = sim.BattleStreams.getPlayerStreams(this.stream);
     const self = this;
@@ -347,8 +367,12 @@ class HeadlessBattleRunner {
     })();
     const start = { formatid: this.format, seed: this.seed };
     this._writeStream('>start ' + JSON.stringify(start));
-    this._writeStream('>player p1 ' + JSON.stringify({ name: this.name1, team: p1TeamPacked }));
-    this._writeStream('>player p2 ' + JSON.stringify({ name: this.name2, team: p2TeamPacked }));
+    const p1Player = { name: this.name1, team: p1TeamPacked };
+    const p2Player = { name: this.name2, team: p2TeamPacked };
+    if (rating1 !== null) p1Player.rating = rating1;
+    if (rating2 !== null) p2Player.rating = rating2;
+    this._writeStream('>player p1 ' + JSON.stringify(p1Player));
+    this._writeStream('>player p2 ' + JSON.stringify(p2Player));
     return this;
   }
 

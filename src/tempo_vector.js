@@ -42,7 +42,12 @@
 
     /* ------------------------------------------------------------- vector */
 
-    /** computeVector(state) -> { v1..v10, dims:Float32Array(10), stallIndex } */
+    /** computeVector(state) -> { v1..v10, dims:Float32Array(10), stallIndex }
+     *
+     * `dims` is a COPY. `this._vec` is reused across calls, so handing the buffer out directly
+     * let any caller that wrote to `dims` corrupt every later vector (and read another turn's
+     * values back out of it). The per-dimension fields below stay plain doubles.
+     */
     computeVector(state) {
       const v = this._vec;
       const s = state || {};
@@ -71,7 +76,7 @@
       const result = {
         v1: dims[0], v2: dims[1], v3: dims[2], v4: dims[3], v5: dims[4],
         v6: dims[5], v7: dims[6], v8: dims[7], v9: dims[8], v10: dims[9],
-        dims: v,
+        dims: v.slice(),
         stallIndex: U.round2(dims[3]),
         protectPredicted: dims[3] > T('bunkerThreshold', 0.7),
         trUrgent: dims[0] > 0
