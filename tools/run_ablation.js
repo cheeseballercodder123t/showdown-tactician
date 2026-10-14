@@ -120,7 +120,47 @@ const FEATURES = [
     patch: { 'laplace.quiescence.extendSetup': false },
     expect: 'helps',
     note: 'Off leaves their SETUP reply priced as the no-op it used to be: they gain the boost and ' +
-      'do not get to use it in the same cell.'
+      'do not get to use it in the same cell.',
+    /* THE ROW THAT CONTRADICTS ITSELF ACROSS INSTRUMENTS. At the standard sample this tier is the ' +
+     * ONE clear HURTS row on the 60-battle MIRROR (switching it off +23.3 win points, 95% CI ' +
+     * [+8.3, +38.3]) while the re-anchored PERSONAS arena priced the same tier at HELPS +20.0 ' +
+     * [+10.0, +30.0]. Both intervals exclude zero, so the two instruments genuinely disagree and '
+     * the tie is left standing rather than resolved by picking the friendlier number. Two things '
+     * the reader should do with it: check \u0394score beside \u0394win (a binary win indicator ' +
+     * maps a cap tie to 0, so a variant that merely converts losses into 100-turn standoffs can read ' +
+     * flat or positive on it while giving up match points), and price the `quiescence-followup-damped` ' +
+     * row beside it, which tests the specific mechanism the asymmetry suggests (over-pricing a ' +
+     * full-strength Turn-2 boosted hit against a rational opponent). */
+    caveat: 'UNDECIDED BETWEEN INSTRUMENTS, NOT RESOLVED: mirror says HURTS +23.3 [+8.3, +38.3], ' +
+      'personas say HELPS +20.0 [+10.0, +30.0]. Read the \u0394score column and the ' +
+      '`score-split` flag alongside \u0394win here: the score scale (win 1 / tie 0.5 / loss 0) is ' +
+      'the one that can see a loss-for-tie trade, which is exactly how `urgency` first read flat on ' +
+      'the win indicator while its OFF arm had given up 9.2 points of match score.'
+  },
+  {
+    /* THE DAMPED FOLLOW-UP — the candidate this sweep is asked to accept or reject. The shipped
+     * config prices the setup extension's second exchange at FULL strength (`followUpWeight` 1.0);
+     * this row applies the damped candidate (0.5) as the VARIANT, so `direction: 'on'` and a HELPS
+     * verdict means the damped follow-up beat the shipped full-strength one. It exists because the
+     * `quiescence-extendsetup` row measures oppositely on the mirror (-23.3) and on the personas
+     * (+20.0), and one mechanism that would explain that asymmetry is over-pricing a full-strength
+     * boosted Turn-2 hit against a rational opponent that rarely clicks raw setup into an active
+     * threat. */
+    id: 'quiescence-followup-damped',
+    label: 'quiescence: follow-up x0.5 (on)',
+    tier: 'laplace',
+    direction: 'on',
+    parent: 'quiescence',
+    patch: { 'laplace.quiescence.followUpWeight': 0.5 },
+    expect: 'helps',
+    note: 'On (the variant), the setup extension prices only HALF of its second exchange, so a ' +
+      'full-strength Turn-2 boosted hit no longer dominates the cell. Off (the baseline) is the ' +
+      'shipped 1.0. The knob scales DAMAGE only: their boost still reaches the leaf, the Speed ' +
+      'order is still resolved, and a Belly Drum HP cost is still paid in full.',
+    caveat: 'DISARMED, NOT PROVEN: if this row comes back flat the honest reading is that the ' +
+      'follow-up weight is not the lever behind the mirror/personas split, NOT that the split is ' +
+      'explained. A flat row here means the mirror harm has some other cause and the ' +
+      '`quiescence-extendsetup` contradiction is still open.'
   },
   {
     id: 'quiescence-blockprotect',
@@ -363,14 +403,23 @@ const FEATURES = [
     note: 'Ships inert with maxBounty 0, so this row enables it with a 60-point cap.'
   },
   {
+    /* THE PRE-UPGRADE ENDGAME TIER, pinned to the bound it was written against. The tier shipped
+     * with `maxAlive` 2 and no chance node; the multi-ply pass widened it to 3 and taught it to
+     * price an ambiguous Speed order, and `endgame-3v3` below is that widened tier. Keeping BOTH
+     * rows means the pair answers the widening question against one baseline — this row is the old
+     * behaviour, that row is the new one — instead of the widening being invisible inside a single
+     * enabled-or-not flip. (Its note said "<=2 bodies a side" while the shipped bound had already
+     * moved to 3, so the patch now says what the note always claimed.) */
     id: 'endgame',
-    label: 'endgame solver (on)',
+    label: 'endgame solver, 2-body bound (on)',
     tier: 'inert',
     direction: 'on',
-    patch: { 'laplace.endgame.enabled': true },
+    patch: { 'laplace.endgame.enabled': true, 'laplace.endgame.maxAlive': 2,
+      'laplace.endgame.chanceNodes': false },
     expect: 'neutral',
-    note: 'Ships inert. On, it runs a bounded alpha-beta search with <=2 bodies a side. It ' +
-      'REFUSES outside its competence, so on most boards this is expected to be a no-op.'
+    note: 'Ships inert. On, it runs a bounded alpha-beta search with <=2 bodies a side and an ' +
+      'ambiguous Speed order REFUSES the solve. It refuses outside its competence, so on most ' +
+      'boards this is expected to be a no-op.'
   },
   {
     id: 'profile',
@@ -514,6 +563,116 @@ const FEATURES = [
       'bought was not even the agreement the tier was built for: the MOVE half rises 35.0% -> 53.8% ' +
       'while the SWITCH half FALLS 22.5% -> 16.5%, so the pivot rate came down (55.4% -> 29.2%, now ' +
       'UNDER the humans\' 33.8%) without the engine learning which pivot to make.',
+  },
+
+  /* ========================= the multi-ply horizon upgrades =================================
+   *
+   * Four tiers added in one pass: a second ply for the payoff matrix, a three-body endgame box, a
+   * graded Speed band inside it, stratified worlds, and a quantal-response opponent. Two of them
+   * (`beam-2ply`, `nash-qre`) ship OFF and are promoted only by their own row here. One
+   * (`endgame-3v3`) ships as a tier that is itself OFF, so its row is the enable. One
+   * (`sampler-stratify`) ships ON — its own tests prove what it covers (tests/tuning_check.js §6:
+   * six i.i.d. draws from a 7/2/1 pool repeat a set instead of covering the pool) — and is measured
+   * the way every shipped-ON tier is, by switching it off.
+   */
+  {
+    id: 'beam-2ply',
+    label: 'selective 2-ply beam (on)',
+    tier: 'laplace',
+    direction: 'on',
+    patch: { 'laplace.beam2Ply.enabled': true },
+    expect: 'helps',
+    note: 'On, the top 3 of our rows are re-priced against the top 3 of their replies by playing the ' +
+      'TURN OUT: the knockout resolves a replacement from the world\'s own roster, both sides pay ' +
+      'entry hazards, the field timers tick down, and the Turn-2 exchange is read off the resulting ' +
+      'board. The tier is a BEAM (3 x 3 x K cells, 54 on the shipped numbers) rather than a tree ' +
+      'because 9 x 9 x 6 is ~2,000 ms, and it blends at 0.35 so a cell the second ply cannot speak ' +
+      'to is left where the 1-ply matrix put it.',
+    caveat: 'THE HYPOTHESIS, NOT A RESULT: the tier exists because one ply cannot ask what a ' +
+      'knockout LEAVES BEHIND (tests/tuning_check.js §5 pins the swap it produces on a constructed ' +
+      'board: pricing the revenge killer puts Encore above a 120 BP STAB attack). Whether that ' +
+      'tactical improvement is worth its cost over a whole corpus is exactly what this row decides, ' +
+      'so the config ships it OFF until the row says otherwise.'
+  },
+  {
+    id: 'endgame-3v3',
+    label: 'endgame 3v3 + Speed chance node (on)',
+    tier: 'inert',
+    direction: 'on',
+    /* ONE LEAF, because the widened bounds ARE the shipped ones. `maxAlive` 3, 12 branching moves
+     * and `chanceNodes` true are what src/config.js carries, so restating them here would be three
+     * no-op leaves inside a patch that already flips `enabled` — the table's own no-op guard
+     * (tests/ablation_check.js §3) rejects exactly that, and rightly: a leaf printed as a flip that
+     * is not one is a lie about what the row did. The pre-upgrade bound is the `endgame` row above,
+     * which MOVES those leaves down to 2 / chance-node-off against this same baseline. */
+    patch: { 'laplace.endgame.enabled': true },
+    expect: 'helps',
+    note: 'On, the solver may search a 3v3 / 3v2 / 2v3 board (the shipped bound is maxAlive 3, 12 ' +
+      'branching moves and chance nodes on; a mate in 3 on that widened box is ' +
+      'pinned in tests/endgame_check.js §6, found in 64 nodes), and an ambiguous Speed order — our ' +
+      'exact Speed inside their [floor, ceiling] band — is priced as the weighted expectation over ' +
+      'the two orders instead of refusing the whole solve. A MATE IS NEVER CLAIMED THROUGH ONE: a ' +
+      'blend that lands inside the mate band is clamped to the top of the non-mate region, so ' +
+      '`solved` still means proven.',
+    caveat: 'COMPARE AGAINST THE `endgame` ROW, which is the same tier at its pre-upgrade 2-body ' +
+      'bound and without the chance node. Either row beating the baseline says the TIER is worth ' +
+      'having; the PAIR says whether the widening earned its extra nodes. The widened box is the one ' +
+      'place here that can spend the node budget, which is what `maxBranchingMoves` and ' +
+      '`nodeBudget` bound — an exhausted budget reports `{solved:false, reason:\'budget\'}` and ' +
+      'never a partial line dressed as a solution.'
+  },
+  {
+    /* THE ROW THAT MOVED ITS OWN DEFAULT. This tier was built ON — the coverage argument in its
+     * note is a property of the DRAW and provable without a battle — and its first win-rate reading
+     * went the other way, so the shipped build now ships the i.i.d. draw and THIS row is the
+     * promotion candidate (`direction: 'on'`, patching the leaf UP). That is why the direction is
+     * 'on' while every other row in this table that measures a shipped tier is 'off'. */
+    id: 'sampler-stratify',
+    label: 'stratified active-set worlds (on)',
+    tier: 'sampler',
+    direction: 'on',
+    patch: { 'sampler.stratifyActive': true },
+    expect: 'helps',
+    note: 'SHIPS OFF. On (the variant), the first min(K, distinct legal sets) worlds cover the ' +
+      'opponent\'s distinct legal ACTIVE sets one each, heaviest posterior first, carrying their own ' +
+      'posterior weights; the bench and every world past the stratum are drawn from the same seeded ' +
+      'stream as before, so a pinned world differs from its i.i.d. twin in the active set and ' +
+      'nothing else. Off (the baseline) is K independent draws, which at K = 6 is free to pick the ' +
+      'same active set four or five times and miss a 25 %-usage set entirely — and the ACTIVE body ' +
+      'is the one every cell of the matrix is priced against. A pinned set must still pass every ' +
+      'observation check, so this changes which worlds exist, never which facts are legal.',
+    caveat: 'MEASURED, AND THE PROMOTION LOST — which is why the default flipped. Mirror, 20 paired ' +
+      'battles, seed 1337, measured with the leaf the other way round (the stratified build was the ' +
+      'baseline then): the stratified arm won 40.0 % (8-10-2), the i.i.d. arm won 55.0 % (11-7-2). ' +
+      'That is +15.0 win points and +15.0 match points IN FAVOUR OF THE I.I.D. DRAW, CI [0.0, +30.1] ' +
+      'on the win indicator and [+2.5, +30.0] on match score — the score interval excludes zero and ' +
+      'the win interval\'s floor IS zero, so neither scale supports the tier and one is evidence ' +
+      'against it. A re-run of this row now starts from the flipped baseline, so its \u0394win is ' +
+      'expected to come back near -15. Two ways to read `identical` here, both needed: on a board ' +
+      'whose opponent pool has one legal set per body the row is inert BY CONSTRUCTION (there is ' +
+      'nothing to stratify), so a flat reading is not the mechanism being priced, while on a WIDE ' +
+      'pool (tests/tuning_check.js §6) the draw provably changes, so flat there is a result. Cost is ' +
+      'bounded either way — the same K worlds, the same draws, one replacement per pinned world.'
+  },
+  {
+    id: 'nash-qre',
+    label: 'quantal-response opponent (on)',
+    tier: 'laplace',
+    direction: 'on',
+    patch: { 'laplace.nash.qre.enabled': true },
+    expect: 'helps',
+    note: 'On, the opponent\'s column response inside fictitious play is a LOGIT softmax at ' +
+      'temperature `tau` (30 at `lowRating` 1100 and below, decaying linearly to 0 at ' +
+      '`highRating` 1850) instead of a hard argmax, so their mix spreads the way a noisy player\'s ' +
+      'replies do. OUR side keeps the hard best response, so the worst case we are willing to ' +
+      'accept is unchanged: QRE changes what we expect THEM to do, never the bound we play against.',
+    caveat: 'NOT PRICED ON THE MIRROR, BY DESIGN: the mirror league declares no rating for the ' +
+      'persona seat, and `_qreTau` resolves an unknown seat to the hard response (an unknown ' +
+      'opponent is not evidence of a noisy one). The rows that can price it are the personas, whose ' +
+      'declared bands (anchor 1700 / exploiter 1500 / chaos 1100) sit inside the ramp. The question ' +
+      'this row exists to answer is the one ATTEMPTS.md E5 left open — whether the ~8.3 % the hard ' +
+      'solve gave up against the pure softmax is the equilibrium being wrong about PEOPLE — so a ' +
+      'flat row is a result about the corpus, not a refutation of the tier.'
   }
 ];
 
@@ -789,10 +948,16 @@ function summarizeRun(payload) {
       score: r.winner === 'p1' ? 1 : (r.winner === 'p2' ? 0 : 0.5),
       /* Two scales, and they are NOT interchangeable. `win` is the indicator the headline delta and
        * its interval are computed on, so that the interval qualifies the number printed beside it.
-       * `score` (win 1 / tie 0.5 / loss 0) is carried for the mean-score readout only — bootstrapping
-       * on it while reporting a win-rate delta put the interval on a different scale from its own
-       * point estimate, which is how a delta of +15.0 came back with a 95% interval of
-       * [+1.7, +12.5]. */
+       * `score` (win 1 / tie 0.5 / loss 0) is the MATCH-POINT scale, carried for the second,
+       * independent interval `scoreCi` in compareToBaseline — never as a substitute for the win
+       * interval, because an interval must sit on the same scale as the point estimate it
+       * qualifies. (Bootstrapping on score while printing a win-rate delta is how a +15.0 point
+       * estimate once came back with a 95% interval of [+1.7, +12.5].)
+       *
+       * WHY THE SECOND SCALE EXISTS AT ALL: a binary win indicator maps a 100-turn tie to 0, so a
+       * change that converts 13 LOSSES into 13 STALL TIES moves it by exactly 0.0 — which is how
+       * `urgency` first measured as flat on the win indicator while its OFF variant had given up
+       * 9.2 points of match score. The score scale prices that conversion at 13 x 0.5 = +6.5. */
       win: r.winner === 'p1' ? 1 : 0,
       turns: r.turnCount || 0,
       faints: r.faints || 0,
@@ -813,6 +978,9 @@ function summarizeRun(payload) {
     stallTieShare: battles ? stallTies / battles : 0,
     totalTurns: perBattle.reduce(function (a, b) { return a + b.turns; }, 0),
     meanScore: mean(perBattle.map(function (b) { return b.score; })),
+    /* The match-point total (win 1 / tie 0.5 / loss 0), so a reader can see the raw ledger the mean
+     * is taken over. `matchPoints` is the SUM, `meanScore` the per-battle average. */
+    matchPoints: perBattle.reduce(function (a, b) { return a + b.score; }, 0),
     perBattle: perBattle
   };
   summary.avgTurns = battles ? summary.totalTurns / battles : 0;
@@ -928,6 +1096,16 @@ function compareToBaseline(baseSummary, variantSummary, descriptor, opts) {
   const ci = pairing.paired
     ? pairedBootstrap(baseSummary.winScores, variantSummary.winScores, boot, seed)
     : unpairedBootstrap(baseSummary.winScores, variantSummary.winScores, boot, seed);
+  /* THE MATCH-POINT INTERVAL, computed beside the win-rate one and reported on its OWN scale.
+   * A binary win indicator cannot see a loss converted into a stall tie (both read 0), so a policy
+   * that trades losses for ties looks flat on it. The score scale (win 1 / tie 0.5 / loss 0) does
+   * see it, and the two intervals disagreeing is itself a finding worth a flag — which is exactly
+   * how the `quiescence-extendsetup` contradiction (HELPS on the personas arena, HURTS on the
+   * mirror) is meant to be read. Neither scale is dropped: the headline `ci`/`deltaWin` stay on the
+   * win indicator, and `scoreCi`/`scoreDelta` are the second opinion beside them. */
+  const scoreCi = pairing.paired
+    ? pairedBootstrap(baseSummary.scores, variantSummary.scores, boot, seed)
+    : unpairedBootstrap(baseSummary.scores, variantSummary.scores, boot, seed);
   const deltaWin = variantSummary.winRate - baseSummary.winRate;
   const deltaScore = variantSummary.meanScore - baseSummary.meanScore;
   const deltaTurns = variantSummary.avgTurns - baseSummary.avgTurns;
@@ -940,6 +1118,11 @@ function compareToBaseline(baseSummary, variantSummary, descriptor, opts) {
   let variantVerdict = 'no effect';
   if (ci && ci.low > 0) variantVerdict = 'helps';
   else if (ci && ci.high < 0) variantVerdict = 'hurts';
+  /* The same significance test on the match-point scale. `scoreVerdict` is the variant's direction
+   * there ('helps' | 'hurts' | 'no measurable effect'), and it is reported even when it agrees. */
+  let scoreVerdict = 'no measurable effect';
+  if (scoreCi && scoreCi.low > 0) scoreVerdict = 'helps';
+  else if (scoreCi && scoreCi.high < 0) scoreVerdict = 'hurts';
 
   /* THE VERDICT IS ABOUT THE FEATURE, NOT ABOUT THE VARIANT.
    *
@@ -957,6 +1140,17 @@ function compareToBaseline(baseSummary, variantSummary, descriptor, opts) {
       ' (' + (direction === 'off' ? 'switching it off' : 'switching it on') + ' ' +
       fmtSigned(deltaWin * 100) + ')';
 
+  /* Direction-adjusted match-point verdict, read exactly the way `featureVerdict` is: a feature
+   * measured by switching it OFF improves the variant precisely when it HURTS the engine. */
+  let featureScoreVerdict = 'no measurable effect';
+  if (scoreVerdict === 'helps') featureScoreVerdict = direction === 'off' ? 'hurts' : 'helps';
+  else if (scoreVerdict === 'hurts') featureScoreVerdict = direction === 'off' ? 'helps' : 'hurts';
+  /* The scales SPLITTING is the signal, not an inconsistency to smooth over: one interval says the
+   * feature helps and the other says it hurts. It is flagged rather than resolved, because which
+   * instrument is right is a question about the corpus, not about the arithmetic. */
+  const scoreSplit = featureVerdict !== 'no measurable effect' && featureScoreVerdict !== 'no measurable effect' &&
+    featureVerdict !== featureScoreVerdict;
+
   /* A surprise is the most valuable row in the table, so it gets its own flag: the author expected
    * this feature to help and a significant interval says it does the opposite (or vice versa). */
   const surprise = !!d.expect && d.expect !== 'neutral' && featureVerdict !== 'no measurable effect' &&
@@ -965,6 +1159,7 @@ function compareToBaseline(baseSummary, variantSummary, descriptor, opts) {
   const flags = [];
   if (surprise) flags.push('surprise');
   if (stallFlag) flags.push('stall');
+  if (scoreSplit) flags.push('score-split');
   if (!pairing.paired) flags.push('unpaired');
   if (variantSummary.errors) flags.push('errors:' + variantSummary.errors);
   /* Only meaningful for a variant that patched something: the baseline is trivially identical to
@@ -983,6 +1178,16 @@ function compareToBaseline(baseSummary, variantSummary, descriptor, opts) {
     direction: direction,
     variantVerdict: variantVerdict,
     featureVerdict: featureVerdict,
+    /* The match-point second opinion. `scoreDelta` and `deltaScore` are the same number under two
+     * names — `deltaScore` is the pre-existing key and `scoreDelta` is the one the table and the
+     * docs use, kept in lockstep so neither drifts. */
+    scoreVerdict: scoreVerdict,
+    featureScoreVerdict: featureScoreVerdict,
+    scoreSplit: scoreSplit,
+    scoreDelta: deltaScore,
+    scoreCi: scoreCi,
+    scoreRate: variantSummary.meanScore,
+    baseScoreRate: baseSummary.meanScore,
     surprise: surprise,
     battles: variantSummary.battles,
     wins: variantSummary.wins, losses: variantSummary.losses, ties: variantSummary.ties,
@@ -1006,7 +1211,7 @@ function compareToBaseline(baseSummary, variantSummary, descriptor, opts) {
  * a feature can both help and stall, and a stalled feature is worth seeing in both lists.
  */
 function summarizeVerdicts(rows) {
-  const out = { helps: [], hurts: [], stall: [], surprise: [], noEffect: [], notMeasured: [] };
+  const out = { helps: [], hurts: [], stall: [], surprise: [], scoreSplit: [], noEffect: [], notMeasured: [] };
   (rows || []).forEach(function (r) {
     if (r.id === 'baseline') return;
     if (r.flags.indexOf('failed') !== -1 || r.flags.indexOf('no-baseline') !== -1) {
@@ -1018,6 +1223,7 @@ function summarizeVerdicts(rows) {
     else out.noEffect.push(r.id);
     if (r.flags.indexOf('stall') !== -1) out.stall.push(r.id);
     if (r.flags.indexOf('surprise') !== -1) out.surprise.push(r.id);
+    if (r.flags.indexOf('score-split') !== -1) out.scoreSplit.push(r.id);
   });
   return out;
 }
@@ -1146,6 +1352,12 @@ function renderVerdicts(groups, out) {
     '  no measurable effect:            ' + list(groups.noEffect),
     '  stalls / longer games:           ' + list(groups.stall)
   ];
+  if (groups.scoreSplit && groups.scoreSplit.length) {
+    /* The two scales disagreeing about the SAME feature. Printed above the surprise line because
+     * it is the more interesting finding: a feature is not flat, it is measuring differently. */
+    lines.push('  MATCH-POINT vs WIN-RATE SPLIT:    ' + groups.scoreSplit.join(', ') +
+      '  (one interval says HELPS, the other HURTS -- see the \u0394score columns)');
+  }
   if (groups.surprise && groups.surprise.length) {
     lines.push('  SURPRISED THE AUTHOR (see expect): ' + groups.surprise.join(', '));
   }
@@ -1170,21 +1382,30 @@ function renderFeatureList(out) {
 function renderTable(rows, out) {
   const write = out || console.log;
   const lines = [];
-  /*  id/label 30 | W 5 L 5 T 5 | win% 7 | dwin 7 | CI 17 | turns 7 | dturns 7 | stall 7 | verdict */
+  /*  id/label 30 | W 5 L 5 T 5 | win% 7 | dwin 7 | CI 17 | score% 8 | dscore 8 | scoreCI 23 |
+   *  turns 7 | dturns 7 | stall 7 | verdict */
   lines.push('  ' + pad('variant', 30) + pad('W', 5, true) + pad('L', 5, true) + pad('T', 5, true) +
     pad('win%', 8, true) + pad('loss%', 8, true) + pad('tie%', 8, true) +
     pad('\u0394win', 8, true) + pad('95% CI (\u0394win)', 22, true) +
+    pad('score%', 8, true) + pad('\u0394score', 8, true) + pad('95% CI (\u0394score)', 23, true) +
     pad('turns', 8, true) + pad('\u0394turns', 8, true) + pad('stall%', 8, true) + '  verdict');
   rows.forEach(function (r) {
     const ciText = r.ci
       ? '[' + fmtSigned(r.ci.low * 100) + ', ' + fmtSigned(r.ci.high * 100) + ']'
       : '—';
+    const scoreCiText = r.scoreCi
+      ? '[' + fmtSigned(r.scoreCi.low * 100) + ', ' + fmtSigned(r.scoreCi.high * 100) + ']'
+      : '—';
     const deltaText = r.id === 'baseline' ? '—' : fmtSigned(r.deltaWin * 100);
+    const scoreDeltaText = (r.id === 'baseline' || typeof r.scoreDelta !== 'number')
+      ? '—' : fmtSigned(r.scoreDelta * 100);
+    const scoreRateText = typeof r.scoreRate === 'number' ? fmtPct(r.scoreRate) : '—';
     const turnText = r.id === 'baseline' ? '—' : fmtSigned(r.deltaTurns);
     const verdict = r.id === 'baseline' ? '(reference)' : (r.verdict + (r.flags.length ? ' [' + r.flags.join(', ') + ']' : ''));
     lines.push('  ' + pad(clampText(r.label, 29), 30) + pad(r.wins, 5, true) + pad(r.losses, 5, true) +
       pad(r.ties, 5, true) + pad(fmtPct(r.winRate), 8, true) + pad(fmtPct(r.lossRate), 8, true) +
       pad(fmtPct(r.tieRate), 8, true) + pad(deltaText, 8, true) + pad(ciText, 22, true) +
+      pad(scoreRateText, 8, true) + pad(scoreDeltaText, 8, true) + pad(scoreCiText, 23, true) +
       pad(r.avgTurns.toFixed(1), 8, true) + pad(turnText, 8, true) +
       pad(fmtPct(r.stallTieShare), 8, true) + '  ' + verdict);
   });
@@ -1302,6 +1523,9 @@ async function main(argv) {
     row.surprise = false;
     row.flags = [];
     row.ci = null;
+    row.scoreCi = null;
+    row.scoreVerdict = 'reference';
+    row.featureScoreVerdict = 'reference';
     row.pairing = { paired: true, reason: 'reference' };
     rows.push(row);
   }
@@ -1313,7 +1537,8 @@ async function main(argv) {
         expect: entry && entry.variant.expect, note: entry && entry.variant.note, failure: entry ? entry.failure : 'the batch produced no result',
         battles: 0, wins: 0, losses: 0, ties: 0, winRate: 0, lossRate: 0, tieRate: 0,
         avgTurns: 0, stallTies: 0, stallTieShare: 0, errors: 0,
-        deltaWin: 0, deltaTurns: 0, deltaStall: 0, ci: null,
+        deltaWin: 0, deltaScore: 0, scoreDelta: 0, deltaTurns: 0, deltaStall: 0, ci: null, scoreCi: null,
+        scoreRate: 0, scoreVerdict: 'not measured', featureScoreVerdict: 'not measured', scoreSplit: false,
         direction: entry && entry.variant ? entry.variant.direction : 'off',
         variantVerdict: 'not measured', featureVerdict: 'not measured', surprise: false,
         pairing: { paired: false, reason: 'batch failed' },
@@ -1331,7 +1556,8 @@ async function main(argv) {
         battles: s.battles, wins: s.wins, losses: s.losses, ties: s.ties,
         winRate: s.winRate, lossRate: s.lossRate, tieRate: s.tieRate, avgTurns: s.avgTurns,
         stallTies: s.stallTies, stallTieShare: s.stallTieShare, errors: s.errors,
-        deltaWin: 0, deltaTurns: 0, deltaStall: 0, ci: null,
+        deltaWin: 0, deltaScore: 0, scoreDelta: 0, deltaTurns: 0, deltaStall: 0, ci: null, scoreCi: null,
+        scoreRate: s.meanScore, scoreVerdict: 'not measured', featureScoreVerdict: 'not measured', scoreSplit: false,
         direction: entry.variant.direction,
         variantVerdict: 'not measured', featureVerdict: 'not measured', surprise: false,
         pairing: { paired: false, reason: 'baseline missing' },
@@ -1355,8 +1581,10 @@ async function main(argv) {
   console.log('  battles per variant: ' + opts.battles + ' | seed: ' + opts.seed + ' | agent: ' + opts.agent +
     ' | max turns: ' + opts.maxTurns + ' | stall = +' + STALL_TURN_DELTA + ' turns or +' +
     Math.round(STALL_TIMEOUT_SHARE * 100) + 'pt stall share vs baseline');
-  console.log('  delta is variant minus baseline on the SAME battles; the CI is a ' + BOOTSTRAP_B +
+  console.log('  delta is variant minus baseline on the SAME battles; each CI is a ' + BOOTSTRAP_B +
     '-resample paired bootstrap over battles (95% percentile interval)');
+  console.log('  \u0394win scores a tie 0 (binary indicator) and \u0394score scores it 0.5 (match points, win 1 / tie .5 / loss 0);');
+  console.log('  the two are reported side by side because a tie-for-loss trade is invisible to \u0394win alone.');
   console.log('  "no measurable effect" means the interval straddles zero at this sample size, not that the flag is inert.');
   console.log('  wall clock: ' + elapsedSec.toFixed(1) + 's');
 

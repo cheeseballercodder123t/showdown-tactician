@@ -34,9 +34,18 @@
    * loss). Each side then best-responds to the other's empirical history — the classic
    * Brown-Robinson iteration, which converges to a Nash equilibrium in zero-sum games.
    *
+   * QRE (`qre = { tau }`, see config.laplace.nash.qre): the OPPONENT's column response is a LOGIT
+   * softmax at temperature `tau` over their cumulative payoffs instead of an argmax, so their mix
+   * spreads the way a noisy player's replies do — and, because the responses are mixtures, the
+   * empirical counts they leave behind are accumulated as mixtures too (the average response is the
+   * expected count, which keeps both strategies summing to 1). OUR side keeps the hard best
+   * response, so the mix we publish is still bounded by the same matrix: QRE here changes what we
+   * expect THEM to do, never the worst case we are willing to accept. `tau <= 0`, or no `qre` at
+   * all, runs the shipped hard-argmax loop step for step.
+   *
    * -> { myStrategy, oppStrategy, rowValues } with probabilities in [0, 1].
    */
-  function solveNashFictitiousPlay(payoffMatrix, iterations) {
+  function solveNashFictitiousPlay(payoffMatrix, iterations, qre) {
     const rows = Array.isArray(payoffMatrix) ? payoffMatrix.length : 0;
     const cols = rows && Array.isArray(payoffMatrix[0]) ? payoffMatrix[0].length : 0;
     if (!rows || !cols) return { myStrategy: [], oppStrategy: [], rowValues: [] };
@@ -45,11 +54,14 @@
     const oppCount = new Array(cols).fill(0);
     const myCum = new Array(rows).fill(0);
     const oppCum = new Array(cols).fill(0);
+    const tau = (qre && typeof qre.tau === 'number' && isFinite(qre.tau) && qre.tau > 0) ? qre.tau : 0;
     let myAction = 0;
     let oppAction = 0;
+    let oppMix = null;                       // the last SOFT column response; null on the hard path
     for (let t = 0; t < iters; t++) {
       myCount[myAction]++;
-      oppCount[oppAction]++;
+      if (oppMix) for (let j = 0; j < cols; j++) oppCount[j] += oppMix[j];
+      else oppCount[oppAction]++;
       for (let i = 0; i < rows; i++) myCum[i] += payoffMatrix[i][oppAction];
       for (let j = 0; j < cols; j++) oppCum[j] -= payoffMatrix[myAction][j];
       let bestI = 0;
@@ -58,6 +70,27 @@
       for (let j = 1; j < cols; j++) if (oppCum[j] > oppCum[bestJ]) bestJ = j;
       myAction = bestI;
       oppAction = bestJ;
+      if (tau > 0) {
+        /* The SOFT response. `oppCum` is THEIR cumulative payoff (it is accumulated as the
+         * negation of ours), so the logit is a straight softmax over it; the max is subtracted
+         * before the exponential (the standard stabiliser) so a matrix in the thousands cannot
+         * overflow it into NaN. */
+        let max = -Infinity;
+        for (let j = 0; j < cols; j++) if (oppCum[j] > max) max = oppCum[j];
+        const mix = new Array(cols);
+        let total = 0;
+        for (let j = 0; j < cols; j++) {
+          const w = Math.exp((oppCum[j] - max) / tau);
+          mix[j] = w;
+          total += w;
+        }
+        if (total > 0) {
+          for (let j = 0; j < cols; j++) mix[j] = mix[j] / total;
+          oppMix = mix;
+        } else {
+          oppMix = null;                   // nothing to spread: keep the hard response this round
+        }
+      }
     }
     const myStrategy = myCount.map(function (c) { return c / iters; });
     const oppStrategy = oppCount.map(function (c) { return c / iters; });
@@ -117,8 +150,30 @@
         enabled: cfgGet('laplace.quiescence.enabled', true),
         extendSetup: cfgGet('laplace.quiescence.extendSetup', true),
         blockProtect: cfgGet('laplace.quiescence.blockProtect', true),
-        respectTurn2Speed: cfgGet('laplace.quiescence.respectTurn2Speed', true)
+        respectTurn2Speed: cfgGet('laplace.quiescence.respectTurn2Speed', true),
+        // How much of the setup EXTENSION's second exchange to price (see config.js). 1.0 is the
+        // full-strength follow-up and `x * 1` is bit-identical to it, so this knob cannot move a
+        // shipped cell unless it is deliberately changed.
+        followUpWeight: cfgGet('laplace.quiescence.followUpWeight', 1)
       }, options.quiescence || {});
+      // The 2-ply beam (the multi-ply horizon upgrade). `enabled: false` is the shipped build and
+      // leaves the 1-ply matrix untouched; the refinement is a measure-before-adopt tier.
+      this.beam2Ply = Object.assign({
+        enabled: cfgGet('laplace.beam2Ply.enabled', false),
+        topMy: cfgGet('laplace.beam2Ply.topMy', 3),
+        topOpp: cfgGet('laplace.beam2Ply.topOpp', 3),
+        blendWeight: cfgGet('laplace.beam2Ply.blendWeight', 0.35),
+        threatWeight: cfgGet('laplace.beam2Ply.threatWeight', 1)
+      }, options.beam2Ply || {});
+      // Quantal Response Equilibrium. `enabled: false` keeps the hard best-response of fictitious
+      // play exactly; the tier exists so the measured upside of a non-Nash opponent model can be
+      // ablated without giving up minimax safety.
+      this.qre = Object.assign({
+        enabled: cfgGet('laplace.nash.qre.enabled', false),
+        tau: cfgGet('laplace.nash.qre.tau', 30),
+        highRating: cfgGet('laplace.nash.qre.highRating', 1850),
+        lowRating: cfgGet('laplace.nash.qre.lowRating', 1100)
+      }, (options.nash && options.nash.qre) || options.qre || {});
       // The three 1-ply leaf corrections, each with its own switch and each the EXACT identity when
       // off (see _payoff, _pivotPayoff, _setupFollowUp).
       this.realOppSwitch = Object.assign({
@@ -192,6 +247,7 @@
         ? new ST.EndgameSolver({ damage: this.damage, evaluator: this.evaluator })
         : null);
       this._oppSeen = null;        // the opponent snapshot the profiler's observation feed compares to
+      this._reread = false;        // true while a re-read of the same window is in flight (see evaluateTurn)
       this._lastOppMix = null;     // the equilibrium mix published for the turn just resolved
       this._oppSwitchFactor = 1;   // this turn's column factor from the profiler (1 = inert)
       this._winconPlan = null;     // this turn's win-condition plan (null = no bounty)
@@ -450,6 +506,18 @@
     }
 
     /* ------------------------------------------------ risk-adjusted volatility */
+
+    /**
+     * The fraction of the setup extension's second exchange to price (see config.js
+     * `laplace.quiescence.followUpWeight`). Returns exactly 1 for a missing, non-finite or
+     * out-of-range value, so `x * 1` -- an exact IEEE multiplication -- is what an untouched build
+     * gets.
+     */
+    _followUpWeight() {
+      const w = this.quiescence && this.quiescence.followUpWeight;
+      if (typeof w !== 'number' || !isFinite(w)) return 1;
+      return U.clamp(w, 0, 1);
+    }
 
     /** The accuracy the client's own dex reported for this action, or null when unknown. */
     _accuracyOf(state, action) {
@@ -1458,10 +1526,13 @@
      * click Dragon Dance" scored as a free hit for us) and their PROTECT (which blocks our move on
      * the real board, so a line that KOs their body scored the lethal bonus through the shield).
      */
-    _payoff(myAction, oppAction, state, field, world) {
+    _payoff(myAction, oppAction, state, field, world, trace) {
       const myActive = state.active && state.active.my;
       const oppActive = state.active && state.active.opp;
-      if (!myActive || !oppActive || !this.evaluator) return 0;
+      if (!myActive || !oppActive || !this.evaluator) {
+        if (trace) trace.failed = true;
+        return 0;
+      }
       let myHp = this._hp(myActive);
       let oppHp = this._hp(oppActive);
       let mySideMon = myActive;
@@ -1609,10 +1680,290 @@
         const paid = this.wincon.bonus(this._winconPlan, this._faintedIds(sim));
         if (paid) score += paid;
       }
+      /* The 2-ply beam's out-parameter. `_payoff` is the only thing that knows the board a cell
+       * LEAVES BEHIND -- which body switched in, the HP after its entry hazards, a pivot's incoming
+       * body -- so a caller refining cells hands in an empty object and gets that board back instead
+       * of re-deriving it from the same prices. Every other caller passes nothing, so the hot path
+       * pays one falsy check for a feature it does not use. */
+      if (trace) {
+        trace.myHp = myHp;
+        trace.oppHp = oppHp;
+        trace.mySideMon = mySideMon;
+        trace.oppSideMon = oppSideMon;
+        trace.score = score;
+      }
       return score;
     }
 
-    /* ----------------------------------------------------------- optional tiers */
+    /* ------------------------------------------------------------- 2-ply beam */
+
+    /**
+     * Is the selective 2-ply beam live for this call?
+     *
+     * `laplace.beam2Ply.enabled` is the switch and it ships FALSE, because this tier is measured
+     * before it is adopted. A blend weight of 0 counts as OFF rather than as a harmless no-op:
+     * `0 * v2` is NaN whenever `v2` is not finite, and a NaN cell would poison the row it was
+     * supposed to leave alone. `force` is the background ponder's own switch (src/content.js),
+     * which may run the beam for its deeper readout even while the shipped default has it off —
+     * that pass advises, it does not emit the choice.
+     */
+    _beam2PlyOn(force) {
+      const b = this.beam2Ply;
+      if (!b || (b.enabled === false && !force) || !this.evaluator || !this.damage) return false;
+      const w = b.blendWeight;
+      if (!(typeof w === 'number' && isFinite(w) && w > 0)) return false;
+      return Math.floor(b.topMy) > 0 && Math.floor(b.topOpp) > 0;
+    }
+
+    /**
+     * _refineBeam2Ply(rawMatrix, worldRaw, myActions, allOppActions, ranked, state, worlds) -> plan
+     *
+     * The 1-ply Nash-filtered beam. A full 2-ply tree is `|myActions| x |theirReplies| x K`
+     * evaluations — 9 x 9 across 6 worlds is 486 cells, ~2000 ms, and blows any phone budget — so
+     * the refinement is restricted to the top `topMy` non-vetoed rows and the top `topOpp` columns.
+     * That is the tier's ceiling: at most topMy x topOpp x K extra cells (9 x 6 = 54 on the shipped
+     * numbers), each one a leaf evaluation plus two damage searches that the engine's per-turn
+     * damage cache already serves.
+     *
+     * SELECTION IS BY 1-PLY EXPECTED VALUE, deliberately, rather than by a preliminary Nash solve:
+     * it is one pass over a matrix the caller has already built, it is deterministic under ties (low
+     * index wins), and a preliminary 2000-round fictitious play would be added to EVERY turn to
+     * answer a question the EV ordering answers well enough at these sizes. Rows are ranked by their
+     * mean priced cell; COLUMNS are ranked worst-for-us-first, which is the conservative reading of
+     * "their most plausible replies" — the tier exists to see the follow-up that hurts.
+     *
+     * Every refined cell is `(1 - blendWeight) * ply1 + blendWeight * ply2`, where `ply1` is the
+     * cell's own world-weighted 1-ply payoff and `ply2` the world-weighted Turn T+1 value from
+     * `_ply2Value`. When a world could not price its follow-up (a refused trace) the 2-ply average
+     * is taken over the worlds that could, which is a stated approximation rather than a silent one.
+     *
+     * Returns `{ rows, cols, cells, worlds, blendWeight }` for the readout, or null when no cell was
+     * refined at all.
+     */
+    _refineBeam2Ply(rawMatrix, worldRaw, myActions, allOppActions, ranked, state, worlds) {
+      const b = this.beam2Ply;
+      const colCount = allOppActions.length;
+      if (!colCount || !myActions.length || !worldRaw || !worldRaw.length) return null;
+      const topMy = Math.max(1, Math.min(Math.floor(b.topMy), myActions.length));
+      const topOpp = Math.max(1, Math.min(Math.floor(b.topOpp), colCount));
+
+      const rowVal = [];
+      for (let i = 0; i < myActions.length; i++) {
+        if (ranked[i] && ranked[i].isVetoed) continue;      // a vetoed row is not a candidate answer
+        let sum = 0, n = 0;
+        for (let j = 0; j < colCount; j++) if (rawMatrix[i][j] !== null) { sum += rawMatrix[i][j]; n++; }
+        if (n) rowVal.push({ i: i, v: sum / n });
+      }
+      if (!rowVal.length) return null;
+      rowVal.sort(function (a, b2) { return b2.v - a.v || a.i - b2.i; });
+
+      const colVal = [];
+      for (let j = 0; j < colCount; j++) {
+        let sum = 0, n = 0;
+        for (let i = 0; i < myActions.length; i++) if (rawMatrix[i][j] !== null) { sum += rawMatrix[i][j]; n++; }
+        if (n) colVal.push({ j: j, v: sum / n });
+      }
+      colVal.sort(function (a, b2) { return a.v - b2.v || a.j - b2.j; });
+      if (!colVal.length) return null;
+
+      const rows = rowVal.slice(0, topMy).map(function (r) { return r.i; });
+      const cols = colVal.slice(0, topOpp).map(function (c) { return c.j; });
+      const blend = U.clamp(b.blendWeight, 0, 1);
+      const field = state.field || {};
+      let cells = 0;
+
+      for (let r = 0; r < rows.length; r++) {
+        const i = rows[r];
+        const mine = myActions[i];
+        for (let c = 0; c < cols.length; c++) {
+          const j = cols[c];
+          if (rawMatrix[i][j] === null) continue;
+          const their = allOppActions[j];
+          let ply2Sum = 0, wSum = 0;
+          for (let w = 0; w < worlds.length; w++) {
+            const wd = worldRaw[w];
+            if (!wd) continue;
+            const local = wd.localByGlobal[j];
+            if (typeof local !== 'number') continue;            // this world had no such reply
+            const trace = (wd.traces && wd.traces[i]) ? wd.traces[i][local] : null;
+            if (!trace || trace.failed) continue;
+            const v2 = this._ply2Value(trace, state, field, worlds[w]);
+            if (typeof v2 !== 'number' || !isFinite(v2)) continue;
+            ply2Sum += wd.wgt * v2;
+            wSum += wd.wgt;
+          }
+          if (!(wSum > 0)) continue;
+          rawMatrix[i][j] = (1 - blend) * rawMatrix[i][j] + blend * (ply2Sum / wSum);
+          cells++;
+        }
+      }
+      if (!cells) return null;
+      return { rows: rows, cols: cols, cells: cells, worlds: worlds.length, blendWeight: blend };
+    }
+
+    /**
+     * _ply2Value(trace, state, field, world) -> the value of the board Turn T+1 starts from.
+     *
+     * WHAT THIS SEES THAT ONE PLY CANNOT: "that hit faints their body, and the body replacing it
+     * outruns us" is a fact about turn T+1 that a turn-T cell scores as an ordinary KO. The board is
+     * the one `_payoff` just left behind (through the trace), with three things applied:
+     *
+     *   1. POST-KO REVENGE REPLACEMENT. A body that fainted is replaced by the best surviving
+     *      responder — theirs from the sampled world's own roster, ours from our team — each paying
+     *      its side's entry hazards and each priced by the damage engine. A side with nothing left
+     *      is the terminal win/loss at once (and a mutual wipe is a draw, not a win).
+     *   2. THE FIELD TICKS. Trick Room, weather and terrain lose a turn, and a Trick Room that
+     *      expires is OFF for the leaf rather than merely sitting at 0.
+     *   3. THE T+1 EXCHANGE. The evaluator's read of that board, plus the best-outgoing minus
+     *      best-incoming threat differential on the new active pair (also read from the engine), plus
+     *      the lethal bonus for a body that fainted this turn.
+     *
+     * STATED APPROXIMATIONS, both of which are why the result is BLENDED with the 1-ply cell instead
+     * of replacing it: the pair's own turn-T+1 moves are priced as a differential rather than
+     * resolved in Speed order, and a replacement taken from a sampled world roster is APPENDED to
+     * the board rather than mapped onto our own read of that team's bench slot.
+     */
+    _ply2Value(trace, state, field, world) {
+      if (!trace || typeof trace.myHp !== 'number' || typeof trace.oppHp !== 'number') return null;
+      let myMon = trace.mySideMon;
+      let oppMon = trace.oppSideMon;
+      if (!myMon || !oppMon) return null;
+      let myHp = trace.myHp;
+      let oppHp = trace.oppHp;
+      const oppFainted = oppHp <= 0;
+      const myFainted = myHp <= 0;
+
+      if (oppFainted) {
+        const responder = this._bestReplacement('opp', state, field, myMon, oppMon, world);
+        if (!responder) return myFainted ? 0 : this.lethalBonus;
+        oppMon = responder.mon;
+        oppHp = responder.hp;
+      }
+      if (myFainted) {
+        const relief = this._bestReplacement('my', state, field, oppMon, myMon, world);
+        if (!relief) return -this.lethalBonus;
+        myMon = relief.mon;
+        myHp = relief.hp;
+      }
+
+      const f1 = this._tickField(field);
+      const board = this._ply2Board(state, myMon, myHp, oppMon, oppHp, f1);
+      let value = this.evaluator.evaluate(board);
+      const tw = (typeof this.beam2Ply.threatWeight === 'number' && isFinite(this.beam2Ply.threatWeight))
+        ? this.beam2Ply.threatWeight : 1;
+      if (tw) {
+        const mine = this._bestMoveWithDamage(myMon, oppMon, f1);
+        const theirs = this._bestMoveWithDamage(oppMon, myMon, f1);
+        const myDamage = mine.damage ? mine.damage.avgPercent : 0;
+        const theirDamage = theirs.damage ? theirs.damage.avgPercent : 0;
+        value += tw * (myDamage - theirDamage);
+      }
+      // The KO really happened even though a replacement arrived, so the bonus is still paid.
+      if (oppFainted) value += this.lethalBonus;
+      if (myFainted) value -= this.lethalBonus;
+      return value;
+    }
+
+    /** One turn of field timers, on a COPY — the 2-ply leaf never writes through to the live board. */
+    _tickField(field) {
+      const f = Object.assign({}, field || {});
+      if (typeof f.trickRoomTurnsLeft === 'number') {
+        f.trickRoomTurnsLeft = Math.max(0, f.trickRoomTurnsLeft - 1);
+        if (f.trickRoomTurnsLeft === 0) f.trickRoom = false;
+      }
+      if (typeof f.weatherTurnsLeft === 'number') f.weatherTurnsLeft = Math.max(0, f.weatherTurnsLeft - 1);
+      if (typeof f.terrainTurnsLeft === 'number') f.terrainTurnsLeft = Math.max(0, f.terrainTurnsLeft - 1);
+      return f;
+    }
+
+    /**
+     * _ply2Board(state, myMon, myHp, oppMon, oppHp, field) -> a leaf board for Turn T+1.
+     *
+     * Deliberately NOT `_leafState`: that builder's team mapping exists to express a PIVOT on our
+     * side (an incoming body taking the active slot while the outgoing one keeps its own HP). A
+     * faint-replacement is a different shape — the body that left is GONE and a survivor takes its
+     * place — and teaching `_leafState` both would put a second, subtler mapping on the hot path of
+     * every turn in the tree. This builder puts the two asked-for bodies on the field, leaves every
+     * other body at its own HP, and is the only place the 2-ply tier writes a board.
+     */
+    _ply2Board(state, myMon, myHp, oppMon, oppHp, field) {
+      const mkActive = function (mon, hp) {
+        const copy = Object.create(mon);
+        copy.hp = hp;
+        copy.hpPercent = hp;
+        copy.fainted = hp <= 0;
+        copy.isActive = true;
+        return copy;
+      };
+      const myActive = mkActive(myMon, myHp);
+      const oppActive = mkActive(oppMon, oppHp);
+      const buildTeam = function (list, activeMon, activeClone) {
+        const out = [];
+        const src = list || [];
+        let placed = false;
+        for (let i = 0; i < src.length; i++) {
+          const m = src[i];
+          if (!m) continue;
+          /* A body that IS the active one takes the active clone (its HP for this board); every
+           * other body keeps its own entry, including a fainted one that is still on the team. A
+           * replacement that is not in this list at all is appended below. */
+          if (m === activeMon) { out.push(activeClone); placed = true; continue; }
+          out.push(m);
+        }
+        if (!placed) out.push(activeClone);
+        return out;
+      };
+      return {
+        myTeam: buildTeam(state.myTeam, myMon, myActive),
+        oppTeam: buildTeam(state.oppTeam, oppMon, oppActive),
+        active: { my: myActive, opp: oppActive },
+        field: field,
+        bench: state.bench,
+        protect: state.protect,
+        recoveryPP: state.recoveryPP,
+        terastallizationBanned: state.terastallizationBanned,
+        mySide: state.mySide,
+        oppSide: state.oppSide,
+        turn: state.turn
+      };
+    }
+
+    /**
+     * _bestReplacement(side, state, field, target, departing, world) -> { mon, hp } | null
+     *
+     * WHO COMES IN after a faint, priced by the damage engine and by nothing else:
+     *   - THEIR side ('opp'): the survivor from the sampled world's own roster that threatens our
+     *     new active body MOST — the revenge killer. The world roster is preferred because it
+     *     carries the set the sampler weighted (item, ability, spread).
+     *   - OUR side ('my'): the survivor that threatens THEIR body most, with `_matchupScore` as the
+     *     tie-break.
+     * Both pay their side's entry hazards, and a body that would faint on entry is not a candidate
+     * at all. Returns null when no body can come in, which the caller reads as the terminal result.
+     */
+    _bestReplacement(side, state, field, target, departing, world) {
+      const theirs = side === 'opp';
+      const list = theirs
+        ? ((world && world.team && world.team.length) ? world.team : (state.oppTeam || []))
+        : (state.myTeam || []);
+      let best = null, bestScore = -Infinity, bestHp = 0;
+      for (let i = 0; i < list.length; i++) {
+        const mon = list[i];
+        if (!mon || mon.fainted || mon === departing) continue;
+        if (this._hp(mon) <= 0) continue;
+        const hp = theirs ? this._oppSwitchInHp(mon, state, field) : this._switchInHp(mon, state, field);
+        if (!(hp > 0)) continue;
+        const res = this._bestMoveWithDamage(mon, target, field);
+        let score = res.damage ? res.damage.avgPercent : 0;
+        if (!theirs) {
+          /* Damage first, matchup as the tie-break: `_matchupScore` is in evaluator units
+           * (+/-1000), so scaling the damage past it keeps bulk/speed from outvoting reach. */
+          score = score * 1000 + this._matchupScore(state, mon, target);
+        }
+        if (score > bestScore) { bestScore = score; best = mon; bestHp = hp; }
+      }
+      return best ? { mon: best, hp: bestHp } : null;
+    }
+
 
     /**
      * _tiers(state, worlds, myActions) -> { profile, scouting, wincon, endgame, feedError }
@@ -1628,7 +1979,14 @@
       // The observation feed runs BEFORE the profile is read: it scores what the opponent provably
       // did last turn against the mix published for it. A feed bug must not cost a turn, so the
       // failure is PUBLISHED on the readout rather than swallowed.
-      try { this._observeOpponent(state); } catch (e) { out.feedError = String((e && e.message) || e); }
+      /* The observation feed is per-WINDOW, not per-call: it records what the opponent provably did
+       * on the turn that just resolved. A re-read of a window Pass 1 already fed would publish the
+       * same observation twice, so it is skipped there. (It is idempotent — the second call sees no
+       * change — but skipping is also the cheaper of the two, and the readout it feeds is the one
+       * Pass 1 published.) */
+      if (!this._reread) {
+        try { this._observeOpponent(state); } catch (e) { out.feedError = String((e && e.message) || e); }
+      }
       if (this.profiler) {
         out.profile = this.profiler.profile(state);
         const factor = out.profile && typeof out.profile.switchFactor === 'number'
@@ -1646,6 +2004,31 @@
         out.endgame = this.endgame.solve(state, (worlds && worlds[0]) || null);
       }
       return out;
+    }
+
+    /**
+     * _qreTau(state) -> the logit temperature for THIS turn, or 0 for the shipped hard response.
+     *
+     * The tier is off by default; when it is on, the rating is the one thing a temperature cannot
+     * know on its own, because the deviation from the rational model belongs to the LOWER ladder:
+     * at `lowRating` and below the full `tau` applies, at `highRating` and above it is 0 (exactly
+     * the hard best response the minimax solve assumes), and in between it ramps linearly. No
+     * rating is NOT evidence of a noisy opponent, so it resolves to 0 as well — an unknown seat is
+     * played against rationally, which is the safe direction.
+     */
+    _qreTau(state) {
+      const q = this.qre;
+      if (!q || q.enabled !== true) return 0;
+      const base = q.tau;
+      if (!(typeof base === 'number' && isFinite(base) && base > 0)) return 0;
+      const rating = state ? state.opponentRating : null;
+      if (!(typeof rating === 'number' && isFinite(rating))) return 0;
+      const high = (typeof q.highRating === 'number' && isFinite(q.highRating)) ? q.highRating : 1850;
+      const low = (typeof q.lowRating === 'number' && isFinite(q.lowRating)) ? q.lowRating : 1100;
+      if (rating >= high) return 0;
+      if (rating <= low) return base;
+      const span = high - low;
+      return span > 0 ? base * ((high - rating) / span) : base;
     }
 
     /**
@@ -1772,13 +2155,18 @@
       const best = this._bestMoveWithDamage(oppActive, mySideMon, field, asAttacker);
       // Same stand-in as the main path when the body has no modelled attack at all.
       const dmg = best.damage || (best.move === 'Struggle' ? { avgPercent: this.struggleChipPercent } : null);
-      const theirDamage = dmg ? dmg.avgPercent : 0;
+      /* The follow-up weight scales the DAMAGE the second exchange deals, never the game rules
+       * around it: their boost still reaches the leaf, the Belly Drum HP cost below is still paid
+       * in full, and the Speed order is still resolved. At 1.0 (the shipped value) this is an exact
+       * identity -- `avgPercent * 1 === avgPercent` -- so the cell is unchanged. */
+      const w = this._followUpWeight();
+      const theirDamage = dmg ? dmg.avgPercent * w : 0;
       let again = null;
       if (myAction.kind === 'move') {
         again = this._damageOf(myActive, oppActive, myAction.name, field, true,
           { defender: { boosts: gain } });
       }
-      const ourDamage = again ? again.avgPercent : 0;
+      const ourDamage = again ? again.avgPercent * w : 0;
 
       const q = this.quiescence;
       if (q && q.respectTurn2Speed && (ourDamage > 0 || theirDamage > 0)) {
@@ -1805,8 +2193,8 @@
         return { myHp: myHp, oppHp: oppHp, move: best.move, avgPercent: theirDamage, ordered: order };
       }
 
-      if (dmg) myHp = U.clamp(myHp - theirDamage, 0, 100);
-      if (again) oppHp = U.clamp(oppHp - again.avgPercent, 0, 100);
+      if (theirDamage) myHp = U.clamp(myHp - theirDamage, 0, 100);
+      if (ourDamage) oppHp = U.clamp(oppHp - ourDamage, 0, 100);
       return { myHp: myHp, oppHp: oppHp, move: best.move, avgPercent: theirDamage };
     }
 
@@ -1908,10 +2296,19 @@
         return [];
       }
 
-      if (this.damage && typeof this.damage.beginTurn === 'function') {
+      /* A RE-READ OF THE SAME WINDOW (`opts.reread`) is what the Cancel window's background ponder
+       * asks for: Pass 1 has already answered this exact request, so the second call must not
+       * repeat the two per-turn side effects this method owns. `beginTurn` CLEARS the damage cache
+       * it keys by turn, so re-running it would throw away the memo the deep pass is about to want;
+       * `trickRoom.tick` advances the module's own history, and while it happens to be idempotent
+       * for one field state, re-ticking is a side effect nobody needs twice. The tempo vector is
+       * pure and therefore recomputed. This is the ONLY behavioural difference: the deep pass sees
+       * exactly the board Pass 1 saw. */
+      const reread = opts.reread === true;
+      if (!reread && this.damage && typeof this.damage.beginTurn === 'function') {
         this.damage.beginTurn(state.turn + ':' + (state.revision || 0));
       }
-      if (this.trickRoom && typeof this.trickRoom.tick === 'function') this.trickRoom.tick(state);
+      if (!reread && this.trickRoom && typeof this.trickRoom.tick === 'function') this.trickRoom.tick(state);
       const tempoVector = this.tempo ? this.tempo.computeVector(state) : null;
       if (this.trickRoom && tempoVector) tempoVector.trAdvice = this.trickRoom.advise(state);
 
@@ -1921,7 +2318,9 @@
 
       // The optional tiers, once per turn and BEFORE the matrix: two of them change a payoff (the
       // profiler's column factor and the win-condition bounty) and the other two are readouts
-      // published on `lastReadout` below.
+      // published on `lastReadout` below. `_reread` lets the observation feed skip its per-turn
+      // bookkeeping on a re-read of the same window (see `_tiers`).
+      this._reread = reread;
       const tiers = this._tiers(state, worlds, myActions);
       /* A FRESH MEMO PER TURN, for the pivot tier's bench selection. It caches on the OPPOSING body
        * and the board, so two rows that face the same opponent share one answer; reusing it across
@@ -1944,6 +2343,12 @@
       // used. `allOppActions[j]` is the action behind column j.
       const oppKeyIndex = Object.create(null);
       const allOppActions = [];
+      /* The 2-ply beam: whether it is live for THIS call (`opts.beam2Ply` can force it on, which is
+       * what the background ponder in src/content.js asks for) and, when it is, the per-world
+       * bookkeeping the refinement reads. `worldRaw` stays empty when the tier is off, so the
+       * shipped path allocates nothing here. */
+      const beamOn = this._beam2PlyOn(opts.beam2Ply);
+      const worldRaw = [];
 
       for (let w = 0; w < worlds.length; w++) {
         const world = worlds[w];
@@ -1958,12 +2363,22 @@
           }
           colIdx.push(oppKeyIndex[okey]);
         }
+        /* The 2-ply beam's own bookkeeping, built ONLY when the tier is live so the shipped path
+         * allocates nothing new: which of THIS world's local replies sits behind each global
+         * column (a refinement has to know whether the world produced the cell at all), and the
+         * `_payoff` trace for every cell (the board that cell leaves behind). */
+        const localByGlobal = [];
+        for (let j = 0; j < oppActions.length; j++) localByGlobal[colIdx[j]] = j;
+        const traces = beamOn ? [] : null;
         for (let i = 0; i < myActions.length; i++) {
           const mine = myActions[i];
           const key = this._actionKey(mine);
+          if (traces) traces[i] = [];
           let sum = 0, min = Infinity;
           for (let j = 0; j < oppActions.length; j++) {
-            const payoff = this._payoff(mine, oppActions[j], state, state.field || {}, world);
+            let trace = null;
+            if (traces) { trace = {}; traces[i][j] = trace; }
+            const payoff = this._payoff(mine, oppActions[j], state, state.field || {}, world, trace);
             sum += payoff;
             if (payoff < min) min = payoff;
             const col = colIdx[j];
@@ -1980,6 +2395,7 @@
           if (blended < bucket.min) bucket.min = blended;
           bucket.worldScores.push(blended);
         }
+        if (beamOn) worldRaw.push({ wgt: wgt, localByGlobal: localByGlobal, traces: traces });
       }
 
       const scored = [];
@@ -2084,15 +2500,28 @@
       }, this);
 
       // ---- the simultaneous payoff matrix, with the tempo nudge folded in ----
-      const matrix = [];
+      // Raw cells first (null where no world produced one), because the 2-ply refinement must see a
+      // raw 1-ply payoff and not one already carrying a row delta: the deltas below are per-ROW
+      // policy terms and folding them in before the blend would price the same penalty twice.
+      const rawMatrix = [];
       for (let i = 0; i < myActions.length; i++) {
         const row = [];
-        let sum = 0, seen = 0;
         for (let j = 0; j < allOppActions.length; j++) {
           const wgt = cellWeight[i][j];
-          const value = (typeof cellSum[i][j] === 'number' && wgt > 0) ? cellSum[i][j] / wgt : null;
-          row.push(value);
-          if (value !== null) { sum += value; seen++; }
+          row.push((typeof cellSum[i][j] === 'number' && wgt > 0) ? cellSum[i][j] / wgt : null);
+        }
+        rawMatrix.push(row);
+      }
+      const beamPlan = beamOn
+        ? this._refineBeam2Ply(rawMatrix, worldRaw, myActions, allOppActions, ranked, state, worlds)
+        : null;
+
+      const matrix = [];
+      for (let i = 0; i < myActions.length; i++) {
+        const row = rawMatrix[i].slice();
+        let sum = 0, seen = 0;
+        for (let j = 0; j < row.length; j++) {
+          if (row[j] !== null) { sum += row[j]; seen++; }
         }
         const mean = seen ? sum / seen : 0;
         // Both deltas are per-ROW, so folding them in here (rather than overwriting a score) lets
@@ -2114,10 +2543,14 @@
       let nash = null;
       let oppMix = null;
       const nashOn = !this.nash || this.nash.enabled !== false;
+      /* The QRE tier, resolved ONCE for this turn: 0 means "the shipped hard response", which is
+       * what `nash.enabled: false` and every rating at or above `qre.highRating` resolve to. */
+      const qreTau = this._qreTau(state);
       if (nashOn && live.length > 1 && allOppActions.length > 0) {
         const sub = [];
         for (let k = 0; k < liveIdx.length; k++) sub.push(matrix[liveIdx[k]].slice());
-        nash = solveNashFictitiousPlay(sub, (this.nash && this.nash.iterations) || NASH_ITERATIONS);
+        nash = solveNashFictitiousPlay(sub, (this.nash && this.nash.iterations) || NASH_ITERATIONS,
+          qreTau > 0 ? { tau: qreTau } : null);
         if (!nash || nash.myStrategy.length !== live.length) nash = null;
       }
 
@@ -2164,6 +2597,10 @@
         scouting: tiers.scouting,
         wincon: tiers.wincon,
         endgame: tiers.endgame,
+        beam2Ply: beamPlan,
+        // Published so a measurement can tell a QRE turn from a hard one without re-reading config
+        // (and so the ablation row can be checked against what actually ran).
+        qre: qreTau > 0 ? { tau: U.round1(qreTau) } : null,
         oppStrategy: oppMix,
         ranked: ranked,
         myActions: myActions,

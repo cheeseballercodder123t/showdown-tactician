@@ -37,8 +37,14 @@
       this.K = options.K || cfg('sampler.K', 6);
       this.rng = options.rng || null;
       this.database = options.database || null;
+      /* STRATIFIED ACTIVE-SET SAMPLING (see sampleWorlds). `!== false` for the same reason every
+       * other switch in this file is written that way: a config that never mentions the key gets
+       * the documented default, and an explicit false restores the i.i.d. draw exactly. */
+      this.stratifyActive = options.stratifyActive === undefined
+        ? cfg('sampler.stratifyActive', true) !== false
+        : !!options.stratifyActive;
       this.lastWorlds = [];
-      this.stats = { sampled: 0, rejected: 0, resamples: 0 };
+      this.stats = { sampled: 0, rejected: 0, resamples: 0, pinned: 0 };
     }
 
     seededRandom(seed) { return mulberry32(seed); }
@@ -59,6 +65,45 @@
         if (db.DEFAULT && db.DEFAULT.length) return db.DEFAULT;
       }
       return [];
+    }
+
+    /**
+     * _activeStratificationTargets(state) -> [{ set, weight }] for the opponent's ACTIVE body.
+     *
+     * The distinct LEGAL candidate sets of the body standing across from us, heaviest posterior
+     * first, with `weight` the set's own share of the pool. Empty when there is nothing to
+     * stratify: no active body, fewer than two candidates, or fewer than two that survive the
+     * observation checks — in which case sampling is a one-horse race anyway and the caller falls
+     * back to the plain i.i.d. draw.
+     *
+     * Ties break on the set's id so two calls on the same position produce the same ordering (the
+     * sampler's determinism contract, pinned in tests/hardening_audit.js §2).
+     */
+    _activeStratificationTargets(state) {
+      const active = (state && state.active) ? state.active.opp : null;
+      if (!active) return [];
+      const pool = this._setsFor(active);
+      if (pool.length < 2) return [];
+      const legal = [];
+      for (let i = 0; i < pool.length; i++) {
+        if (this._violationsFor(active, pool[i]).length) continue;
+        legal.push(pool[i]);
+      }
+      if (legal.length < 2) return [];
+      const weightOf = function (set) { return Math.max(0, (set && set.weight) || MIN_SET_WEIGHT); };
+      legal.sort(function (a, b) {
+        const diff = weightOf(b) - weightOf(a);
+        if (diff !== 0) return diff;
+        const aId = String((a && (a.id || a.species)) || '');
+        const bId = String((b && (b.id || b.species)) || '');
+        return aId < bId ? -1 : (aId > bId ? 1 : 0);
+      });
+      let total = 0;
+      for (let i = 0; i < legal.length; i++) total += weightOf(legal[i]);
+      if (!(total > 0)) return [];
+      const out = [];
+      for (let i = 0; i < legal.length; i++) out.push({ set: legal[i], weight: weightOf(legal[i]) / total });
+      return out;
     }
 
     /** Weighted pick with a supplied random function. */
@@ -212,8 +257,13 @@
       return (h >>> 0) || 1;
     }
 
-    /** sampleWorld(state, db[, seed]) -> World */
-    sampleWorld(state, db, seedOverride) {
+    /**
+     * sampleWorld(state, db[, seed][, opts]) -> World
+     * `opts.pinActiveSet` is the stratified caller's assignment for the ACTIVE opponent body: the
+     * one set this world must stand there (honoured only when it is a legal candidate — see the
+     * pool check below). Everything else about the world, bench included, is drawn as usual.
+     */
+    sampleWorld(state, db, seedOverride, opts) {
       const previousDb = this.database;
       if (db) this.database = db;
       // The swap above points the sampler at the CALLER's database for the duration of this
@@ -234,6 +284,9 @@
       }
       const random = mulberry32(seed);
       const oppTeam = this._oppTeam(state);
+      // The body a pin may be applied to. Identity, not species: two bodies on the same team can
+      // share a species and only the ACTIVE one is the stratification's subject.
+      const pinnedBase = (state && state.active) ? state.active.opp : null;
       const sets = [];
       const team = [];
       const violations = [];
@@ -251,7 +304,20 @@
         for (let s = 0; s < pool.length; s++) {
           if (!this._violationsFor(base, pool[s]).length) legal.push(pool[s]);
         }
-        let acceptable = legal.length ? this._pick(legal, random) : null;
+        /* A STRATIFIED CALL may name the set this world is there to cover (see sampleWorlds). The
+         * pin is honoured ONLY when it is one of the legal candidates, so it can never smuggle in a
+         * set the log has already disproved, and a pin on any body other than the one it was
+         * computed for is ignored. With no pin this is the line it always was — same single `_pick`
+         * call, same draw from the same seeded stream. */
+        const pin = (opts && opts.pinActiveSet && base === pinnedBase) ? opts.pinActiveSet : null;
+        /* The draw is taken EITHER WAY, even when the pin overrides it. It costs one call and it
+         * keeps the world's whole RNG stream — the bench included — at exactly the position the
+         * i.i.d. world with this seed would have been at, so a pin can only ever change the ACTIVE
+         * body. (A version that skipped the draw shifted every later body in the pinned worlds, which
+         * made "the pin changes one thing" untestable and untrue.) */
+        const drawn = legal.length ? this._pick(legal, random) : null;
+        let acceptable = (pin && legal.indexOf(pin) !== -1) ? pin : drawn;
+        if (pin && acceptable === pin) this.stats.pinned++;
 
         if (!acceptable && pool.length && !this._speedFloorSatisfiable(base, pool)) {
           // Every candidate contradicts an observed Speed floor, so this Pokémon cannot be
@@ -310,11 +376,42 @@
       // same state never disagree.
       const seeded = typeof this.rng === 'function';
       const base = seeded ? ((Math.floor(this._rand() * 0xffffffff) >>> 0) || 1) : this._seedFromState(state);
+      /* STRATIFIED ACTIVE-SET SAMPLING (config.sampler.stratifyActive). K independent draws at
+       * K = 6 routinely pick the same active candidate set four or five times and miss a 25 %-usage
+       * set entirely — and the active body is the one every cell of the matrix is priced against, so
+       * the missed set is exactly the one the answer can hinge on. With the tier on, the FIRST
+       * M = min(K, distinct legal sets) worlds cover those sets one each, heaviest posterior first,
+       * and the remaining worlds are drawn i.i.d. as before (bench included). With one legal set, or
+       * the tier off, `targets` is empty and every world comes out of the same seeded stream as
+       * before — which is what makes `enabled: false` bit-identical to the release build. A pin
+       * never disturbs that stream either (the active body's draw is taken and then replaced), so
+       * world i differs from its i.i.d. twin in the ACTIVE SET and in nothing else.
+       *
+       * WEIGHTS. The pinned worlds are not i.i.d. draws any more, so their weights carry their
+       * sets' own posterior shares instead of a flat 1: the pinned group holds `share = M / K` of
+       * the mass (M / K of the worlds ARE the stratum) and each world inside it carries p_j of it,
+       * scaled by the same quality penalty (violations) every other world pays. The free worlds get
+       * 1 / K each. The total is exactly 1 before the normalisation below, which then leaves the
+       * ratios untouched. */
+      const targets = this.stratifyActive ? this._activeStratificationTargets(state) : [];
+      const pinned = Math.min(count, targets.length);
+      const share = pinned > 0 ? pinned / count : 0;
       const worlds = [];
       for (let i = 0; i < count; i++) {
         const seed = seeded ? ((Math.floor(this._rand() * 0xffffffff) >>> 0) || 1)
           : (((base + Math.imul(i, SEED_STRIDE)) >>> 0) || 1);
-        worlds.push(this.sampleWorld(state, candidateSetDatabase, seed));
+        const pinnedSet = i < pinned ? targets[i] : null;
+        const world = this.sampleWorld(state, candidateSetDatabase, seed,
+          pinnedSet ? { pinActiveSet: pinnedSet.set } : null);
+        if (pinnedSet && world.weight > 0) {
+          const quality = (world.violations && world.violations.length) ? 1 / (1 + world.violations.length) : 1;
+          world.weight = share * pinnedSet.weight * quality;
+          world.stratified = true;
+          world.strataWeight = pinnedSet.weight;
+        } else if (pinned > 0) {
+          world.weight = 1 / count;
+        }
+        worlds.push(world);
       }
       // Normalise weights so the engine can pool votes without rescaling.
       let total = 0;

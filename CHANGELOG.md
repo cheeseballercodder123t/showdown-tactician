@@ -11,6 +11,116 @@ reaches a verdict.
 
 ## Unreleased
 
+### Added — a second ply for the cells that can still change the answer, and a match-point scale for the gate
+
+Six changes in one pass, all of them behind a config leaf, all of them measured before adoption
+(`--league mirror` and the three personas, 20 paired battles a variant, seed 1337). The rule the repo
+runs on did not move: `enabled: false` is bit-identical to the build before this pass, and that
+identity is pinned rather than asserted.
+
+- **The gate now reports TWO scales, and the second one is the point.** `tools/run_ablation.js`
+  computes a paired bootstrap on the **match score** (win 1 / tie 0.5 / loss 0) beside the existing
+  binary win indicator, and prints `Δscore` and `scoreCi` next to `Δwin`/`ci`. The reason is a
+  measurement this repo already lost once: a binary win indicator maps a 100-turn tie to **0**, so a
+  variant that converts 13 losses into 13 stall ties moves it by **0.0** — which is how `urgency`
+  first read flat while its OFF arm had given up **9.2 points** of match score (ATTEMPTS.md A1/J).
+  The two intervals disagreeing is now a `score-split` flag rather than a rounding question, because
+  which instrument is right is a question about the corpus, not about the arithmetic. Every existing
+  JSON key is unchanged; `scoreDelta`/`scoreCi`/`scoreVerdict`/`featureScoreVerdict`/`scoreSplit` are
+  additions.
+- **A selective 2-ply beam** (`laplace.beam2Ply`, ships **OFF**): after the 1-ply matrix is built, the
+  top 3 of our rows are re-priced against the top 3 of their replies by playing the TURN OUT — 3 × 3 ×
+  K cells, 54 on the shipped numbers, against the 39,366 a full 9 × 9 × 6 tree would need (~2,000 ms,
+  which does not fit a phone). Each beam cell builds the T+1 board: a knockout resolves a
+  **replacement from the world's own roster** (our best surviving responder, or theirs, each paying
+  its side's entry hazards), a side with nothing left scores the terminal loss/win immediately, the
+  field timers tick (`trickRoomTurnsLeft`, `weatherTurnsLeft`, `terrainTurnsLeft`), and the Turn-2
+  exchange is read off the resulting board before being blended into the 1-ply cell by `blendWeight`
+  (0.35). The beam is a BEAM and not a tree on purpose; `_refineBeam2Ply` re-solves fictitious play
+  on the refined matrix, so the published mix is still an equilibrium of the cells it edited.
+- **The endgame box widened to 3 bodies** (`laplace.endgame.maxAlive` 2 → 3, plus
+  `maxBranchingMoves: 12`) and an **ambiguous Speed order is a chance node** now
+  (`laplace.endgame.chanceNodes`) instead of a refusal. When our exact Speed falls inside their
+  `[speedFloor, speedCeiling]` band, the probability they act first is read off their own surviving
+  candidate sets (weights included) and the pair is priced as the expectation over the two orders. **A
+  mate is never claimed through one**: a blend that lands inside the mate band is clamped to the top of
+  the non-mate region, so `solved` still means proven. `maxBodies` stays as a legacy alias at the same
+  value, and an exhausted node budget still reports `{solved:false, reason:'budget'}` — never a partial
+  line dressed as a solution.
+- **Stratified active-set worlds** (`sampler.stratifyActive`, ships **OFF** — built ON, and its own
+  first reading flipped it): K = 6 independent draws
+  routinely pick the same opponent active set four or five times and never draw a 25 %-usage set, and
+  the ACTIVE body is what every cell of the matrix is priced against. The first `min(K, distinct legal
+  sets)` worlds now cover those sets one each, heaviest posterior first, carrying their own posterior
+  weights; the bench and the worlds past the stratum come from the same seeded stream as before, so a
+  pinned world differs from its i.i.d. twin in the active set and nothing else. A pinned set still has
+  to pass every observation check, so this changes **which worlds exist, never which facts are legal**. **It measured the wrong way round:** on the mirror (20 paired battles, seed 1337) the i.i.d. draw
+  it replaces won **+15.0** win points **[0.0, +30.1]** and **+15.0** match points **[+2.5, +30.0]**
+  — the match-point interval excludes zero in the *i.i.d.* direction and the win interval’s floor
+  *is* zero, so neither scale supports the tier and one is evidence against it. A better-calibrated
+  opponent model that costs match points is still a cost, so the shipped leaf went back to the i.i.d.
+  draw and the ablation row now patches the leaf UP (`direction: 'on'`) as the promotion candidate.
+- **Quantal Response Equilibrium** (`laplace.nash.qre`, ships **OFF**): the opponent's column step
+  inside fictitious play is a LOGIT softmax at temperature `tau` (30 at `lowRating` 1100 and below,
+  decaying linearly to 0 at `highRating` 1850) instead of a hard argmax, so their mix spreads the way a
+  noisy player's replies do — while OUR side keeps the hard best response, so the worst case we accept
+  is still bounded by the same matrix. QRE changes what we expect THEM to do, never the bound we play
+  against. A seat with no declared rating resolves to the identity, because an unknown opponent is not
+  evidence of a noisy one.
+- **The Cancel window's background ponder** (`laplace.deepPonder`, ships **ON**): the boot still
+  renders the fast pass synchronously and then schedules a DEEPER one (`deepWorlds` 14, the 2-ply
+  beam, the 3v3 endgame bound) in a timeout that never blocks a frame. A monotonic `_ponderId` bumps
+  on every `|turn|`/`|init|`/new decision frame, so a stale pass publishes nothing; if the player has
+  already clicked (`_lockedChoice`, read off our own outgoing `/choose` and cleared on `/undo` or a new
+  turn) and the Cancel button is on screen, the deeper ranking is compared with what they locked in — a
+  veto, or a better line by `cancelAlertScoreDelta` payoff or `cancelAlertConfDelta` confidence points
+  — and `renderCancelAlert` flags Showdown's own `<button name="undoChoice">` with a
+  `UNDO → <line>` badge and buzzes. Every teardown path (`clear()`, a new window, an emptied alert)
+  releases the flag, and nothing here can throw into the frame loop.
+- **`quiescence.followUpWeight`** (ships at **1.0**, the identity) and the damped candidate (**0.5**) as
+  an ablation row. The knob scales the setup extension's second exchange, which the
+  `quiescence-extendsetup` row priced **HURTS +23.3** on the mirror and **HELPS +20.0** on the
+  re-anchored personas arena, both intervals excluding zero — so the tie is being investigated rather
+  than resolved by picking the friendlier number. `1.0` is bit-identical to the shipped build.
+
+**Guards, each able to fail.** `tests/tuning_check.js` §5 pins the beam: `enabled: false` reproduces the
+1-ply matrix cell for cell (a spy counts the `_refineBeam2Ply` calls and proves the OFF build never
+makes one), the T+1 value is pinned against a hand-computed board, the revenge killer is what makes a
+knockout worse than it looks (pricing the Dragonite flips Encore above a 120 BP STAB attack), a side
+that faints with nothing behind it is the LOSS and not the kill, a mutual wipe is a DRAW, and an
+expiring Trick Room ticks OFF. §6 pins the stratification against the i.i.d. draw it replaces.
+`tests/endgame_check.js` §6 pins the 3v3 mate (three bodies inside one hit each, found in 64 nodes),
+the branch cap, and the Speed band against the same board with their order made certain — the
+probability-weighted row must land **between** the two references, and a mate is never claimed through
+the blend. `tests/hud_check.js` §14 pins the ponder's scheduling contract (never inline, one pass per
+window, a new window invalidates the old, the wire's slot number resolved against the request) and
+`tests/dom_check.js` §11 pins the alert's DOM lifecycle, including the
+`.battle-controls button[value="undo"]` spelling and a flagged button released by `clear()`.
+`tests/ablation_check.js` gained §5l (the five new rows, and the one de-flipped patch) while its no-op
+guard still rejects a leaf that changes nothing.
+
+**What the pass measured, and what it decided** (full tables in `ATTEMPTS.md` §K). Mirror,
+`--battles 20 --seed 1337` (baseline 40.0 %, 8-10-2): `quiescence` off +10.0 [−20.0, +40.0] ·
+`quiescence-extendsetup` off +10.0 [−20.0, +40.0] — **the same battles**, so the tier's mirror effect
+is all setup ply · `quiescence-followup-damped` (0.5) **−5.0** [−40.0, +25.0] — the damped follow-up
+is the **wrong way**, so the hypothesis it was built to test is disarmed · `quiescence-blockprotect`
+and `quiescence-turn2speed` and `endgame` and `endgame-3v3` and `nash-qre` **`identical`** (inert in
+this corpus, each with a named reason) · `beam-2ply` +5.0 [−30.0, +35.0] with games **8.9 turns
+shorter** · `sampler-stratify` off **+15.0** win [0.0, +30.1] and **+15.0** match score [+2.5, +30.0].
+Personas (`--agent all`, which is now **four** seats: anchor, exploiter, chaos and the mirror;
+baseline 55.0 %, 11-4-5, and NOT comparable to the 98.3 % §H recorded before the mirror was folded
+into `all`): `quiescence` off **+25.0 [+5.0, +45.0]**, `quiescence-extendsetup` off **+30.0
+[+10.0, +50.0]**, `quiescence-blockprotect` off **+25.0 [+10.0, +45.0]** with the exploiter's five
+100-turn stalemates turned into five wins, `followUpWeight` 0.5 flat, `turn2speed` `identical`.
+
+**Decisions.** `sampler.stratifyActive` shipped back to the i.i.d. draw (§K2) — the only default this
+pass flipped, and it flipped because the match-point interval excludes zero against the tier while the
+pre-pass build is the i.i.d. draw. `beam2Ply`, `nash.qre` and the endgame tier all stay OFF: none
+cleared the gate. The `quiescence` tier stays ON with its contradiction **narrowed rather than
+resolved** (§K3): both instruments now lean the same way at n = 20, which is not the power to move a
+shipped default, and §K3 names the 60-battle run that can.
+
+
 ### Fixed — a turn holds more than one decision window, and the engine answered the second with the first one's ranking
 
 A turn is two windows. The move request opens it; a `forceSwitch` request closes it when a body

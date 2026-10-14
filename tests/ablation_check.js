@@ -447,10 +447,20 @@ function checkFeatureTable() {
   report.forEach(function (r) {
     r.applied.forEach(function (a) { if (typeof a.to !== 'boolean') nonBoolean.push(r.id + ':' + a.path); });
   });
-  /* The only non-boolean leaves in the table are the two bounty caps, which are numbers because a
-   * tier that ships with a 0 bounty has nothing to measure. Anything else appearing here would mean
-   * a "flag" is really a numeric parameter set, and that should be a deliberate change. */
-  eq('the only non-boolean leaves are the two documented bounty caps', nonBoolean.sort(), [
+  /* The non-boolean leaves in the table are all DELIBERATE, and each is listed here so a new one
+   * cannot arrive silently: a "flag" that is really a numeric parameter set has to be a decided
+   * change, not an accident of a patch object. The three kinds present:
+   *
+   *   - the two bounty caps, numbers because a tier that ships with a 0 bounty has nothing to
+   *     measure;
+   *   - `endgame:maxAlive`, the PRE-UPGRADE body bound the `endgame` row pins down to 2 so the row
+   *     beside it (endgame-3v3) can be read as the widening;
+   *   - `quiescence.followUpWeight`, the damped-follow-up candidate (0.5 against the shipped 1.0),
+   *     which is a weight rather than a switch by construction — the row exists to price a
+   *     magnitude, so it cannot be expressed as on/off. */
+  eq('the only non-boolean leaves are the documented numbers', nonBoolean.sort(), [
+    'endgame:laplace.endgame.maxAlive',
+    'quiescence-followup-damped:laplace.quiescence.followUpWeight',
     'scouting:laplace.scouting.maxBounty',
     'wincon:laplace.wincon.maxBounty'
   ]);
@@ -846,19 +856,69 @@ function checkAggregation() {
 
   section('5k. the quiescence sub-knobs exist, because the tier is not one thing');
   const subIds = ablation.FEATURE_IDS.filter(function (id) { return /^quiescence-/.test(id); });
-  eq('all three sub-knobs are in the table', subIds.length, 3);
+  eq('all four sub-knobs are in the table', subIds.length, 4);
   const sub = ablation.FEATURES.filter(function (f) { return /^quiescence-/.test(f.id); });
   eq('...and each patches exactly one leaf of the tier',
     sub.map(function (f) { return Object.keys(f.patch)[0]; }).sort(),
-    ['laplace.quiescence.blockProtect', 'laplace.quiescence.extendSetup', 'laplace.quiescence.respectTurn2Speed']);
+    ['laplace.quiescence.blockProtect', 'laplace.quiescence.extendSetup',
+      'laplace.quiescence.followUpWeight', 'laplace.quiescence.respectTurn2Speed']);
   eq('...and each declares its parent for grouping', sub.every(function (f) { return f.parent === 'quiescence'; }), true);
   eq('...and they are separate from the master switch',
     ablation.FEATURES.filter(function (f) { return f.parent === 'quiescence'; }).map(function (f) { return f.id; }),
-    ['quiescence', 'quiescence-extendsetup', 'quiescence-blockprotect', 'quiescence-turn2speed']);
+    ['quiescence', 'quiescence-extendsetup', 'quiescence-followup-damped', 'quiescence-blockprotect',
+      'quiescence-turn2speed']);
+  /* The damped follow-up prices a MAGNITUDE, so it is the one sub-knob whose patch value is a
+   * number: it exists to test whether the full-strength Turn-2 follow-up is what makes the setup
+   * extension measure oppositely on the mirror and the personas, and "half of it" is the candidate. */
+  eq('...and the follow-up knob is the only numeric one, because it prices a magnitude',
+    sub.filter(function (f) { return typeof Object.values(f.patch)[0] !== 'boolean'; }).map(function (f) { return f.id; }),
+    ['quiescence-followup-damped']);
   const subReport = ablation.validateFeaturePaths(ablation.buildVariants(subIds));
-  eq('...and their paths are real config leaves', subReport.length, 3);
-  eq('...and neither is a no-op against the shipped config',
+  eq('...and their paths are real config leaves', subReport.length, 4);
+  eq('...and none is a no-op against the shipped config',
     subReport.every(function (r) { return r.applied.every(function (a) { return a.from !== a.to; }); }), true);
+
+  section('5l. the multi-ply horizon rows, one per tier this pass touched');
+  /* Four rows added together, and the guard that matters for each is that it flips a REAL leaf —
+   * §3 proves that for all of them — plus that the shipped config is what its note claims, so the
+   * baseline the row is compared against is the one being described. */
+  ['beam-2ply', 'endgame-3v3', 'sampler-stratify', 'nash-qre', 'quiescence-followup-damped']
+    .forEach(function (id) {
+      const f = ablation.FEATURES.filter(function (x) { return x.id === id; })[0];
+      check('the ' + id + ' row exists', !!f, '');
+      check('...and carries a note long enough to say what it toggles',
+        !!f && typeof f.note === 'string' && f.note.length > 80, f && f.note);
+      check('...and an expected direction to be surprised by',
+        !!f && ['helps', 'neutral', 'hurts'].indexOf(f.expect) !== -1, f && f.expect);
+    });
+  /* The ONE de-flipping patch in the table, pinned so it is read as deliberate: `endgame-3v3`
+   * enables the tier at the bounds src/config.js already ships, so only `enabled` is left to flip.
+   * Every other leaf it used to restate is the `endgame` row's job, and restating them here is what
+   * §3's no-op guard rejects. */
+  const wide = ablation.FEATURES.filter(function (f) { return f.id === 'endgame-3v3'; })[0];
+  eq('...and the endgame-3v3 row flips the enable only, at the shipped widened bounds',
+    Object.keys(wide.patch).sort(), ['laplace.endgame.enabled']);
+  const shrink = ablation.FEATURES.filter(function (f) { return f.id === 'endgame'; })[0];
+  eq('...while the pre-upgrade endgame row is the one that MOVES the bound down',
+    Object.keys(shrink.patch).sort(),
+    ['laplace.endgame.chanceNodes', 'laplace.endgame.enabled', 'laplace.endgame.maxAlive']);
+  const cfg = harness.loadFiles(['src/config.js']);
+  eq('the shipped bounds really are the widened ones the row claims',
+    [cfg.ST.configGet('laplace.endgame.maxAlive', null), cfg.ST.configGet('laplace.endgame.maxBranchingMoves', null),
+      cfg.ST.configGet('laplace.endgame.chanceNodes', null)], [3, 12, true]);
+  eq('...and beam-2ply / nash-qre still ship OFF, so their rows are the promotion',
+    [cfg.ST.configGet('laplace.beam2Ply.enabled', null), cfg.ST.configGet('laplace.nash.qre.enabled', null)],
+    [false, false]);
+  /* The only row here whose DEFAULT moved because of its own measurement: stratification was built
+   * ON, and the i.i.d. draw it replaced won +15.0 match points [+2.5, +30.0] on the mirror, so the
+   * shipped leaf is OFF and the row patches it UP. */
+  eq('...and the stratified sampler ships OFF, so its row is the promotion',
+    cfg.ST.configGet('sampler.stratifyActive', null), false);
+  eq('...and that row really is the one that turns it on',
+    ablation.FEATURES.filter(function (f) { return f.id === 'sampler-stratify'; })[0].patch,
+    { 'sampler.stratifyActive': true });
+  eq('...and the damped follow-up is NOT shipped (1.0 stays the baseline)',
+    cfg.ST.configGet('laplace.quiescence.followUpWeight', null), 1);
 }
 
 /* ============================================ 7. the client frames the arena now supplies */

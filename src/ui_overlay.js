@@ -31,6 +31,9 @@
   const BADGE_ATTR = 'data-st-badge';
   const BANNER_ATTR = 'data-st-banner';
   const CHIP_ATTR = 'data-st-tr-chip';
+  // The Cancel-window alert card (see renderCancelAlert): its own attribute and its own class, so
+  // clear() can tell it from the TR chip and from the sentinel it sits beside.
+  const CANCEL_ATTR = 'data-st-cancel-alert';
   const DRAWER_ATTR = 'data-st-drawer';
   const REASON_ATTR = 'data-st-reason';
   const HIDDEN_CLASS = 'tactician-hidden';
@@ -105,7 +108,7 @@
         banner: null, chip: null, drawer: null, toggle: null,
         teamStatus: null, candidates: null,
         benchStrip: null, badgeRow: null, receipt: null, overlord: null,
-        ppGauge: null, sentinel: null, leadAdvisory: null,
+        ppGauge: null, sentinel: null, leadAdvisory: null, cancelAlert: null,
         console: null, modeToggle: null
       };
       this._touched = [];        // [{ el, prop, previous }] inline style rollbacks
@@ -616,6 +619,119 @@
       if (field.trickRoom && (field.trickRoomTurnsLeft || 0) <= 1) return 'danger';
       if (actions && actions.length && actions[0] && actions[0].isVetoed) return 'warn';
       return 'info';
+    }
+
+    /* ------------------------------------------- the Cancel-window alert */
+
+    /**
+     * _findUndoButton() -> the Showdown Cancel control, or null.
+     *
+     * Two spellings, both in the wild: the client's `<button name="undoChoice">Cancel</button>` and
+     * the older/aliased `.battle-controls button[value="undo"]`. Looked up through the DOCUMENT
+     * rather than a cached handle, because Showdown rebuilds the battle bar constantly and a handle
+     * from the previous turn is a detached node by this one.
+     */
+    _findUndoButton() {
+      const selectors = ['button[name="undoChoice"]', '.battle-controls button[value="undo"]'];
+      for (let i = 0; i < selectors.length; i++) {
+        const hit = this._qs(selectors[i]);
+        if (hit) return hit;
+      }
+      return null;
+    }
+
+    /**
+     * renderCancelAlert(info) — flag the Cancel window.
+     *
+     * `info` is built by the deep background pass in src/content.js
+     * ({ locked, better, reason, why, scoreDelta, confDelta }); the HUD only formats, so no part of
+     * this file has to know what a payoff is. TWO things are painted, and both are needed: the
+     * button itself is flagged (`.st-cancel-alert` plus a `.st-cancel-badge` reading
+     * "UNDO → <better.name>") because that is the control the alert asks the player to press, and a
+     * card names the line the deeper read prefers AND why the two passes disagree — a highlighted
+     * button with no text is a puzzle, not advice.
+     *
+     * A MISSING BUTTON IS NOT A FAILURE. Showdown takes it away the instant the opponent locks in,
+     * which is also the moment the advice stops being actionable; the card still lands, because the
+     * disagreement it reports is real either way.
+     */
+    renderCancelAlert(info) {
+      if (!this._document()) return null;
+      if (!info || !info.better || !info.better.name) return this.clearCancelAlert();
+      const better = safeString(info.better.name);
+      const locked = info.locked && info.locked.name ? safeString(info.locked.name) : 'your locked move';
+      const why = safeString(info.why || info.reason || '');
+
+      const button = this._findUndoButton();
+      if (button) {
+        this._addClass(button, 'st-cancel-alert');
+        let badge = this._findChild(button, 'st-cancel-badge');
+        if (!badge) {
+          badge = this._el('span', 'st-cancel-badge');
+          this._appendChild(button, badge);
+        }
+        if (badge) {
+          badge.textContent = 'UNDO → ' + better;
+          if (badge.setAttribute) {
+            badge.setAttribute('title', why);
+            badge.setAttribute('aria-label', 'Cancel and play ' + better + ' instead');
+          }
+        }
+      }
+
+      const card = this._ensureCancelCard();
+      if (card) {
+        this._clearChildren(card);
+        this._appendChild(card, this._el('span', 'st-cancel-head', 'Cancel window — the deep pass disagrees'));
+        this._appendChild(card, this._el('span', 'st-cancel-body',
+          'Undo and play ' + better + ' instead of ' + locked + '.'));
+        if (why) this._appendChild(card, this._el('span', 'st-cancel-why', why));
+        if (card.style) card.style.display = '';
+        if (card.setAttribute) card.setAttribute('data-reason', safeString(info.reason || ''));
+      }
+      this.cancelAlert = { locked: info.locked || null, better: info.better, reason: info.reason || null, card: card, button: button };
+      return this.cancelAlert;
+    }
+
+    /**
+     * clearCancelAlert() — take the flag, the badge and the card back down.
+     *
+     * The button sweep is UNCONDITIONAL rather than driven by the handle we stored: the page
+     * replaces its control bar between renders, so the flagged node and the node we remember may
+     * not be the same one. Called on a new turn, on `/undo`, and from clear(); safe to call when
+     * nothing is up.
+     */
+    clearCancelAlert() {
+      const flagged = this._qsa('.st-cancel-alert');
+      for (let i = 0; i < flagged.length; i++) this._removeClass(flagged[i], 'st-cancel-alert');
+      const badges = this._qsa('.st-cancel-badge');
+      for (let i = 0; i < badges.length; i++) this._dropNode(badges[i]);
+      const held = this.cancelAlert;
+      if (held && held.button) {
+        const badge = this._findChild(held.button, 'st-cancel-badge');
+        this._dropNode(badge);
+        this._removeClass(held.button, 'st-cancel-alert');
+      }
+      this.cancelAlert = null;
+      /* The card is DROPPED rather than hidden, the way dismissReceipt drops its own: the alert is
+       * rebuilt from scratch on the next disagreement, so a hidden node that outlives its turn is
+       * only a way for a stale card to reappear under a fresh one. */
+      const card = this._nodes.cancelAlert;
+      this._nodes.cancelAlert = null;
+      this._dropNode(card);
+      return null;
+    }
+
+    _ensureCancelCard() {
+      if (this._nodes.cancelAlert) return this._nodes.cancelAlert;
+      const existing = this._qs('.st-cancel-alert-card');
+      if (existing) { this._nodes.cancelAlert = existing; return existing; }
+      const el = this._el('div', 'st-cancel-alert-card');
+      if (!el) return null;
+      if (el.setAttribute) { el.setAttribute(CANCEL_ATTR, '1'); el.setAttribute('role', 'alert'); }
+      if (el.style) el.style.display = 'none';
+      this._nodes.cancelAlert = this._mountBand(el);
+      return this._nodes.cancelAlert;
     }
 
     /* ------------------------------------- bench-tap sandbox & lethal gauges */
@@ -1924,7 +2040,7 @@
 
     /** clear() — remove every injected node and inline style change. */
     clear() {
-      const nodes = this._qsa('.elo-helper-badge, .tactician-banner, .tactician-tr-chip, .team-drawer, .team-drawer-toggle, .elo-helper-reason, .st-lethal-bar, .st-bench-strip, .st-badge-row, .st-receipt-card, .st-overlord-gauge, .st-pp-gauge, .st-format-sentinel, .st-lead-advisory');
+      const nodes = this._qsa('.elo-helper-badge, .tactician-banner, .tactician-tr-chip, .team-drawer, .team-drawer-toggle, .elo-helper-reason, .st-lethal-bar, .st-bench-strip, .st-badge-row, .st-receipt-card, .st-overlord-gauge, .st-pp-gauge, .st-format-sentinel, .st-lead-advisory, .st-cancel-alert-card, .st-cancel-badge');
       for (let i = 0; i < nodes.length; i++) {
         const n = nodes[i];
         if (n && typeof n.remove === 'function') n.remove();
@@ -1937,6 +2053,11 @@
       // while the next battle mounted a SECOND one. Two ways to drop the same node is deliberate
       // here: the handle keeps the document and the HUD agreeing even if the selector drifts again.
       this.dismissLeadAdvisory();
+      // The cancel alert is dropped through its own handle as well, for the same reason the
+      // advisory is: the sweep above is a bulk selector and this one the HUD also holds a
+      // reference to. It also un-flags the Cancel button, which the sweep cannot do because that
+      // button belongs to the PAGE, not to us.
+      this.clearCancelAlert();
       const buttons = this._findMoveButtons();
       const cls = [BADGES.high.cls, BADGES.mid.cls, BADGES.low.cls, BADGES.veto.cls, 'st-optimal',
         'st-lethal-guaranteed', 'st-lethal-high', 'st-lethal-mid', 'st-lethal-none'];
@@ -1965,7 +2086,7 @@
         banner: null, chip: null, drawer: null, toggle: null,
         teamStatus: null, candidates: null,
         benchStrip: null, badgeRow: null, receipt: null, overlord: null,
-        ppGauge: null, sentinel: null, leadAdvisory: null
+        ppGauge: null, sentinel: null, leadAdvisory: null, cancelAlert: null
       };
       this._drawerOpen = false;
       this._bound = false;

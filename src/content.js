@@ -74,6 +74,13 @@
       this.lastEvaluateFrame = null;
       this.selectedBenchId = null;   // bench-tap sandbox: null = preview the active pair
       this._trAlerted = false;       // the haptic fires ONCE per battle, on TR's last turn
+      // The Cancel window's background ponder (laplace.deepPonder). `_ponderId` is monotonic and
+      // bumped by every new window — a request, a |turn|, an |init| — so a pass that finishes after
+      // the window it was scheduled for has closed publishes nothing. `_lockedChoice` is the
+      // outgoing /choose this client has already clicked (see _noteOutgoingChoice).
+      this._ponderId = 0;
+      this._lockedChoice = null;
+      this.lastPonder = null;        // the last pass's outcome, for the debug HUD and the tests
       // Chromium only honours navigator.vibrate after the frame has received a real user gesture
       // and refuses it LOUDLY (a console error) before that. A player in a battle has tapped
       // something long before trick room's last turn; a spectator tab has not, and there the
@@ -81,7 +88,7 @@
       this._userTouched = false;
       this._gestureTracked = false;  // false = we cannot know, so we still attempt the pulse
       this.started = false;
-      this.stats = { lines: 0, requests: 0, evaluations: 0, llmAnswers: 0, errors: [] };
+      this.stats = { lines: 0, requests: 0, evaluations: 0, llmAnswers: 0, ponders: 0, errors: [] };
       // Wire the pipeline at construction time: the state manager subscribes to the parser,
       // so every event reaches the single source of truth even before start() runs.
       if (this.state && this.parser && typeof this.state.attachParser === 'function') {
@@ -196,6 +203,11 @@
       if (this.clock) {
         try { this.clock.note(rawLine, kind); this._syncClock(); } catch (e) { this._error('clock', e); }
       }
+      // The Cancel window turns on the client's OWN /choose, so it is read off the outgoing frame
+      // (kind 'send') rather than inferred from anything the server sends back.
+      if (kind === 'send') {
+        try { this._noteOutgoingChoice(rawLine); } catch (e) { this._error('locked-choice', e); }
+      }
       if (!this.parser) return [];
       const before = this.parser.currentTurn;
       let event = null;
@@ -231,6 +243,7 @@
         this.lastEvaluateTurn = -1;
         this.lastEvaluateFrame = null;
         this.pendingReadout = null;
+        this._closePonderWindow();
         if (this.hud && typeof this.hud.dismissReceipt === 'function') this.hud.dismissReceipt();
         // The candidate pools are seeded per side|slot|species and are only meaningful for the
         // battle they were seeded in: after a reconnect Showdown replays the whole log, and a
@@ -287,6 +300,11 @@
             this.pruner && typeof this.pruner.applyFormatLockCascade === 'function') {
           try { this.pruner.applyFormatLockCascade(this.state.state); } catch (e) { this._error('cascade', e); }
         }
+      }
+      if (event.type === 'turn') {
+        // A new turn is a new decision: any pass still queued for the previous window is stale, the
+        // locked choice belonged to that window, and the Cancel button (if any) is gone.
+        this._closePonderWindow();
       }
       if (event.type === 'turn' && this.trickRoom) {
         try { this.trickRoom.tick(this.state ? (this.state.state || this.state) : null); } catch (e) { this._error('tr-tick', e); }
@@ -449,6 +467,10 @@
       this._renderScreenExtras(state);
       this._maybeAlertTR(state);
       this._askLLM(state, ranked);
+      // PASS 2. Everything above is the fast path and has already painted the HUD; the deeper read
+      // runs on a later tick and either updates the HUD in place (nothing locked in yet) or flags
+      // the Cancel button (a move is already clicked).
+      this._scheduleDeepPonder(state);
       return ranked;
     }
 
@@ -516,6 +538,254 @@
       } catch (e) { this._error('ui-refresh', e); }
       this._renderScreenExtras(state);
       this._maybeAlertTR(state);
+    }
+
+    /* --------------------------------------------------- the Cancel ponder */
+
+    /**
+     * _deepPonderPlan() -> the config plan for the background pass, or null when it is off.
+     *
+     * Read per scheduling rather than cached in the constructor: the knob is a policy switch, and a
+     * test (or a user) that flips it between turns should not have to rebuild the boot.
+     */
+    _deepPonderPlan() {
+      const cfg = (typeof ST.configGet === 'function') ? ST.configGet : function (path, fallback) { return fallback; };
+      const dp = cfg('laplace.deepPonder', null);
+      if (!dp || dp.enabled !== true) return null;
+      const worlds = Math.floor(dp.deepWorlds);
+      if (!(worlds > 0)) return null;
+      return {
+        deepWorlds: worlds,
+        useBeam2Ply: dp.useBeam2Ply !== false,
+        useEndgame3v3: dp.useEndgame3v3 !== false,
+        cancelAlertScoreDelta: typeof dp.cancelAlertScoreDelta === 'number' ? dp.cancelAlertScoreDelta : 45,
+        cancelAlertConfDelta: typeof dp.cancelAlertConfDelta === 'number' ? dp.cancelAlertConfDelta : 15
+      };
+    }
+
+    /**
+     * _noteOutgoingChoice(rawLine) — what the PLAYER did, read off their own outgoing frame.
+     *
+     * This is the only evidence that a move has been locked in: Showdown shows its Cancel button on
+     * the strength of the client's own `/choose`, not on anything the server sends back. Payloads
+     * arrive in both spellings the client uses — a bare `/choose move 1` and the split
+     * `battle-…|/choose move 1|12` — so the line is read token by token and any `/`-prefixed token is
+     * examined rather than assuming the command starts the string.
+     *
+     * A `/undo` (the Cancel button's own command) clears the lock AND the alert, because the alert
+     * names a choice that no longer exists. `team` choices are ignored: a team-preview pick is not a
+     * locked move and nothing in the ponder compares against it.
+     */
+    _noteOutgoingChoice(rawLine) {
+      if (typeof rawLine !== 'string' || !rawLine) return null;
+      const parts = rawLine.split('|');
+      for (let i = 0; i < parts.length; i++) {
+        const token = parts[i].trim();
+        if (!token || token.charAt(0) !== '/') continue;
+        if (/^\/undo\b/i.test(token)) {
+          this._lockedChoice = null;
+          this._clearCancelAlert();
+          return null;
+        }
+        const choose = /^\/choose\s+([^,]+)/i.exec(token);
+        if (!choose) continue;
+        const named = /^(move|switch|team)\s+([^\s]+)/i.exec(choose[1].trim());
+        if (!named) continue;
+        const kindWord = named[1].toLowerCase();
+        if (kindWord === 'team') { this._lockedChoice = null; return null; }
+        this._lockedChoice = { kind: kindWord, arg: named[2], raw: token };
+        return this._lockedChoice;
+      }
+      return null;
+    }
+
+    /**
+     * _lockedAction(state) -> the action the player locked in, resolved against the REQUEST, or null.
+     *
+     * The wire says `move 2`; the ranking is keyed by move id. The request's own list is the only
+     * honest mapping between them (the client's slot order IS the argument order), and when it
+     * cannot be resolved — no request, an out-of-range slot, a switch to a body the request does not
+     * list — the answer is null, which suppresses the alert entirely. A guess here would name the
+     * wrong line to undo.
+     */
+    _lockedAction(state) {
+      const locked = this._lockedChoice;
+      if (!locked || !state) return null;
+      const req = state.request;
+      if (!req || typeof req !== 'object') return null;
+      if (locked.kind === 'move') {
+        const index = parseInt(locked.arg, 10);
+        const active = req.active && req.active[0];
+        const moves = (active && active.moves) || [];
+        if (!(index >= 1) || index > moves.length) return null;
+        const slot = moves[index - 1] || {};
+        const id = U.toID(slot.id || slot.move || '');
+        if (!id) return null;
+        return { kind: 'move', id: id, name: slot.move || slot.id || id, slot: index };
+      }
+      if (locked.kind === 'switch') {
+        const index = parseInt(locked.arg, 10);
+        const list = (req.side && req.side.pokemon) || [];
+        if (!(index >= 1) || index > list.length) return null;
+        const slot = list[index - 1] || {};
+        /* The request's ident is `p1: Gholdengo`, and the ranking keys a switch by the SPECIES id
+         * (`gholdengo`) — so the side prefix comes off. `U.toID('p1: Gholdengo')` is 'p1gholdengo',
+         * which matches nothing the engine ever produced (found by section 14 of hud_check). */
+        const species = slot.species || String(slot.ident || '').split(':').pop();
+        const id = U.toID(species);
+        if (!id) return null;
+        return { kind: 'switch', id: id, name: species.trim() || id, slot: index };
+      }
+      return null;
+    }
+
+    /** _clearCancelAlert() — take the HUD's Cancel alert down (never throws). */
+    _clearCancelAlert() {
+      if (!this.hud || typeof this.hud.clearCancelAlert !== 'function') return null;
+      try { return this.hud.clearCancelAlert(); } catch (e) { this._error('cancel-clear', e); return null; }
+    }
+
+    /**
+     * _closePonderWindow() — a new decision window is a new question.
+     *
+     * Every window (a request, a `|turn|`, a new battle) bumps the monotonic id, which is what makes
+     * a background pass that finished late harmless: it compares its own id against the live one and
+     * publishes nothing. The lock and the alert belong to the window that is over, so they go with
+     * it.
+     */
+    _closePonderWindow() {
+      this._ponderId += 1;
+      this._lockedChoice = null;
+      this._clearCancelAlert();
+      return this._ponderId;
+    }
+
+    /**
+     * _scheduleDeepPonder(state) -> the pass id, or null.
+     *
+     * PASS 2 IS A SECOND READ, AND PASS 1 MUST NOT WAIT FOR IT. The HUD is already rendered from the
+     * fast evaluation by the time this runs; the deeper pass is scheduled for the next tick (never
+     * synchronously) so the frame that is on screen keeps its timing. Passes do NOT queue: an id is
+     * taken now, and a later window (or a later request in the same turn) invalidates it.
+     */
+    _scheduleDeepPonder(state) {
+      const plan = this._deepPonderPlan();
+      if (!plan || !this.engine || !state) return null;
+      if (typeof setTimeout !== 'function') return null;      // no timer: never block Pass 1 instead
+      const id = ++this._ponderId;
+      const self = this;
+      try {
+        setTimeout(function () { self._runDeepPonder(state, plan, id); }, 0);
+      } catch (e) { this._error('ponder-schedule', e); return null; }
+      return id;
+    }
+
+    /**
+     * _runDeepPonder(state, plan, id) — the deeper read, and what to do with it.
+     *
+     * TWO OUTCOMES, and they are different questions:
+     *   CASE A (nothing locked in, the move menu is still open): the deeper ranking simply replaces
+     *     what Pass 1 rendered — same HUD, better answer.
+     *   CASE B (the player already clicked: `_lockedChoice` is set and Showdown's Cancel button is on
+     *     screen): the reader is committed, so the pass does not silently disagree in the HUD. It
+     *     compares the locked line against the deeper top line and, when the deeper pass would have
+     *     vetoed it or beats it by a margin the config names, flags the Cancel button and says why.
+     *     A locked choice that the deep pass still prefers, or that it cannot resolve at all, raises
+     *     nothing.
+     * The pass re-reads the SAME window with `reread: true`, which is what keeps it from repeating
+     * the engine's per-turn side effects (see LaplaceEngine.evaluateTurn).
+     */
+    _runDeepPonder(state, plan, id) {
+      if (id !== this._ponderId) return null;                 // the window closed before we ran
+      if (!this.engine || !state) return null;
+      let ranked = [];
+      try {
+        ranked = this.engine.evaluateTurn(state, {
+          K: plan.deepWorlds,
+          reread: true,
+          beam2Ply: plan.useBeam2Ply ? true : undefined
+        });
+      } catch (e) { this._error('ponder', e); return null; }
+      if (id !== this._ponderId) return null;                 // ...or while we were running
+      const readout = this.engine.lastReadout || null;
+      this.stats.ponders += 1;
+      const actions = Array.isArray(ranked) ? ranked.filter(Boolean) : [];
+      const locked = this._lockedAction(state);
+      if (!locked) {
+        this.pendingReadout = readout;
+        if (this.hud) {
+          try { this.hud.render(actions, state, readout); } catch (e2) { this._error('ponder-render', e2); }
+        }
+        this.lastPonder = { window: id, updated: true, mode: 'menu-open', top: actions.length ? actions[0].name : null };
+        return actions;
+      }
+      const info = this._compareLockedToDeep(locked, actions, plan);
+      if (!info) {
+        this._clearCancelAlert();
+        this.lastPonder = { window: id, updated: false, mode: 'cancel-window', agreed: true, locked: locked.name };
+        return actions;
+      }
+      this.lastPonder = { window: id, updated: false, mode: 'cancel-window', agreed: false, alert: info };
+      if (this.hud && typeof this.hud.renderCancelAlert === 'function') {
+        try { this.hud.renderCancelAlert(info); } catch (e) { this._error('cancel-alert', e); }
+      }
+      // The Cancel window is the one place the alert is worth a pulse: the advice is actionable for
+      // the few seconds the button is on screen, and the player may be looking anywhere else.
+      if (this._canVibrate()) this._vibrate([80, 40, 120]);
+      return actions;
+    }
+
+    /**
+     * _compareLockedToDeep(locked, actions, plan) -> the alert payload, or null for silence.
+     *
+     * Only three things can raise one, and each is a fact about the deep ranking rather than a
+     * difference of opinion: the locked line is VETOED (the deep pass found a reason not to click it
+     * at all), the locked line is GONE from the deeper ranking, or the deeper top line beats it by
+     * the configured margin in score or confidence. A locked line that the deep pass still ranks
+     * first raises nothing — the fast pass and the deep pass agree, which is the common case.
+     */
+    _compareLockedToDeep(locked, actions, plan) {
+      const idOf = function (a) {
+        if (!a || a.isVetoed) return null;
+        return U.toID(a.moveId || a.name || a.targetId || '');
+      };
+      const best = actions.length ? actions[0] : null;
+      if (!best) return null;
+      const lockedId = U.toID(locked.id);
+      let mine = null;
+      for (let i = 0; i < actions.length; i++) {
+        const a = actions[i];
+        if (!a) continue;
+        const aId = U.toID(a.moveId || a.name || a.targetId || '');
+        if (aId && aId === lockedId) { mine = a; break; }
+      }
+      const bestId = idOf(best);
+      if (bestId && bestId === lockedId) return null;          // the deeper read still wants it
+      const delta = typeof best.score === 'number' && mine && typeof mine.score === 'number'
+        ? best.score - mine.score : null;
+      const confDelta = typeof best.confidence === 'number' && mine && typeof mine.confidence === 'number'
+        ? best.confidence - mine.confidence : null;
+      let reason = null;
+      if (mine && mine.isVetoed) reason = 'vetoed';
+      else if (!mine) reason = 'unlisted';
+      else if (delta !== null && delta >= plan.cancelAlertScoreDelta) reason = 'score';
+      else if (confDelta !== null && confDelta >= plan.cancelAlertConfDelta) reason = 'confidence';
+      if (!reason) return null;
+      const why = reason === 'vetoed'
+        ? (mine.vetoReason ? 'the deeper read vetoes it: ' + mine.vetoReason : 'the deeper read vetoes it')
+        : reason === 'unlisted'
+          ? 'the deeper read does not offer it at all this window'
+          : reason === 'score'
+            ? 'a deeper search is worth ' + U.round1(delta) + ' more payoff'
+            : 'the deeper search is ' + U.round1(confDelta) + ' confidence points clearer';
+      return {
+        locked: { id: locked.id, name: locked.name, kind: locked.kind },
+        better: { id: bestId, name: best.name, kind: best.kind || 'move' },
+        reason: reason,
+        why: why,
+        scoreDelta: delta,
+        confDelta: confDelta
+      };
     }
 
     /* ---------------------------------------------------- on-screen extras */

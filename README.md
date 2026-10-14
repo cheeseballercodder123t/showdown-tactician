@@ -195,20 +195,21 @@ src/injected.js            MAIN-world WebSocket interceptor
 src/background.js          service worker: the only component that calls the LLM API
 src/content.js             pipeline orchestrator
 options/options.html|js    mobile settings page (provider, key, team, Elo scaler)
-tests/run_tests.js         end-to-end verification suite (218 checks)
+tests/run_tests.js         end-to-end verification suite (232 checks)
 tests/rule_checks.js       deduction-rule checks driven through real protocol lines (23 checks)
 tests/util_smoke.js        util.js in isolation: dex access, item naming, type math, Speed maths,
                            the move-lookup cache (55 checks)
 tests/injected_bridge.js   the MAIN-world WebSocket bridge against a fake WebSocket/DOM, including
                            the poll dedupe and one-frame-one-forward capture (23 checks)
-tests/config_check.js      RULE 4: the config inventory, the frozen 128D layout, live mutation (71 checks)
+tests/config_check.js      RULE 4: the config inventory, the frozen 128D layout, live mutation (85 checks)
 tests/blackbox_guard.js    RULE 1: 50,616 stat values diffed against @smogon/calc + a scan for handwritten math (28 checks)
 tests/parser_fuzz.js       RULE 3: the real 30-turn log replayed, every prefix, and junk lines (44 checks)
 tests/hardening_audit.js   the bug-hunt regression suite: 11 defects reproduced first, then fixed,
                            plus a 40-battle seeded invariant fuzz (64 checks)
 tests/dom_check.js         the HUD's DOM lifecycle against a faithful stub: the inline-style rollback
                            is recorded once, clear() restores the ORIGINALS, badges are reused not
-                           stacked, the veto contract holds, detached buttons are compacted (35 checks)
+                           stacked, the veto contract holds, detached buttons are compacted, and the Cancel-window alert
+                           flags Showdown's own button and releases it on every teardown path (99 checks)
 tests/e2e/                 the real-browser suite (Playwright): helpers.js, a mock Showdown fixture
                            served by intercepting the real hostname, and seven specs covering boot,
                            the HUD, the session, robustness, hardening, the socket bridge and the
@@ -232,7 +233,9 @@ tests/ability_check.js     negative-space ability deduction: an observed status,
                            unsound-evidence section pins what must NOT eliminate (56 checks)
 tests/tuning_check.js      the four tuning tiers — the Elo switch band, turn urgency (adopted),
                            comeback mode and the rejected pivot tax — each pinned both ways: its
-                           shipped default and the exact number it moves when toggled (68 checks)
+                           shipped default and the exact number it moves when toggled — plus the
+                           selective 2-ply beam, the stratified worlds that flipped their own default,
+                           and the quantal-response opponent (194 checks)
 tests/preview_check.js     the Turn-0 lead advisory: the parser contract, the 6x6 evaluator scoring,
                            the broker wiring and the HUD card (31 checks)
 tests/quiescence_check.js  the setup punisher: the boost table, the one extra exchange, the three
@@ -244,7 +247,8 @@ tests/entropy_check.js     the scouting entropy: Shannon arithmetic against hand
 tests/wincon_check.js      the win-condition bounty: the refusals, the body the measurements name,
                            the payout (56 checks)
 tests/endgame_check.js     the endgame solver: every refusal, a proven mate, the Speed rail from
-                           both sides, the node budget (45 checks)
+                           both sides, the widened 3v3 box, an ambiguous Speed order priced as a
+                           chance node rather than refused, and the node budget (83 checks)
 tests/perf_bench.js        the per-turn decision-cost benchmark: real log replay + worst case,
                            calibration and a Geekbench-scaled device projection
 tests/run_all.js           runs every suite in sequence; `npm test` calls this
@@ -312,7 +316,7 @@ tools/run_ablation.js      the config-flag ablation runner: one arena batch per 
                            a shared seed, a table of win/loss/tie deltas against the baseline, and
                            a paired bootstrap that says when a delta is only noise
 tests/arena_check.js       the arena's own suite (157 checks; skips without @pkmn/sim)
-tests/ablation_check.js    the ablation runner's suite (269 checks; the live batch skips without
+tests/ablation_check.js    the ablation runner's suite (292 checks; the live batch skips without
                            @pkmn/sim)
 tests/tactical_puzzles.js  the harvested-vaccine registry and runner; ships with zero puzzles
 ARCHITECTURE.md            frozen interface contract every module binds to
@@ -322,11 +326,11 @@ ARCHITECTURE.md            frozen interface contract every module binds to
 
 ```
 node test_engine.js           #  57 checks: RULE 2 — five ground-truth damage rolls, frozen
-node tests/run_tests.js       # 229 checks: the whole pipeline in a DOM-less sandbox
+node tests/run_tests.js       # 232 checks: the whole pipeline in a DOM-less sandbox
 node tests/rule_checks.js     #  23 checks: the deductions, replayed from raw protocol lines
 node tests/util_smoke.js      #  55 checks: dex access, item naming, type math, Speed maths, the lookup caches
 node tests/injected_bridge.js #  23 checks: the MAIN-world WebSocket bridge (fake WebSocket/DOM)
-node tests/config_check.js    #  71 checks: RULE 4 — the config is the only home for a heuristic
+node tests/config_check.js    #  85 checks: RULE 4 — the config is the only home for a heuristic
 node tests/blackbox_guard.js  #  28 checks: RULE 1 — no handwritten math, 50,616 stats diffed
 node tests/parser_fuzz.js     #  44 checks: RULE 3 — the real log, all its prefixes, junk lines
 node tests/hardening_audit.js #  64 checks: the bug-hunt regressions + a 40-battle invariant fuzz
@@ -334,7 +338,8 @@ node tests/upgrades_check.js  # 118 checks: the mixed-strategy solve, the vetoes
 node tests/chaos_sync_check.js # 70 checks: the chaos sync + the usage overlay (fixtures only, no network)
 node tests/weights_check.js   # 233 checks: the downloader + the extractor + the fitter + the config adoption
 node tests/cross_check.js     #  79 checks: the cross screening, the --crosses refit, and the refusal to adopt
-node tests/hud_check.js       # 175 checks: the seven HUD extras (stub DOM), the bench-tap sandbox end to end + their engine data
+node tests/hud_check.js       # 238 checks: the seven HUD extras (stub DOM), the bench-tap sandbox end to end,
+                              #   their engine data, and the Cancel-window ponder's scheduling contract
 node tests/discrete_check.js  # 110 checks: the 16 discrete rolls, the exact KO count, EV pinning, residual order
 node tests/scout_check.js     #  78 checks: the scouting tool, the overlay, the pruner's re-weighting
 node tests/pressure_check.js  # 151 checks: the PP-stall pivot, the volatility charge, the format sentinel
@@ -342,17 +347,18 @@ node tests/quiescence_check.js #  92 checks: the setup punisher, the boost table
 node tests/profile_check.js   #  80 checks: the opponent profiler (deviation, labels, clamping)
 node tests/entropy_check.js   #  48 checks: the scouting entropy and its assumed-response model
 node tests/wincon_check.js    #  56 checks: the win-condition bounty (refusals, payout)
-node tests/endgame_check.js   #  45 checks: the bounded endgame search and its honest rails
+node tests/endgame_check.js   #  83 checks: the 2-body mate, the 3v3 box, the Speed chance node, its rails
 node tests/arena_check.js     # 157 checks: the arena — runner, splicer, agent legality, mutator, harvester
 node tests/invariants_check.js #  17 checks: the solver's invariants over perturbed boards
 node tests/ability_check.js   #  56 checks: the negative-space ability deduction (status, grounding, the gated absence rule,
                               #   and every observation that only LOOKS like proof)
-node tests/tuning_check.js    # 112 checks: the tuning tiers — the Elo band, turn urgency (adopted), comeback mode,
-                              #   and the pivot tax (measured, then rejected by the win-rate gate)
+node tests/tuning_check.js    # 194 checks: the tuning tiers — the Elo band, turn urgency (adopted), comeback mode,
+                              #   the pivot tax (rejected), the 2-ply beam, the stratified active-set
+                              #   worlds (which flipped their own default) and the QRE opponent
 node tests/preview_check.js   #  31 checks: the Turn-0 lead advisory (parser contract, 6x6 scoring, HUD card)
 node tests/mlp_check.js       #  48 checks: the residual head's gate, fail-safe and clamp (it ships off)
-node tests/dom_check.js       #  35 checks: the HUD's DOM lifecycle, driven through a stub parser
-node tests/ablation_check.js  # 269 checks: the ablation runner — --set and its refusals, each flag in a real
+node tests/dom_check.js       #  99 checks: the HUD's DOM lifecycle, driven through a stub parser
+node tests/ablation_check.js  # 292 checks: the ablation runner — --set and its refusals, each flag in a real
                               #   engine, the feature table, the aggregation/bootstrap maths, one live batch
 node tests/tactical_puzzles.js #   0 puzzles: the vaccine registry, green until a --harvest run writes a defect
 node tests/human_match_check.js # 140 checks: the human-move-match benchmark — what a replay DOES and does NOT say,
@@ -532,15 +538,19 @@ Every batch runs `--mode full`. A spliced battle hands the engine a recorded hum
 not comparable across variants, so the ablation never splices.
 
 **What it has found so far** (numbers, intervals and the two instrument bugs the output exposed are
-in [CHANGELOG.md](CHANGELOG.md)). Two runs on the same seed: of eighteen flags, exactly one separates
-from noise at 60–150 paired battles — **`laplace.quiescence` costs the engine about 19 win points**,
-and the loss is entirely its `extendSetup` half (switching that off reproduces switching the whole
-tier off battle for battle, while `blockProtect` changes no decision at all). The mechanism the
-numbers support is that pricing the opponent's boosted reply as a certainty pushes the engine onto
-non-committal lines: the baseline draws **30.7 %** of its games at the 100-turn cap, and those
-capped games have lost only **5.4 of 12 bodies** — a standoff, not a loss — which disabling the
-setup ply cuts to **10.0 %** while turning 29 of those draws into wins. That is a measurement against
-three fixed personas, so it is handed over as evidence, not as a config change.
+in [CHANGELOG.md](CHANGELOG.md)). **Read the quiescence paragraph below as HISTORY, not as the current
+verdict.** Two early runs on the same seed found exactly one flag separating from noise at 60–150
+paired battles — `laplace.quiescence` reading about **19 win points** against it, entirely in its
+`extendSetup` half — and the mechanism the numbers supported was that pricing the opponent's boosted
+reply as a certainty pushed the engine onto non-committal lines: the baseline drew **30.7 %** of its
+games at the 100-turn cap, and those capped games had lost only **5.4 of 12 bodies**. **Both numbers
+are superseded.** The instrument those runs used was handing the engine a one-Pokemon team
+(`ATTEMPTS.md` §H), and on the fixed instrument the same tier measured **HELPS +20.0 [+10.0, +30.0]**
+— while the self-play mirror then read the same patch **HURTS +23.3 [+8.3, +38.3]** (`ATTEMPTS.md`
+§J). The current status is **DISPUTED, one instrument each way**, and §K's third pass (20 paired
+battles per instrument, the new match-point scale) leans HURTS on both, on too little power to move a
+shipped default. The tier ships ON; `ATTEMPTS.md` §C1/§J/§K are the register, and the run that can
+settle it is named in §K3.
 
 The second sweep priced the four newest tiers, and **exactly one cleared the gate: turn urgency**
 (`laplace.urgency`), now adopted and on by default. 60 paired battles per arm, all three personas,
@@ -696,8 +706,16 @@ number by hand.
   than a third), so it prices as the wasted turn it is. And their **recovery** replies are
   deliberately *not* priced: Recover-class healing varies by move and by weather, so it stays the
   legacy no-op rather than an invented number.
-* **Stated approximations.** No speed order is modelled, so both second actions land and "who moves
-  first" is never claimed; their Protect is not re-checked on the second turn; their *damaging*
+* **The turn-2 order, and how much of it to price.** `respectTurn2Speed` (default `true`) orders the
+  extension's second exchange by the Speed each body will actually have there — the boost applied,
+  Trick Room and move priority included — so a body that faints first does not act, and "boost, then
+  kill the setup user" is no longer priced the same as "boost, trade". `followUpWeight` (default
+  **1.0**, the identity) scales how much of that second exchange is charged: 0.5 prices half of it,
+  0 values the boost with no second hit. It exists because the mirror and the personas disagree about
+  the tier (`ATTEMPTS.md` §J) and one candidate explanation was that a full-strength Turn-2 boosted
+  hit over-prices caution against a rational opponent. It was measured and came back **DISARMED**
+  (§K3): the damped arm did not recover the mirror's harm, so the hypothesis is not the lever.
+* **Stated approximations.** Their Protect is not re-checked on the second turn; their *damaging*
   replies keep the pre-existing symmetric treatment. The published score is the same zero-sum
   quantity it always was.
 
@@ -742,14 +760,21 @@ would mean:
 * **`src/endgame_solver.js`** (`laplace.endgame`). With few bodies left the branching factor collapses
   and a bounded alpha-beta search runs instead of one turn of the matrix. Its value as specified is a
   **readout** (`lastReadout.endgame`: the line and its `mateIn`), not a policy change: a proof of a
-  forced win is published for the HUD and the LLM to show. It refuses outside its competence, and the
-  rail that matters is Speed — when both orders agree the pair is decided, and one undecided pair
-  anywhere in the tree refuses the whole solve.
+  forced win is published for the HUD and the LLM to show. It refuses outside its competence —
+  `maxAlive` **3** (so a 3v3, 3v2 or 2v3 board is searchable), `maxBranchingMoves` 12 and a hard
+  `nodeBudget`; an exhausted budget reports `{solved:false, reason:'budget'}`, never a partial line
+  dressed as a solution. The rail that matters is Speed: when both orders agree the pair is decided,
+  and when our exact Speed lands inside their `[speedFloor, speedCeiling]` band the order is a fact we
+  do not have. `chanceNodes` (default `true`) prices that pair as the expectation over the two orders,
+  weighted by their own surviving candidate sets, instead of refusing the solve — but **a mate is never
+  claimed through one**, because a proof cannot rest on a coin flip.
+  `tests/endgame_check.js` §6 pins the 3v3 mate (found in 64 nodes) and lands the blended row
+  between two certain-order references.
 
 All four publish on `lastReadout` (`profile`, `scouting`, `wincon`, `endgame`), which is what the HUD
 and the LLM bridge already read; `src/ui_overlay.js` does not render them yet.
 
-## The six HUD extras
+## The seven HUD extras
 
 All of these are rendered by `src/ui_overlay.js` from data the engines already produce — the HUD
 computes no game logic of its own, and every threshold it colours against is in `config.js`.
@@ -780,6 +805,17 @@ computes no game logic of its own, and every threshold it colours against is in 
    actually attacked under it), snow turns and Magic Bounce activations straight from the log;
    on `|win|` the boot assembles them into a card with a `Copy Summary` button. Nothing on it is
    estimated — a stat with no data reads as zero.
+7. **The Cancel-window alert.** After the fast pass paints the HUD, the boot schedules a DEEPER one in
+   a timeout (more worlds, the 2-ply beam, the endgame solver at its 3v3 bound) and never blocks a
+   frame doing it. If the player has already clicked and Showdown's own `undoChoice` button is on
+   screen, the deeper ranking is compared with the line they locked in — the deeper pass vetoes it, or
+   beats it by `laplace.deepPonder.cancelAlertScoreDelta` payoff or `cancelAlertConfDelta` confidence
+   points — and the button is flagged with an `UNDO → <line>` badge plus a buzz. A monotonic ponder
+   id bumps on every new turn, init or decision frame, so a stale pass publishes nothing, and every
+   teardown path releases the flag. `tests/hud_check.js` §14 pins the scheduling contract and
+   `tests/dom_check.js` §11 the DOM lifecycle. Read it as a UI hint, not as a gate-adopted opinion:
+   its deeper ranking inherits `beam-2ply` and the endgame tier, both flat/unpriced at this sample
+   (`ATTEMPTS.md` §K4).
 
 The first real-browser pass over this HUD found a defect the stub DOM could not: `_el()` added a
 compound class name through `classList.add`, which throws `InvalidCharacterError` in a real DOM,

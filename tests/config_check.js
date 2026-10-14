@@ -115,8 +115,12 @@ const INVENTORY = [
   'laplace.struggleChipPercent', 'laplace.switchAteHitBonus',
   'laplace.switchTax.enabled', 'laplace.switchTax.points',
   'laplace.nash.enabled', 'laplace.nash.iterations',
+  // quantal-response opponent (ships off; the temperature decays to 0 at the top of the ladder)
+  'laplace.nash.qre.enabled', 'laplace.nash.qre.tau',
+  'laplace.nash.qre.highRating', 'laplace.nash.qre.lowRating',
   // quiescence (the setup punisher: the two replies the 1-ply matrix priced as no-ops)
   'laplace.quiescence.enabled', 'laplace.quiescence.extendSetup', 'laplace.quiescence.blockProtect',
+  'laplace.quiescence.respectTurn2Speed', 'laplace.quiescence.followUpWeight',
   // comeback mode (ships off) + turn urgency (ADOPTED, ships on; adopted on the 60-battle sweep)
   'laplace.comeback.enabled', 'laplace.comeback.winMargin', 'laplace.comeback.lossMargin',
   'laplace.comeback.winChargeScale', 'laplace.comeback.lossChargeScale',
@@ -131,8 +135,18 @@ const INVENTORY = [
   'laplace.wincon.enabled', 'laplace.wincon.maxBounty', 'laplace.wincon.maxTargets',
   'laplace.endgame.enabled', 'laplace.endgame.maxBodies', 'laplace.endgame.maxDepth',
   'laplace.endgame.nodeBudget',
+  // the three-wide bound, the branch cap and the Speed chance node (see endgame_solver.js)
+  'laplace.endgame.maxAlive', 'laplace.endgame.maxBranchingMoves', 'laplace.endgame.chanceNodes',
+  // the selective 2-ply beam (a measure-before-adopt tier, ships off)
+  'laplace.beam2Ply.enabled', 'laplace.beam2Ply.topMy', 'laplace.beam2Ply.topOpp',
+  'laplace.beam2Ply.blendWeight', 'laplace.beam2Ply.threatWeight',
+  // the Cancel-window background ponder (src/content.js + ui_overlay.js)
+  'laplace.deepPonder.enabled', 'laplace.deepPonder.deepWorlds', 'laplace.deepPonder.useBeam2Ply',
+  'laplace.deepPonder.useEndgame3v3', 'laplace.deepPonder.cancelAlertScoreDelta',
+  'laplace.deepPonder.cancelAlertConfDelta',
   // sampler
   'sampler.K', 'sampler.maxTeam', 'sampler.maxResample', 'sampler.minSetWeight',
+  'sampler.stratifyActive',
   // usage overlay (the monthly chaos sync writes the DATA; these two are the knobs)
   'usage.enabled', 'usage.floor',
   // clock (opponent deliberation telemetry)
@@ -241,6 +255,19 @@ check('the damage-evidence caps are positive integers',
     .every(function (v) { return typeof v === 'number' && v > 0 && v % 1 === 0; }),
   cfg('pruner.damageEvidence.maxObservations') + ' / ' + cfg('pruner.damageEvidence.maxSetsTested'));
 check('llm.systemPrompt is a non-empty string', typeof cfg('llm.systemPrompt') === 'string' && cfg('llm.systemPrompt').length > 20);
+check('the endgame body bound admits three and refuses four (a number, not a range)',
+  cfg('laplace.endgame.maxAlive') === 3 && cfg('laplace.endgame.maxBranchingMoves') >= 4,
+  cfg('laplace.endgame.maxAlive') + ' / ' + cfg('laplace.endgame.maxBranchingMoves'));
+check('the QRE band is ordered (a temperature that decays upward, not sideways)',
+  typeof cfg('laplace.nash.qre.tau') === 'number' && cfg('laplace.nash.qre.tau') > 0 &&
+  cfg('laplace.nash.qre.lowRating') < cfg('laplace.nash.qre.highRating'),
+  cfg('laplace.nash.qre.lowRating') + ' < ' + cfg('laplace.nash.qre.highRating'));
+check('the ponder asks for MORE worlds than the fast pass (otherwise it is not deeper)',
+  cfg('laplace.deepPonder.deepWorlds') > cfg('laplace.K'),
+  cfg('laplace.deepPonder.deepWorlds') + ' vs ' + cfg('laplace.K'));
+check('the Cancel alert margins are positive (a zero margin would flag every disagreement)',
+  cfg('laplace.deepPonder.cancelAlertScoreDelta') > 0 && cfg('laplace.deepPonder.cancelAlertConfDelta') > 0,
+  cfg('laplace.deepPonder.cancelAlertScoreDelta') + ' / ' + cfg('laplace.deepPonder.cancelAlertConfDelta'));
 
 /* ====================================================== 3. the 128D layout is frozen */
 

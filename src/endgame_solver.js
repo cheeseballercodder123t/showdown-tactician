@@ -13,23 +13,33 @@
  *   declares the small box it is competent in, and outside that box it returns null instead of a
  *   number:
  *     - `laplace.endgame.enabled` false (the default — the coordinator wires this in),
- *     - more than `maxBodies` living bodies on either side,
+ *     - more than `maxAlive` living bodies on either side (3, so a 3v3/3v2/2v3 board is inside the
+ *       box; it was 2 until the wider activation bound was asked for and measured),
  *     - no damage engine or no leaf evaluator,
  *     - no modelled move for either ACTIVE body,
  *     - the node budget exhausted mid-search ({solved:false, reason:'budget'}, never a partial
  *       line presented as a solution),
- *     - a board whose action order cannot be decided AND whose outcome depends on it,
+ *     - a board whose action order cannot be decided AND whose outcome depends on it, when
+ *       `laplace.endgame.chanceNodes` is off or the probability cannot be read,
  *     - a move the damage engine cannot price.
  *   Those last two are the important ones. "Who moves first" is decided by move priority and then
  *   by measured Speed; when the two Speed bounds OVERLAP (the opponent's set is not pinned) the
- *   pair is searched BOTH ways and the result is used only if the two orders agree. If they
- *   disagree, the outcome is a function of a fact this engine does not have, and guessing it would
- *   be exactly the dishonesty the rest of the repository refuses. The question is asked at EVERY
- *   pair the search visits, so ONE undecided pair anywhere in the tree refuses the whole solve:
- *   a proof is only ever as strong as its weakest branch, and a mate reported through a branch
- *   that might have gone the other way is not a mate. The consequence to expect: a near-mirror
- *   endgame with unpinned Speed refuses even though the two bodies look identical, because at
- *   some depth "who is inside one hit of fainting" becomes the whole question.
+ *   pair is searched BOTH ways. If the two orders agree the pair IS decided. If they disagree, the
+ *   outcome is a function of a fact this engine does not have, and the old rail refused the whole
+ *   solve rather than picking one: a proof is only ever as strong as its weakest branch, and a mate
+ *   reported through a branch that might have gone the other way is not a mate. The question is
+ *   asked at EVERY pair the search visits, so ONE undecided pair anywhere in the tree used to
+ *   refuse everything — including a near-mirror endgame with unpinned Speed, because at some depth
+ *   "who is inside one hit of fainting" becomes the whole question.
+ *
+ *   CHANCE NODES (laplace.endgame.chanceNodes, on by default) keep the honesty and drop the
+ *   refusal where it is merely uninformative. When OUR exact Speed is known and the opponent's band
+ *   straddles it, `_oppFasterProbability` reads the share of THEIR surviving candidate sets (weighted
+ *   by each set's own posterior weight, an exact tie counted as a coin flip, Trick Room inverted)
+ *   that act before us, and the pair is priced as the expected value over the two orders. The one
+ *   thing a chance node may NEVER do is manufacture a mate: a blended value is clamped strictly
+ *   inside the non-mate band, so `solved` can only be true for a line the tree PROVED in both
+ *   orders. `report.chancePairs` says how many such pairs the value rests on.
  *
  * WHAT IS MODELLED, AND WHAT IS DELIBERATELY NOT
  *   - One turn = both bodies act once, ordered by (priority, Speed). Their reply is chosen
@@ -84,9 +94,24 @@
     constructor(options) {
       const o = options || {};
       this.enabled = o.enabled !== undefined ? !!o.enabled : cfg('laplace.endgame.enabled', false) === true;
-      this.maxBodies = intOr(o.maxBodies, cfg('laplace.endgame.maxBodies', 2));
+      /* How many living bodies a side may have before this solver declares the box too big. Read
+       * from `maxAlive`, falling back to the historical `maxBodies` (both as an option and as a
+       * config key) and then to 3. `this.maxBodies` is kept in step because that is the name the
+       * existing callers and the regression suite use. */
+      this.maxAlive = intOr(o.maxAlive !== undefined ? o.maxAlive : o.maxBodies,
+        cfg('laplace.endgame.maxAlive', cfg('laplace.endgame.maxBodies', 3)));
+      this.maxBodies = this.maxAlive;
       this.maxDepth = intOr(o.maxDepth, cfg('laplace.endgame.maxDepth', 10));
       this.nodeBudget = intOr(o.nodeBudget, cfg('laplace.endgame.nodeBudget', 20000));
+      // A bound on how many moves one side may branch on. Inert for a legal four-move set; it is
+      // here so a driver-built body carrying more known moves cannot widen a search the node budget
+      // was sized for.
+      this.maxBranchingMoves = intOr(o.maxBranchingMoves, cfg('laplace.endgame.maxBranchingMoves', 12));
+      // Ambiguous Speed as a chance node (see the class comment). `!== false` so a config that never
+      // mentions the key gets the documented default, and an explicit false restores the refusal.
+      this.chanceNodes = o.chanceNodes !== undefined ? !!o.chanceNodes
+        : cfg('laplace.endgame.chanceNodes', true) !== false;
+      this._chancePairs = 0;
       // An explicit null must be HONOURED (the refusal path for "no engine" is part of the
       // contract), so this is `!== undefined`, not `||`.
       this.damage = o.damage !== undefined ? o.damage : (ST.DamageEngine ? new ST.DamageEngine({ gen: 9 }) : null);
@@ -116,14 +141,15 @@
 
       const node = this._nodeFrom(state, world);
       if (!node) return this._refuse('no-bodies');
-      if (node.my.bodies.length > this.maxBodies) return this._refuse('too-many-bodies-mine');
-      if (node.opp.bodies.length > this.maxBodies) return this._refuse('too-many-bodies-theirs');
+      if (node.my.bodies.length > this.maxAlive) return this._refuse('too-many-bodies-mine');
+      if (node.opp.bodies.length > this.maxAlive) return this._refuse('too-many-bodies-theirs');
       const myMoves = this._movesOf(this._active(node.my) && this._active(node.my).mon);
       const oppMoves = this._movesOf(this._active(node.opp) && this._active(node.opp).mon);
       if (!myMoves.length) return this._refuse('no-modelled-move-mine');
       if (!oppMoves.length) return this._refuse('no-modelled-move-theirs');
 
       this._nodes = 0;
+      this._chancePairs = 0;
       this._source = state;
       let value = null, line = [];
       try {
@@ -153,13 +179,17 @@
     _refuse(reason, nodes) {
       const report = {
         solved: false, reason: reason, depth: 0, mateIn: null,
-        line: [], score: null, nodes: nodes || 0
+        line: [], score: null, nodes: nodes || 0,
+        chancePairs: this._chancePairs || 0
       };
       this.lastReport = report;
       return null;
     }
 
     _finish(report) {
+      // How many pairs along the way were resolved as CHANCE nodes (see _resolvePair). A caller can
+      // tell a value the tree PROVED from one that rests on a Speed coin flip by reading this.
+      report.chancePairs = this._chancePairs || 0;
       this.lastReport = report;
       return report;
     }
@@ -243,7 +273,12 @@
 
     /* ------------------------------------------------------------------ actions */
 
-    /** Their damaging moves (deduped, at most four — a set is four moves). */
+    /**
+     * Their damaging moves (deduped). A LEGAL set is four moves, so `maxBranchingMoves` (12 by
+     * default) never binds on a real board — which is the point of a bound: it exists for the
+     * driver-built body that carries more known moves than a set can hold, and it is the number the
+     * node budget was sized against rather than a second hardcoded four.
+     */
     _movesOf(mon) {
       const U = ST.util || {};
       if (!mon || typeof U.getMoveData !== 'function') return [];
@@ -251,7 +286,7 @@
         : (mon.liveSet && mon.liveSet.moves) ? mon.liveSet.moves
           : (mon.revealedMoves) ? mon.revealedMoves : [];
       const out = [];
-      for (let i = 0; i < list.length && out.length < 4; i++) {
+      for (let i = 0; i < list.length && out.length < this.maxBranchingMoves; i++) {
         const name = list[i];
         if (!name) continue;
         const data = U.getMoveData(name);
@@ -290,13 +325,24 @@
       if (mon && typeof mon.speedCeiling === 'number' && mon.speedCeiling > 0) max = mon.speedCeiling;
       const pool = (mon && mon.candidateSets && mon.candidateSets.length) ? mon.candidateSets
         : (mon && mon.liveSet ? [mon.liveSet] : []);
+      /* THE CEILING IS THE FASTEST CANDIDATE, not the slowest. Every entry here is one set's
+       * MAXIMUM possible Speed, and the body's true set is ONE of them, so the body cannot be
+       * faster than the fastest candidate — the LARGEST of those maxima, not the smallest. The
+       * original code took the minimum, which understated the ceiling in the UNSAFE direction (it
+       * let the solver conclude "we are faster" about an opponent whose own surviving pool held a
+       * set that outran us) and stopped the chance node below from ever firing on a straddle built
+       * from a multi-set pool. Found by the chance-node tests, pinned in tests/endgame_check.js.
+       * `speedCeiling` (the state manager's observed bound) is still honoured — both are upper
+       * bounds, so the tighter one wins. */
+      let poolMax = 0;
       if (pool.length && typeof U.maxSpeedForSet === 'function') {
         for (let i = 0; i < pool.length; i++) {
           const speed = U.maxSpeedForSet(pool[i]);
           if (!(typeof speed === 'number' && isFinite(speed) && speed > 0)) continue;
-          if (speed < max) max = speed;
+          if (speed > poolMax) poolMax = speed;
         }
       }
+      if (poolMax > 0 && poolMax < max) max = poolMax;
       return { min: min, max: max };
     }
 
@@ -391,9 +437,79 @@
         const theirs = this._afterTurn(this._applyPair(node, myName, theirName, 'opp'),
           depth, ply, -Infinity, Infinity);
         if (mine === theirs) return mine;              // order-independent, so the pair IS decided
+        /* THE CHANCE NODE. The two orders DISAGREE, and that is only an unanswerable question when
+         * nobody can say how likely each order is. When our own Speed is known and their band is an
+         * overlap, `_oppFasterProbability` reads the share of their surviving candidate sets (each
+         * weighted by its own posterior) that act before us, and the pair is priced as the expected
+         * value over the two orders — the same conservative tree, one honest number instead of a
+         * refusal. `chanceNodes: false`, or a probability that cannot be read, restores the rail. */
+        if (this.chanceNodes) {
+          const p = this._oppFasterProbability(node, myName, theirName);
+          if (p !== null) {
+            this._chancePairs++;
+            /* A CERTAIN order is not a coin flip: p of exactly 1 means every candidate set this
+             * engine still believes in outspeeds us, so the `theirs` subtree is the proven one and
+             * is returned as it stands — a mate found that way IS a mate. Only a genuine mix is
+             * blended, and only a blend is clamped. */
+            if (p === 1) return theirs;
+            if (p === 0) return mine;
+            const blended = p * theirs + (1 - p) * mine;
+            /* A MATE MAY NEVER BE MANUFACTURED BY A COIN FLIP. `solved` is claimed from the ROOT
+             * value against the mate band, so a blend that lands inside that band would report a
+             * \"mate\" the tree never proved. The clamp below keeps every chance-node value strictly
+             * inside the non-mate region, which makes that structurally impossible rather than a
+             * thing to remember. It cannot hide a real mate either: an order-independent one already
+             * returned above, and a mate in only ONE of the two orders is not a mate. */
+            const ceiling = WIN - MATE_BAND - 1;
+            if (blended > ceiling) return ceiling;
+            if (blended < -ceiling) return -ceiling;
+            return blended;
+          }
+        }
         throw UNDECIDED;                               // the outcome is a function of a fact we lack
       }
       return this._afterTurn(this._applyPair(node, myName, theirName, order), depth, ply, alpha, beta);
+    }
+
+    /**
+     * _oppFasterProbability(node, myName, theirName) -> P(they act first), or null.
+     *
+     * Move priority decides outright when the two moves differ (a priority move acts first whatever
+     * the Speed is), and that answer is 0 or 1 with no uncertainty. Otherwise the probability is the
+     * WEIGHTED share of their surviving candidate sets whose own maximum Speed beats ours: each set
+     * carries the posterior weight the pruner gave it, an exact tie counts as a coin flip (0.5, which
+     * is the rule Showdown plays by), and Trick Room INVERTS it because the slower body moves first
+     * under it. Null means the question cannot be answered from what this engine has — our exact
+     * Speed is unknown (no registered set), or they have no candidate pool — and the caller then
+     * falls back to the refusal rather than inventing a number.
+     */
+    _oppFasterProbability(node, myName, theirName) {
+      const U = ST.util || {};
+      const myData = (typeof U.getMoveData === 'function') ? U.getMoveData(myName) : null;
+      const oppData = (typeof U.getMoveData === 'function') ? U.getMoveData(theirName) : null;
+      const myPriority = (myData && typeof myData.priority === 'number') ? myData.priority : 0;
+      const oppPriority = (oppData && typeof oppData.priority === 'number') ? oppData.priority : 0;
+      if (myPriority !== oppPriority) return oppPriority > myPriority ? 1 : 0;
+      const mySpeed = this._exactSpeed(this._active(node.my) && this._active(node.my).mon);
+      const oppActive = this._active(node.opp);
+      const mon = oppActive && oppActive.mon;
+      if (mySpeed === null || !mon) return null;
+      const pool = (mon.candidateSets && mon.candidateSets.length) ? mon.candidateSets
+        : (mon.liveSet ? [mon.liveSet] : []);
+      if (!pool.length || typeof U.maxSpeedForSet !== 'function') return null;
+      let ahead = 0, total = 0;
+      for (let i = 0; i < pool.length; i++) {
+        const speed = U.maxSpeedForSet(pool[i]);
+        if (!(typeof speed === 'number' && isFinite(speed) && speed > 0)) continue;
+        const w = (typeof pool[i].weight === 'number' && pool[i].weight > 0) ? pool[i].weight : 1;
+        total += w;
+        if (speed > mySpeed) ahead += w;
+        else if (speed === mySpeed) ahead += w * 0.5;
+      }
+      if (!(total > 0)) return null;
+      const p = ahead / total;
+      const tr = !!(node.field && node.field.trickRoom);
+      return tr ? 1 - p : p;
     }
 
     _actionsFor(side) {
@@ -401,6 +517,7 @@
       const moves = this._movesOf(active && active.mon);
       // A body whose known moves are all status cannot be priced as an attack, so it passes its
       // turn here rather than being given an invented move. The ROOT case is a refusal instead.
+      // The list is already bounded by `maxBranchingMoves` inside `_movesOf`.
       return moves.length ? moves : [null];
     }
 

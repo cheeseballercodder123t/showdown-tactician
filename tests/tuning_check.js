@@ -95,7 +95,10 @@ function mkEngine(opts) {
     quiescence: (opts && opts.quiescence) || null,
     realOppSwitch: (opts && opts.realOppSwitch) || null,
     pricePivots: (opts && opts.pricePivots) || null,
-    priceRecovery: (opts && opts.priceRecovery) || null
+    priceRecovery: (opts && opts.priceRecovery) || null,
+    beam2Ply: (opts && opts.beam2Ply) || null,
+    endgameSolver: (opts && opts.endgameSolver) || null,
+    qre: (opts && opts.qre) || null
   });
 }
 
@@ -692,6 +695,413 @@ const ESPEED_ACT = { kind: 'move', name: 'Extreme Speed', moveId: 'extremespeed'
   /* A DAMAGING line is untouched by the tier. */
   same('on: an attack is priced identically with the tier on and off',
     REC._payoff(ICE, EQ, st, st.field, null), NO_REC._payoff(ICE, EQ, st, st.field, null), 1e-6);
+}
+
+/* ============================================================ 5. the 2-ply beam */
+
+section('5. the selective 2-ply beam (OFF until a win-rate gate admits it)');
+{
+  eq('the shipped config ships beam2Ply OFF', ST.configGet('laplace.beam2Ply.enabled', null), false);
+  same('...with a documented 3-wide beam on each side', ST.configGet('laplace.beam2Ply.topMy', null), 3, 0);
+  same('...and a 0.35 blend into the 1-ply cell', ST.configGet('laplace.beam2Ply.blendWeight', null), 0.35, 1e-9);
+
+  /**
+   * The fixture: OUR Iron Valiant faces a crippled Garchomp, and their bench holds the revenge
+   * killer (a Choice Band Dragonite whose Extreme Speed takes 55-65% off Valiant). One of our
+   * moves KOs the Garchomp; the question the second ply asks is what the KNOCKOUT LEAVES BEHIND.
+   */
+  function beamBoard(hp, benchFainted) {
+    const me = mon('Iron Valiant', {
+      side: 'p1', evs: OFFENSE, ivs: IVS, nature: 'Jolly', ability: 'Quark Drive', isActive: true,
+      hpPercent: 100, setMoves: ['Close Combat', 'Moonblast', 'Encore', 'Thunderbolt']
+    });
+    const them = mon('Garchomp', {
+      evs: OFFENSE, ivs: IVS, nature: 'Jolly', ability: 'Rough Skin', isActive: true,
+      hpPercent: hp, item: 'Leftovers', setMoves: ['Earthquake', 'Stone Edge', 'Scale Shot', 'Swords Dance']
+    });
+    const dnite = mon('Dragonite', {
+      evs: OFFENSE, ivs: IVS, nature: 'Adamant', ability: 'Multiscale', isActive: false,
+      hpPercent: benchFainted ? 0 : 100, fainted: !!benchFainted, item: 'Choice Band',
+      setMoves: ['Extreme Speed', 'Earthquake', 'Ice Spinner', 'Fire Punch']
+    });
+    return {
+      turn: 12, mySide: 'p1', oppSide: 'p2', formatSupported: true,
+      myTeam: [me], oppTeam: [them, dnite], active: { my: me, opp: them },
+      bench: { my: [], opp: benchFainted ? [] : [dnite] },
+      protect: {
+        oppTurnsSinceLastProtect: 2, oppConsecutiveProtects: 0,
+        myTurnsSinceLastProtect: 4, myConsecutiveProtects: 0
+      },
+      recoveryPP: {},
+      field: {
+        turn: 12, trickRoom: false, weather: '', terrain: '',
+        hazards: { p1: {}, p2: {} }, screens: {}, tailwind: {}, gravity: false
+      }
+    };
+  }
+  const rankKeys = function (rows) {
+    return rows.map(function (r) { return r.name + ':' + r.score.toFixed(6) + ':' + r.confidence.toFixed(6); });
+  };
+  const orderOf = function (rows, name) {
+    for (let i = 0; i < rows.length; i++) if (rows[i].name === name) return i;
+    return -1;
+  };
+  const CC = { kind: 'move', name: 'Close Combat', moveId: 'closecombat' };
+  const EQ = { kind: 'move', name: 'Earthquake', moveId: 'earthquake' };
+
+  /* ------------------------------------------- 5a. the OFF identity (and the spy) */
+  const OFF = mkEngine({ beam2Ply: { enabled: false } });
+  const OFF_DEFAULT = mkEngine();                 // the shipped config, which also ships off
+  let beamCalls = 0;
+  OFF._refineBeam2Ply = function () {
+    beamCalls++;
+    return ST.LaplaceEngine.prototype._refineBeam2Ply.apply(this, arguments);
+  };
+  const offRanked = OFF.evaluateTurn(beamBoard(45));
+  const defRanked = OFF_DEFAULT.evaluateTurn(beamBoard(45));
+  check('with the beam off the refinement is never even entered', beamCalls === 0, String(beamCalls));
+  check('...and the readout publishes no beam plan', OFF.lastReadout.beam2Ply === null,
+    JSON.stringify(OFF.lastReadout.beam2Ply));
+  eq('the explicit off and the shipped default are the same ranking, score for score',
+    rankKeys(offRanked), rankKeys(defRanked));
+  const ZERO = mkEngine({ beam2Ply: { enabled: true, topMy: 3, topOpp: 3, blendWeight: 0 } });
+  eq('...and blendWeight 0 is OFF too (0 * a non-finite value is NaN, not a no-op)',
+    rankKeys(ZERO.evaluateTurn(beamBoard(45))), rankKeys(offRanked));
+  check('...because a refinement with no world bookkeeping refuses instead of guessing',
+    OFF._refineBeam2Ply([[1]], [], [CC], [EQ], [{ isVetoed: false }], beamBoard(45), [{}]) === null, '');
+
+  /* ------------------------------------------- 5b. what the second ply is worth */
+  const ON = mkEngine({ beam2Ply: { enabled: true, topMy: 3, topOpp: 3, blendWeight: 1 } });
+  {
+    const st = beamBoard(45);
+    const trace = {};
+    const ply1 = OFF._payoff(CC, EQ, st, st.field, null, trace);
+    same('the trace carries the board the cell leaves behind (the KO really happened)', trace.oppHp, 0, 1e-9);
+    check('...and hands back the cell score it was computed with', Math.abs(trace.score - ply1) < 1e-9,
+      trace.score + ' vs ' + ply1);
+
+    const world = { team: st.oppTeam, weight: 1 };
+    const responder = ON._bestReplacement('opp', st, st.field, st.active.my, st.active.opp, world);
+    check('the revenge killer is the body that comes in, chosen from the WORLD roster',
+      !!responder && responder.mon === st.oppTeam[1], responder && responder.mon.species);
+    same('...at its own HP after its side\u2019s entry hazards', responder.hp,
+      U.clamp(100 - U.hazardPercent(responder.mon.species, responder.mon.item || '',
+        responder.mon.ability || '', st.field.hazards.p2 || {}), 0, 100), 1e-9);
+
+    /* The arithmetic pin: the T+1 value is the evaluator's read of the T+1 board, plus the threat
+     * differential, plus the lethal bonus for the body that fainted this turn. Computed here from
+     * the engine's own pieces rather than remembered. */
+    const f1 = ON._tickField(st.field);
+    const expected = ON.evaluator.evaluate(ON._ply2Board(st, st.active.my, trace.myHp, responder.mon,
+      responder.hp, f1)) +
+      (function () {
+        const mine = ON._bestMoveWithDamage(st.active.my, responder.mon, f1);
+        const theirs = ON._bestMoveWithDamage(responder.mon, st.active.my, f1);
+        return ON.beam2Ply.threatWeight *
+          ((mine.damage ? mine.damage.avgPercent : 0) - (theirs.damage ? theirs.damage.avgPercent : 0));
+      })() + ON.lethalBonus;
+    same('the T+1 value is the evaluator read + threat differential + the KO bonus',
+      ON._ply2Value(trace, st, st.field, world), expected, 1e-6);
+
+    /* The revenge killer is what makes the KO worse than it looks: the same cell priced against a
+     * bench that cannot answer scores the terminal win instead. */
+    const naked = beamBoard(45, true);
+    const nakedTrace = {};
+    OFF._payoff(CC, EQ, naked, naked.field, null, nakedTrace);
+    same('with no body able to answer, the KO cell terminals at the lethal bonus',
+      ON._ply2Value(nakedTrace, naked, naked.field, { team: naked.oppTeam }), ON.lethalBonus, 1e-9);
+    check('...so the revenge killer is strictly what the second ply is paying for',
+      ON._ply2Value(trace, st, st.field, world) < ON.lethalBonus,
+      ON._ply2Value(trace, st, st.field, world) + ' vs ' + ON.lethalBonus);
+
+    /* Our own body faints and nothing can replace it: the LOSS, not the kill the same cell just
+     * bought us on their side. */
+    const doomed = beamBoard(100);      // their body survives our hit, ours does not survive theirs
+    doomed.active.my.hpPercent = 1;
+    const dTrace = {};
+    OFF._payoff(CC, EQ, doomed, doomed.field, null, dTrace);
+    check('fixture: our body faints to the reply but theirs survives', dTrace.myHp <= 0 && dTrace.oppHp > 0,
+      'myHp ' + dTrace.myHp + ', oppHp ' + dTrace.oppHp);
+    same('with nothing left to bring in, the fainted side is the loss',
+      ON._ply2Value(dTrace, doomed, doomed.field, { team: doomed.oppTeam }), -ON.lethalBonus, 1e-9);
+
+    /* A mutual wipe is a DRAW, not a win: both sides empty must not be scored as our kill. */
+    const mutual = beamBoard(5, true);
+    mutual.active.my.hpPercent = 1;
+    const mTrace = {};
+    OFF._payoff(CC, EQ, mutual, mutual.field, null, mTrace);
+    check('fixture: both active bodies faint on the same turn', mTrace.myHp <= 0 && mTrace.oppHp <= 0,
+      'myHp ' + mTrace.myHp + ', oppHp ' + mTrace.oppHp);
+    same('a mutual wipe scores 0 (a draw), not the lethal bonus',
+      ON._ply2Value(mTrace, mutual, mutual.field, { team: mutual.oppTeam }), 0, 1e-9);
+  }
+
+  /* ------------------------------------------- 5c. the field ticks, and a TR expiring is OFF */
+  {
+    const tr = Object.assign({}, beamBoard(45).field, { trickRoom: true, trickRoomTurnsLeft: 2 });
+    const t1 = ON._tickField(tr);
+    same('the field tick spends a Trick Room turn', t1.trickRoomTurnsLeft, 1, 0);
+    eq('...and Trick Room is still up', t1.trickRoom, true);
+    same('...and the LIVE field is never written through', tr.trickRoomTurnsLeft, 2, 0);
+    const last = ON._tickField(Object.assign({}, tr, { trickRoomTurnsLeft: 1 }));
+    same('...the last turn spends it', last.trickRoomTurnsLeft, 0, 0);
+    eq('...and 0 turns means OFF, not merely zero', last.trickRoom, false);
+    const wt = ON._tickField(Object.assign({}, tr, { weather: 'sand', weatherTurnsLeft: 3, terrain: 'electric', terrainTurnsLeft: 1 }));
+    same('weather and terrain tick the same way', wt.weatherTurnsLeft, 2, 0);
+    same('...down to zero', wt.terrainTurnsLeft, 0, 0);
+  }
+
+  /* ------------------------------------------- 5d. the beam re-ranks, and reaches the matrix */
+  {
+    const onSpy = mkEngine({ beam2Ply: { enabled: true, topMy: 3, topOpp: 3, blendWeight: 1 } });
+    let called = 0;
+    const real = ST.LaplaceEngine.prototype._refineBeam2Ply;
+    onSpy._refineBeam2Ply = function () { called++; return real.apply(this, arguments); };
+    const onRanked = onSpy.evaluateTurn(beamBoard(45));
+    check('with the beam on the refinement runs exactly once per turn', called === 1, String(called));
+    const plan = onSpy.lastReadout.beam2Ply;
+    check('...and publishes the cells it priced', !!plan && plan.cells > 0, JSON.stringify(plan));
+    check('...capped by the 3x3 beam, not the whole matrix', plan.rows.length <= 3 && plan.cols.length <= 3,
+      JSON.stringify(plan));
+    check('...and every ranked score moved (the refinement reaches the matrix, not just a readout)',
+      rankKeys(onRanked).join('|') !== rankKeys(offRanked).join('|'), '');
+
+    /* THE SHIFT. Off, Close Combat outranks Encore; on, the second ply prices the Dragonite that
+     * greets the KO and the two swap — a status move above a 120-BP STAB attack is exactly the
+     * "what does the knockout LEAVE BEHIND" question one ply cannot ask. */
+    check('off: Close Combat\u2019s row outranks Encore\u2019s',
+      orderOf(offRanked, 'Close Combat') < orderOf(offRanked, 'Encore'),
+      offRanked.map(function (r) { return r.name; }).join(' > '));
+    check('on: pricing the revenge killer puts Encore above it',
+      orderOf(onRanked, 'Encore') < orderOf(onRanked, 'Close Combat'),
+      onRanked.map(function (r) { return r.name; }).join(' > '));
+  }
+}
+
+/* ============================================ 6. stratified active-set sampling */
+
+section('6. stratified active-set worlds (the mechanism, and the default its first reading flipped)');
+{
+  /* THE DEFAULT IS OFF AND THE TIER IS STILL TESTED. It was built ON (the coverage argument below
+   * needs no battle to prove), and the first win-rate reading went the other way — switching it off
+   * won +15.0 match points on the mirror, CI [+2.5, +30.0] — so the shipped build keeps the i.i.d.
+   * draw and the ON path is exercised explicitly by every fixture below. The mechanism is not in
+   * doubt; its price is. */
+  eq('the shipped config keeps the i.i.d. draw', ST.configGet('sampler.stratifyActive', null), false);
+  const def = new ST.WorldSampler({ K: 6, stratifyActive: true });
+  eq('a default sampler takes it from the config (which is OFF)', new ST.WorldSampler({ K: 6 }).stratifyActive, false);
+  eq('...and an explicit true is honoured, which is what the fixtures below drive',
+    new ST.WorldSampler({ K: 6, stratifyActive: true }).stratifyActive, true);
+
+  function setFor(species, moves, weight, id) {
+    return {
+      id: id, species: species, item: '', ability: '', nature: 'Jolly',
+      evs: { hp: 0, atk: 252, def: 0, spa: 0, spd: 0, spe: 252 }, ivs: IVS,
+      moves: moves.slice(), weight: weight
+    };
+  }
+  /* Their ACTIVE body is a Great Tusk with three plausible sets at 7 / 2 / 1 usage, and their bench
+   * is a single-set Kingambit. The active pool is the whole point: one set is 70 % of the weight and
+   * one is 10 %, and six independent draws are free to see the 10 % one zero times. */
+  function stratState(activeOver, theirBench) {
+    const active = mon('Great Tusk', Object.assign({
+      isActive: true, setMoves: ['Headlong Rush'],
+      candidateSets: [
+        setFor('Great Tusk', ['Headlong Rush'], 7, 'a'),
+        setFor('Great Tusk', ['Headlong Rush', 'Rapid Spin'], 2, 'b'),
+        // Set 'c' holds BOTH of the moves the elimination checks below reveal, which is what makes
+        // those fixtures leave exactly two legal candidates standing (see the revealed-move cases).
+        setFor('Great Tusk', ['Headlong Rush', 'Ice Spinner', 'Rapid Spin'], 1, 'c')
+      ]
+    }, activeOver || {}));
+    const bench = theirBench === undefined
+      ? mon('Kingambit', { candidateSets: [setFor('Kingambit', ['Kowtow Cleave'], 5, 'k')] })
+      : theirBench;
+    return { turn: 5, oppTeam: bench ? [active, bench] : [active], active: { my: null, opp: active } };
+  }
+  const ids = function (worlds) {
+    return worlds.map(function (w) { return (w.team[0] && w.team[0].liveSet) ? w.team[0].liveSet.id : null; });
+  };
+  const activeId = function (w) {
+    for (let i = 0; i < (w.team || []).length; i++) if (w.team[i] && w.team[i].isActive) return (w.team[i].liveSet || {}).id;
+    return null;
+  };
+
+  const targets = def._activeStratificationTargets(stratState());
+  eq('the active body offers its three legal sets, heaviest first',
+    targets.map(function (t) { return t.set.id; }), ['a', 'b', 'c']);
+  same('...each with its posterior share', targets[0].weight, 0.7, 1e-9);
+  same('...and the shares are a distribution', targets.reduce(function (a, t) { return a + t.weight; }, 0), 1, 1e-9);
+
+  const on = def.sampleWorlds(stratState(), ST.SetDatabase || null, 6);
+  const off = new ST.WorldSampler({ K: 6, stratifyActive: false }).sampleWorlds(stratState(), ST.SetDatabase || null, 6);
+  eq('every distinct active set is covered (one world each, in posterior order)',
+    ids(on).slice(0, 3), ['a', 'b', 'c']);
+  check('...while the i.i.d. draw repeats sets instead of covering them (this seed: two distinct sets in three draws)',
+    (function () {
+      const first = ids(off).slice(0, 3);
+      const distinct = first.filter(function (v, i) { return first.indexOf(v) === i; });
+      return distinct.length < 3;
+    })(), JSON.stringify(ids(off)));
+  eq('the pinned worlds say so', on.map(function (w) { return !!w.stratified; }), [true, true, true, false, false, false]);
+  same('a pinned world carries its set\'s own posterior weight (share = 3/6)',
+    on[0].weight, 0.5 * 0.7, 1e-9);
+  same('...and the second-heaviest set gets its own share', on[1].weight, 0.5 * 0.2, 1e-9);
+  same('...while a free world keeps the flat share', on[3].weight, 1 / 6, 1e-9);
+  same('the weights still sum to 1', on.reduce(function (a, w) { return a + w.weight; }, 0), 1, 1e-9);
+
+  /* THE PIN CHANGES ONE THING. The active body's draw is taken and then replaced, so a pinned world
+   * is its i.i.d. twin everywhere else — bench included. */
+  const twins = [];
+  for (let i = 0; i < 3; i++) {
+    twins.push((on[i].team[1] && on[i].team[1].liveSet ? on[i].team[1].liveSet.id : null) ===
+      (off[i].team[1] && off[i].team[1].liveSet ? off[i].team[1].liveSet.id : null));
+  }
+  check('a pinned world keeps its i.i.d. twin\'s bench (the draw is taken, not skipped)',
+    twins.every(function (v) { return v; }), JSON.stringify(twins));
+  eq('...and the worlds past the stratum are unchanged outright',
+    ids(on).slice(3), ids(off).slice(3));
+
+  /* A revealed move eliminates sets: with only Rapid Spin seen, the 70 % set (which cannot hold it)
+   * is out, two candidates stand, and the shares renormalise over what is left. */
+  const revealedTwo = stratState({ revealedMoves: ['Rapid Spin'] });
+  const twoTargets = def._activeStratificationTargets(revealedTwo);
+  eq('a set the log disproved is not a stratification target',
+    twoTargets.map(function (t) { return t.set.id; }), ['b', 'c']);
+  same('...and the remaining two shares renormalise', twoTargets[0].weight, 2 / 3, 1e-9);
+  const covered = def.sampleWorlds(revealedTwo, ST.SetDatabase || null, 4);
+  eq('...and those two are what the pinned worlds stand', ids(covered).slice(0, 2), ['b', 'c']);
+
+  /* One legal set is a one-horse race: nothing to stratify, so the caller draws i.i.d. as before. */
+  const revealedOne = stratState({ revealedMoves: ['Rapid Spin', 'Ice Spinner'] });
+  eq('a single legal set is not a stratification target',
+    def._activeStratificationTargets(revealedOne), []);
+  const single = def.sampleWorlds(revealedOne, ST.SetDatabase || null, 4);
+  eq('...so every world stands it and none is marked pinned',
+    [ids(single).every(function (id) { return id === 'c'; }), single.every(function (w) { return !w.stratified; })],
+    [true, true]);
+
+  /* K smaller than the pool: the heaviest K are covered, and the covered shares are then the whole
+   * sample — so the final normalisation renormalises over them (the truncated set's mass is simply
+   * not represented, which is the honest price of a K too small to hold the pool). */
+  const smallK = new ST.WorldSampler({ K: 2, stratifyActive: true }).sampleWorlds(stratState(), ST.SetDatabase | null, 2);
+  eq('K below the pool size covers the K heaviest sets', ids(smallK), ['a', 'b']);
+  same('...and the shares renormalise over exactly those two', smallK[0].weight, 0.7 / 0.9, 1e-9);
+  same('...as does the second', smallK[1].weight, 0.2 / 0.9, 1e-9);
+
+  eq('the sampler is still deterministic across two calls',
+    JSON.stringify(def.sampleWorlds(stratState(), ST.SetDatabase || null, 6).map(function (w) { return [activeId(w), w.weight]; })),
+    JSON.stringify(on.map(function (w) { return [activeId(w), w.weight]; })));
+
+  /* The engine reads the same worlds: every pinned set reaches the payoff matrix, which is the
+   * reason the tier exists at all. */
+  const engine = mkEngine();
+  /* The ON path explicitly, because the shipped default is the i.i.d. draw: the point of this last
+   * check is that a STRATIFIED sampler's worlds reach the payoff matrix, not that the config says
+   * so. */
+  engine.sampler = new ST.WorldSampler({ K: 6, stratifyActive: true });
+  const rows = engine.evaluateTurn(board());
+  const worldSets = (engine.lastReadout.worlds || []).map(function (w) { return activeId(w); });
+  const engineTargets = engine.sampler._activeStratificationTargets(board());
+  const head = worldSets.slice(0, engineTargets.length);
+  check('the engine\'s own worlds cover every distinct set of its opponent pool, in posterior order',
+    engineTargets.length >= 3 && head.length === engineTargets.length &&
+      head.every(function (v, i) { return head.indexOf(v) === i; }) &&
+      engineTargets.every(function (t, i) { return head[i] === t.set.id; }),
+    JSON.stringify([engineTargets.map(function (t) { return t.set.id; }), worldSets]));
+  check('...and it still returns a finite ranking', rows.length > 0 &&
+    rows.every(function (r) { return isFinite(r.score) && isFinite(r.confidence); }),
+    JSON.stringify(rows.map(function (r) { return [r.name, r.score]; })));
+}
+
+/* ================================================================= 7. QRE */
+
+section('7. the quantal-response opponent (OFF, and the hard response it replaces)');
+{
+  const solve = ST.LaplaceEngine.solveNashFictitiousPlay;
+  eq('the shipped config ships QRE OFF', ST.configGet('laplace.nash.qre.enabled', null), false);
+  same('...at the documented temperature', ST.configGet('laplace.nash.qre.tau', null), 30, 0);
+  same('...which decays to 0 at the rational end of the ladder',
+    ST.configGet('laplace.nash.qre.highRating', null), 1850, 0);
+
+  const BIASED = [[2, -1], [-1, 1]];
+  const hard = solve(BIASED, 2000);
+  eq('no qre argument is bit-identical to the shipped call',
+    JSON.stringify(solve(BIASED, 2000, null)), JSON.stringify(hard));
+  eq('...and so is a temperature of 0', JSON.stringify(solve(BIASED, 2000, { tau: 0 })), JSON.stringify(hard));
+
+  const soft = solve(BIASED, 2000, { tau: 30 });
+  const maxOf = function (a) { return Math.max.apply(null, a); };
+  check('a soft column response spreads their mix (the max frequency drops)',
+    maxOf(soft.oppStrategy) < maxOf(hard.oppStrategy),
+    JSON.stringify([soft.oppStrategy, hard.oppStrategy]));
+  check('...and both mixes stay probability distributions',
+    [soft, hard].every(function (r) {
+      return Math.abs(r.oppStrategy.reduce(function (a, b) { return a + b; }, 0) - 1) < 1e-9 &&
+        r.oppStrategy.every(function (p) { return p >= 0 && p <= 1; });
+    }), JSON.stringify(soft.oppStrategy));
+  check('OUR side keeps the hard best response (minimax safety is not softened)',
+    Math.abs(soft.myStrategy[0] - hard.myStrategy[0]) < 1e-9 &&
+      Math.abs(soft.myStrategy[1] - hard.myStrategy[1]) < 1e-9,
+    JSON.stringify([soft.myStrategy, hard.myStrategy]));
+  check('every row value stays finite', soft.rowValues.every(function (v) { return isFinite(v); }),
+    JSON.stringify(soft.rowValues));
+  const near0 = solve(BIASED, 2000, { tau: 0.0001 });
+  check('a vanishing temperature converges back to the hard mix',
+    Math.abs(maxOf(near0.oppStrategy) - maxOf(hard.oppStrategy)) < 0.02,
+    JSON.stringify([near0.oppStrategy, hard.oppStrategy]));
+  const wild = solve(BIASED, 2000, { tau: 5000 });
+  check('a huge temperature approaches the uniform mix',
+    Math.abs(wild.oppStrategy[0] - 0.5) < 0.02, JSON.stringify(wild.oppStrategy));
+  check('a big matrix cannot overflow the softmax into NaN',
+    solve([[5000, -5000], [-5000, 5000]], 240, { tau: 1 }).oppStrategy.every(function (p) { return isFinite(p) && p >= 0; }),
+    JSON.stringify(solve([[5000, -5000], [-5000, 5000]], 240, { tau: 1 }).oppStrategy));
+
+  /* The temperature is a rating-driven policy, not a constant: the deviation belongs to the ladder
+   * below 1850 and vanishes at the top of it. */
+  const OFF_QRE = mkEngine({ qre: { enabled: false, tau: 30 } });
+  const ON_QRE = mkEngine({ qre: { enabled: true, tau: 30, highRating: 1850, lowRating: 1100 } });
+  same('tier off -> temperature 0', OFF_QRE._qreTau({ opponentRating: 1200 }), 0, 0);
+  same('an unknown seat is played against rationally, never noisily',
+    ON_QRE._qreTau({ opponentRating: null }), 0, 0);
+  same('at lowRating and below: the full temperature',
+    ON_QRE._qreTau({ opponentRating: 900 }), 30, 1e-9);
+  same('halfway up the band: half the temperature',
+    ON_QRE._qreTau({ opponentRating: 1475 }), 15, 1e-9);
+  same('at highRating: the hard response is back',
+    ON_QRE._qreTau({ opponentRating: 1850 }), 0, 0);
+  same('...and above it stays there', ON_QRE._qreTau({ opponentRating: 2400 }), 0, 0);
+
+  const lowSeat = board();
+  lowSeat.opponentRating = 1200;
+  const highSeat = board();
+  highSeat.opponentRating = 2100;
+  const rowsOff = OFF_QRE.evaluateTurn(lowSeat);
+  const readoutOff = OFF_QRE.lastReadout;
+  const rowsLow = ON_QRE.evaluateTurn(lowSeat);
+  const readoutLow = ON_QRE.lastReadout;
+  const rowsHigh = ON_QRE.evaluateTurn(highSeat);
+  const readoutHigh = ON_QRE.lastReadout;
+  eq('the readout says which response actually ran (off)', readoutOff.qre, null);
+  same('...at a 1200 seat: the temperature that seat earns (a third of the band up, so 0.867 of it)',
+    readoutLow.qre && readoutLow.qre.tau, 30 * (1850 - 1200) / 750, 0.1);
+  eq('...and at a 2100 seat: the hard response', readoutHigh.qre, null);
+  const oppMax = function (readout) {
+    const mix = (readout && readout.oppStrategy) || [];
+    return mix.length ? Math.max.apply(null, mix.map(function (m) { return m.freq; })) : 1;
+  };
+  check('a soft opponent flattens the mix the engine expects them to play',
+    oppMax(readoutLow) < oppMax(readoutOff), JSON.stringify([oppMax(readoutLow), oppMax(readoutOff)]));
+  check('...while our own ranking stays finite and sums to 100 %',
+    rowsLow.every(function (r) { return isFinite(r.confidence) && r.confidence >= 0; }) &&
+      Math.abs(rowsLow.filter(function (r) { return !r.isVetoed; })
+        .reduce(function (a, r) { return a + r.confidence; }, 0) - 100) < 1.5,
+    JSON.stringify(rowsLow.map(function (r) { return r.confidence; })));
+  check('the hard response is unchanged by the tier being constructed',
+    JSON.stringify(rowsHigh.map(function (r) { return [r.name, r.score, r.confidence]; })) ===
+      JSON.stringify(rowsOff.map(function (r) { return [r.name, r.score, r.confidence]; })),
+    JSON.stringify([rowsHigh.map(function (r) { return [r.name, r.score, r.confidence]; }),
+      rowsOff.map(function (r) { return [r.name, r.score, r.confidence]; })]));
 }
 
 /* ------------------------------------------------------------------- summary */

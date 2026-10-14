@@ -129,7 +129,22 @@
         // (the boost applied, plus Trick Room and move priority). Without it both second actions
         // landed unconditionally, so "boost, then kill the setup user" and "boost, die to the setup
         // user" scored the same as "boost, trade". A body that faints first does not act at all.
-        respectTurn2Speed: true
+        respectTurn2Speed: true,
+        // HOW MUCH OF TURN 2 TO PRICE, as a fraction of the extension's own damage. 1.0 is the
+        // full, un-damped second exchange (the behaviour the tier shipped with, and `x * 1` is
+        // bit-identical to it); 0.5 prices half of it; 0 prices the boost but no second hit, which
+        // is the old 1-ply "setup is a no-op" cell with the stat stages still applied.
+        //
+        // WHY THE KNOB EXISTS: the mirror sweep priced `extendSetup` at HURTS +23.3 win points
+        // [+8.3, +38.3] while the re-anchored personas arena priced the same tier at HELPS +20.0
+        // [+10.0, +30.0]. Both intervals exclude zero, so the two instruments genuinely disagree
+        // and neither is being quoted as the answer. One reading of the asymmetry is that a
+        // full-strength Turn-2 boosted hit makes the engine over-value "kill the setup user BEFORE
+        // it acts" against a rational mirror opponent that rarely clicks raw setup into an active
+        // threat — i.e. the extension is pricing a follow-up that a good opponent mostly does not
+        // buy. Damping the follow-up is therefore the hypothesis this knob exists to test, and the
+        // ablation row `quiescence-followup-damped` (tools/run_ablation.js) is what decides it.
+        followUpWeight: 1.0
       },
       // Opponent-switch substitution (see laplace_core._oppSwitchTarget). A switch reply used to be
       // priced by resetting the outgoing body to 100% and DISCARDING our turn-1 hit — the incoming
@@ -199,7 +214,26 @@
         // 2x2 equilibria the worst frequency error is 0.06 at 50 rounds, 0.025 at 240 and
         // 0.006 at 2000, while a realistic 5x9 solve still costs ~0.22 ms at 2000 rounds
         // (vs ~0.035 ms at 240) — noise next to the damage engine. See tests/upgrades_check.js.
-        iterations: 2000
+        iterations: 2000,
+        // Quantal Response Equilibrium: a LOGIT opponent instead of a perfectly rational one.
+        // Fictitious play gives the opponent a hard best response, which is the minimax-safe
+        // assumption but not a model of a ladder human — the `nash` ablation (ATTEMPTS.md E5)
+        // priced the hard solve at a cost of about 8.3% against the pure softmax, and the open
+        // question is whether that gap is the equilibrium being wrong about PEOPLE. With QRE on,
+        // the opponent's column step is a softmax at temperature `tau` instead of an argmax, so
+        // their replies are spread the way a noisy player's are — while OUR side keeps the hard
+        // best response, so the worst case we play against is still bounded by the same matrix.
+        // Ships OFF: this is a measure-before-adopt tier, not a preference.
+        // `tau` is scaled toward 0 as the opponent's rating approaches `highRating`, because a
+        // 1850+ opponent IS close to the rational model and the deviation belongs to the lower
+        // ladder; at `lowRating` and below the full temperature applies. A seat with no rating
+        // gets the identity — QRE off, whatever this says.
+        qre: {
+          enabled: false,
+          tau: 30,                       // logit temperature on the opponent's column responses
+          highRating: 1850,              // at or above this: tau -> 0 (the hard best response)
+          lowRating: 1100                // at or below this: the full temperature
+        }
       },
       // Scouting (information gain). The matrix scores HP, but early in a game INFORMATION is
       // worth more than HP, and the engine already holds the measurement it needs: the opponent's
@@ -247,12 +281,65 @@
       // has been measured on positions whose answer is known.
       endgame: {
         enabled: false,
-        // Bodies alive per side at or below which the solver is allowed to run.
-        maxBodies: 2,
+        // Bodies alive per SIDE at or below which the solver is allowed to run. Widened from 2 to
+        // 3 so a 3v3 / 3v2 / 2v3 board can be searched when the tier is enabled; the node budget
+        // below is what keeps the wider box from running away, and an exhausted budget reports
+        // `{solved:false, reason:'budget'}` rather than a partial line presented as a solution.
+        maxAlive: 3,
+        // LEGACY ALIAS, kept at the same value so the historical path and the config key the
+        // regression suite pins both stay meaningful. `maxAlive` wins whenever it is present.
+        maxBodies: 3,
         maxDepth: 10,
         // Hard ceiling on explored nodes: the search stops and reports "budget", it never runs
         // away on a phone.
-        nodeBudget: 20000
+        nodeBudget: 20000,
+        // A cap on how many moves one side may branch on at a node. Inert for a legal set (four
+        // moves), and a guard against a driver-built body carrying more known moves than a set can
+        // hold, which is where a search this wide would otherwise stop being bounded.
+        maxBranchingMoves: 12,
+        // Ambiguous Speed as a CHANCE NODE. When our exact Speed falls inside the opponent's
+        // [speedFloor, speedCeiling] band the move order is a fact we do not have, and the tier's
+        // old rail refused the whole solve. With this on, the probability the opponent acts first is
+        // read off their own surviving candidate sets (weights included) and the pair is priced as
+        // the expected value over the two orders — but a mate is NEVER claimed through one of these
+        // nodes (a proof cannot rest on a coin flip), so `solved` stays false.
+        chanceNodes: true
+      },
+      // Selective 2-ply beam (the multi-ply horizon upgrade, see laplace_core._refineBeam2Ply).
+      // A full second ply is `|myActions| x |theirReplies| x K` evaluations and does not fit a
+      // phone; this prices the SECOND turn only for the cells that can still change the answer — the
+      // top `topMy` non-vetoed rows by 1-ply expected value against the top `topOpp` columns — and
+      // blends the result into those cells by `blendWeight`.
+      // Ships OFF. `enabled: false` (and `blendWeight: 0`) leave the 1-ply matrix bit-identical, and
+      // the ablation row `beam-2ply` is what promotes it.
+      beam2Ply: {
+        enabled: false,
+        topMy: 3,
+        topOpp: 3,
+        blendWeight: 0.35,
+        // Weight on the Turn-2 threat differential (our best hit minus theirs, in % HP) that is
+        // added to the evaluator's read of the T+1 board. 1.0 keeps the differential in the same
+        // units as a percentage point of HP, which is small next to the evaluator's +/-1000 and
+        // deliberately so: the differential is a tie-break beside the board read, not a payoff.
+        threatWeight: 1
+      },
+      // The Cancel window's background ponder (src/content.js). After the fast, synchronous render
+      // the boot schedules a second, DEEPER pass in a timeout: more worlds, the 2-ply beam, and the
+      // endgame solver at its 3v3 bound. If the player has already clicked a move and the Cancel
+      // button is on screen, the deeper ranking is compared against what they locked in and the
+      // Cancel button is flagged when the deeper pass disagrees by enough to matter.
+      // `cancelAlertScoreDelta` is in payoff units (compare laplace.lethalBonus 260);
+      // `cancelAlertConfDelta` is in confidence points.
+      deepPonder: {
+        enabled: true,
+        deepWorlds: 14,
+        useBeam2Ply: true,
+        // Run the endgame solver in the deep pass even while it ships disabled, so the deeper
+        // readout can use the 3v3 bound. Phrased as a switch of its own because it is the one place
+        // the ponder would lean on a tier the win-rate gate has not yet adopted.
+        useEndgame3v3: true,
+        cancelAlertScoreDelta: 45,
+        cancelAlertConfDelta: 15
       }
     },
 
@@ -261,7 +348,25 @@
       K: 6,
       maxTeam: 6,
       maxResample: 24,                        // bounded retry when a set violates an observation
-      minSetWeight: 0.01                      // floor so a zero-weight set can still be drawn
+      minSetWeight: 0.01,                     // floor so a zero-weight set can still be drawn
+      // STRATIFIED ACTIVE-SET SAMPLING. The K worlds are normally independent draws, and at K = 6
+      // that routinely picks the same active candidate set four or five times while a 25 %-usage set
+      // never comes up at all — and the ACTIVE body is the one every cell of the payoff matrix is
+      // priced against. With this on, the first min(K, distinct legal sets) worlds cover those sets
+      // one each, heaviest posterior first, carrying their own posterior weights; the remaining
+      // worlds (and every bench body) are still drawn from the seeded PRNG. It changes which worlds
+      // exist, never which facts are legal (a pinned set must still pass every observation check).
+      //
+      // SHIPS OFF, AND IT WAS MEASURED BEFORE THE DEFAULT MOVED. It was built ON — the coverage
+      // argument above is a property of the DRAW, provable without a battle (tests/tuning_check.js
+      // §6 does prove it) — and the first win-rate reading went the other way: switching it OFF won
+      // 55.0 % against the baseline's 40.0 % on the mirror (20 paired battles, seed 1337), Δwin
+      // +15.0 [0.0, +30.1] and Δscore +15.0 [+2.5, +30.0]. The match-point interval excludes zero
+      // and the win interval's floor IS zero, so neither scale is evidence FOR the tier and one is
+      // evidence against it. A better-calibrated opponent model that costs match points is still a
+      // cost. The i.i.d. draw is the shipped build again, and `stratifyActive: true` is what the
+      // ablation row now turns ON (see ATTEMPTS.md K2).
+      stratifyActive: false
     },
 
     /* ------------------------------------------------------------------ usage */

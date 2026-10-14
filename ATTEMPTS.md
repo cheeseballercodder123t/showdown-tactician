@@ -81,7 +81,7 @@ wins** (16 of the 17) by making progress outrank passivity late in a game.
 
 | # | attempt | measured | why it is still open |
 |---|---|---|---|
-| C1 | **`quiescence` (the setup punisher)** — prices the opponent's boosted reply and their Protect inside the cell | **SUPERSEDED — the sign has FLIPPED.** The old reading was `feature HURTS`: removing the whole tier won **+19.3 [+12.0, +26.7]** (66.7 % → 86.0 %, cap ties 46/150 → 15/150), with the harm attributed entirely to `extendSetup`. Re-measured 2026-10-13 at the standard sample on the fixed instrument (see §H), switching `extendSetup` off **LOSES 20.0 [−30.0, −10.0]** (98.3 % → 78.3 %, 13 capped) — so the knob **HELPS** — while switching the whole tier off is **−5.0 [−11.7, +1.7]**, not measurable at this sample. **Then the mirror disagreed (§J, 2026-10-14):** the same patch, 60 paired mirror battles at seed 1337, wins **+23.3 [+8.3, +38.3]** (41.7 % → 65.0 %, capped 2/60 → 4/60) — i.e. **feature HURTS**, flipped and `surprise`-flagged against its `expect: helps` | **CLOSED 2026-10-13 — and it closed against the old verdict.** The open question was whether the harm survived the urgency change; it does not survive the *instrument* fix. The old number was taken on a build whose arena fed the engine a one-Pokemon team (§H), so it measured a crippled engine and is **not quotable**. On the fixed instrument the tier ships ON with a measurement **supporting** it. **REOPENED 2026-10-14 by §J:** the mirror reads the opposite way (**HURTS, +23.3**), so the row is now **DISPUTED — one instrument each way**, both intervals excluding zero, and the knob stays where it ships until a higher-power row (500 battles, a second seed, or a declared stronger opponent) breaks the tie. The mirror is the instrument WITH headroom (41.7 % baseline vs §H's 98.3 % ceiling), but a self-play number also prices how exploitable a frozen twin is, which is not the same question as strength against a human — so neither reading is quotable as "the" answer yet |
+| C1 | **`quiescence` (the setup punisher)** — prices the opponent's boosted reply and their Protect inside the cell | **SUPERSEDED — the sign has FLIPPED.** The old reading was `feature HURTS`: removing the whole tier won **+19.3 [+12.0, +26.7]** (66.7 % → 86.0 %, cap ties 46/150 → 15/150), with the harm attributed entirely to `extendSetup`. Re-measured 2026-10-13 at the standard sample on the fixed instrument (see §H), switching `extendSetup` off **LOSES 20.0 [−30.0, −10.0]** (98.3 % → 78.3 %, 13 capped) — so the knob **HELPS** — while switching the whole tier off is **−5.0 [−11.7, +1.7]**, not measurable at this sample. **Then the mirror disagreed (§J, 2026-10-14):** the same patch, 60 paired mirror battles at seed 1337, wins **+23.3 [+8.3, +38.3]** (41.7 % → 65.0 %, capped 2/60 → 4/60) — i.e. **feature HURTS**, flipped and `surprise`-flagged against its `expect: helps` | **CLOSED 2026-10-13 — and it closed against the old verdict.** The open question was whether the harm survived the urgency change; it does not survive the *instrument* fix. The old number was taken on a build whose arena fed the engine a one-Pokemon team (§H), so it measured a crippled engine and is **not quotable**. On the fixed instrument the tier ships ON with a measurement **supporting** it. **REOPENED 2026-10-14 by §J:** the mirror reads the opposite way (**HURTS, +23.3**), so the row is now **DISPUTED — one instrument each way**, both intervals excluding zero, and the knob stays where it ships until a higher-power row (500 battles, a second seed, or a declared stronger opponent) breaks the tie. The mirror is the instrument WITH headroom (41.7 % baseline vs §H's 98.3 % ceiling), but a self-play number also prices how exploitable a frozen twin is, which is not the same question as strength against a human — so neither reading is quotable as "the" answer yet. **AMENDED 2026-10-14 by §K:** a third run (20 paired battles per instrument) reproduced the mirror's sign (+10.0, flat at that power) AND produced the same sign on the personas — the tier off won **+25.0 [+5.0, +45.0]** with the exploiter's five 100-turn stalemates as the whole of the movement — so **both instruments now lean HURTS** and §H's HELPS +20.0 is the outlier. That is still not the power to move a shipped default (n = 20, one seat's five games), so the tier stays where it ships; §K3 names the run that can settle it and reports that the `followUpWeight` hypothesis came back DISARMED |
 | C2 | **VETO4 (`SPEED_SUICIDE`) firing on stale speed information** | 106 of the 177 elite clicks the guard refuses are this one code | unproven either way. The question is whether those refusals are boards where the human was right because the engine's speed estimate was blind to the field (an unrevealed Scarf, a weather ability, Tailwind). Answering it needs the **speed race itself instrumented**, which has not been done. Suppressing the rule is *not* an answer — see §F2. |
 | C3 | Smaller open defects | see the "Known — open, from the same review sweep" list in `CHANGELOG.md` (`residualOrder.trust` shipping at 1, `shelter`'s unverified effect, G-Max Steelsurge's flat 12.5 %, two HUDs double-handling a bench tap, the Protosynthesis ceiling's sun/terrain case) and the deliberate-omission list in `BUGS_AUDIT_REPORT.md`. **TWO ARE NOW CLOSED** (2026-10-14): `mon.knockOffSurvived` was a read of nothing (the live field is `mon.itemKnockedOff`, now withheld for a Sticky Hold body), and the whole-`possibleAbilities` hard veto in VETO2 became a proof requirement. The Protosynthesis / Quark Drive SPEED misread is fixed for every speed layer, but the ceiling's sun/terrain-only case is not | four remain open, each with its narrow fix |
 
@@ -328,3 +328,173 @@ turn — and `tests/tuning_check.js` §4 pins each one's arithmetic against a ha
 mirror they are indistinguishable from noise at 60 battles, so the row to remember is
 `pricepivots`'s +10.0 leaning the *same* way as `extendsetup` (both suggest less caution is better in
 self-play): if a second instrument ever agrees, that pair is the next thing to price properly.
+
+---
+
+## K. The multi-ply pass (2026-10-14) — a second ply, a wider endgame box, a match-point scale, and a first reading that flipped its own default
+
+Six tiers in one pass: a selective 2-ply beam, an endgame box widened to 3 bodies with the ambiguous
+Speed order priced as a chance node, stratified active-set worlds, a quantal-response opponent, the
+Cancel-window background ponder, and `quiescence.followUpWeight` (added specifically to attack §J's
+contradiction). The gate itself changed too: `run_ablation.js` now computes a paired bootstrap on
+**match score** (win 1 / tie 0.5 / loss 0) beside the binary win indicator and prints both, because a
+binary indicator cannot see a loss converted into a tie (§A1, §J).
+
+**What was run, and the sample. Read this before any number below.**
+
+* mirror — `node tools/run_ablation.js --league mirror --battles 20 --seed 1337 --parallel 2`, 11
+  variants, 220 battles, **0 errors**, 2,376 s.
+* personas — `node tools/run_ablation.js --agent all --battles 20 --seed 1337 --parallel 2` for the
+  quiescence family, 6 variants, 120 battles, 0 errors, 498 s.
+* both reports are kept locally under the git-ignored names `ablation-mirror-n20.json` and
+  `ablation-personas-n20.json` (with their `.log`), so the tables below can be re-read without
+  re-running them.
+* **n = 20 per row, a third of §H/§J's 60.** The mirror baseline reproduces §J (40.0 % vs 41.7 %), so
+  the instrument is intact — but every interval below is 2–3× wider than §J's, and two of these rows
+  (stratification, and the quiescence family on the personas) are the ones a *higher-power* run has to
+  settle. Nothing here is a population statement.
+
+**The mirror sweep.** Baseline: 8-10-2 = **40.0 %**, 73.2 turns, 2/20 capped (§J at 60 battles:
+41.7 %, 62.3 turns).
+
+| row (leaf the variant patches) | variant win% | Δwin | 95 % CI | Δscore | 95 % CI (score) | turns | verdict |
+|---|---|---|---|---|---|---|---|
+| `quiescence` (off) | **50.0 %** (10-8-2) | +10.0 | [−20.0, +40.0] | +10.0 | [−17.5, +35.0] | 68.9 | no measurable effect |
+| `quiescence-extendsetup` (off) | **50.0 %** (10-8-2) | +10.0 | [−20.0, +40.0] | +10.0 | [−17.5, +35.0] | 68.9 | no measurable effect — and **identical to the whole tier off**, see K3 |
+| `quiescence-followup-damped` (on, 0.5) | **35.0 %** (7-11-2) | −5.0 | [−40.0, +25.0] | −5.0 | [−32.5, +22.5] | 66.4 | no measurable effect — **wrong way**, see K3 |
+| `quiescence-blockprotect` (off) | 40.0 % (8-10-2) | 0.0 | `identical` | | | 73.2 | inert here (as §D5 says) |
+| `quiescence-turn2speed` (off) | 40.0 % (8-10-2) | 0.0 | `identical` | | | 73.2 | inert here |
+| `endgame` (on, 2-body bound) | 40.0 % (8-10-2) | 0.0 | `identical` | | | 73.2 | inert here — it refuses outside ≤2 bodies |
+| `beam-2ply` (on) | **45.0 %** (9-9-2) | +5.0 | [−30.0, +35.0] | +5.0 | [−30.0, +37.5] | **64.3** | no measurable effect, and it shortens games |
+| `endgame-3v3` (on) | 40.0 % (8-10-2) | 0.0 | `identical` | | | 73.2 | inert here: the 3v3 box never fired |
+| `sampler-stratify` (off) | **55.0 %** (11-7-2) | **+15.0** | [0.0, +30.1] | **+15.0** | **[+2.5, +30.0]** | 68.7 | **the i.i.d. draw won — the default flipped, see K2** |
+| `nash-qre` (on) | 40.0 % (8-10-2) | 0.0 | `identical` | | | 73.2 | inert here: the mirror declares no rating, so QRE is the identity by design |
+
+**`identical` means it reproduced the baseline in EVERY battle** (same winner AND same turn count) —
+the signature of a flag whose input this corpus never supplies. Five of eleven mirror rows are that,
+and each has a named reason: two are the sub-knobs §J also found inert, `endgame` refuses a board it
+is not competent on, `endgame-3v3`'s wider box never came up in a 20-battle endgame, and QRE resolves
+to the hard response when the seat declares no rating (§K4).
+
+**The personas sweep, and the composition of that instrument.** `--agent all` seats **four** agents:
+anchor, exploiter, chaos **and the mirror** (added in §I/§J). So `20 battles` is 5 per seat, and the
+55.0 % baseline below is NOT comparable to §H's 98.3 %: §H predates the mirror being part of `all`.
+Baseline: 11-4-5 = **55.0 %**, 54.0 turns, 5/20 capped.
+
+| row (leaf the variant patches) | variant win% | Δwin | 95 % CI | Δscore | 95 % CI (score) | capped | verdict |
+|---|---|---|---|---|---|---|---|
+| `quiescence` (off) | **80.0 %** (16-1-3) | **+25.0** | [+5.0, +45.0] | +20.0 | [+5.0, +37.5] | 3/20 | **feature HURTS** (`surprise`) |
+| `quiescence-extendsetup` (off) | **85.0 %** (17-1-2) | **+30.0** | [+10.0, +50.0] | +22.5 | [+7.5, +37.6] | 2/20 | **feature HURTS** (`surprise`) |
+| `quiescence-blockprotect` (off) | **80.0 %** (16-4-0) | **+25.0** | [+10.0, +45.0] | +12.5 | [+5.0, +22.5] | **0/20** | **feature HURTS** (`surprise`) |
+| `quiescence-followup-damped` (on, 0.5) | 60.0 % (12-3-5) | +5.0 | [0.0, +15.0] | +5.0 | [0.0, +15.0] | 5/20 | no measurable effect |
+| `quiescence-turn2speed` (off) | 55.0 % (11-4-5) | 0.0 | `identical` | | | 5/20 | inert here |
+
+**The same six runs, split by seat** (from the kept per-variant arena reports; `t` = mean turns):
+
+| run | anchor | exploiter | chaos | three personas | mirror seat |
+|---|---|---|---|---|---|
+| baseline (shipped) | 5-0-0 (32t) | **0-0-5 (101t)** | 5-0-0 (28t) | 10-0-5 = **67 %** | 1-4 (56t) |
+| `quiescence` off | 5-0-0 | 2-0-3 | 5-0-0 | 12-0-3 = 80 % | 4-1 |
+| `quiescence-extendsetup` off | 5-0-0 | 3-0-2 | 5-0-0 | 13-0-2 = 87 % | 4-1 |
+| `quiescence-blockprotect` off | 5-0-0 | **5-0-0** | 5-0-0 | **15-0-0 = 100 %** | 1-4 |
+| `quiescence-followup-damped` | 5-0-0 | 0-0-5 | 5-0-0 | 10-0-5 = 67 % | 2-3 |
+| `quiescence-turn2speed` off | 5-0-0 | 0-0-5 | 5-0-0 | 10-0-5 = 67 % | 1-4 |
+
+The baseline is **0-0-5 against the exploiter, every one of them a 100-turn standoff**, and every
+row that touches the tier moves *that* column and nothing else: `blockProtect` off turns all five
+into wins, `extendSetup` off turns three of them, the whole tier off turns two. The anchor and the
+chaos seats are 5-0-0 on every row (20/20, no headroom to move), which is §H's ceiling argument
+arriving row by row.
+
+### K1. The match-point scale, and what it actually decided
+
+`Δwin` and `Δscore` agreed on **10 of 11** mirror rows and on all 5 persona rows — the two scales only
+separated on `sampler-stratify`, where `Δwin` stopped exactly at 0.0 (its interval's floor) and
+`Δscore`'s interval excluded zero at [+2.5, +30.0]. That one row is the reason the scale exists; a
+reader quoting only the win indicator would have called it flat and shipped the tier. No row was
+flagged `score-split` (which needs both intervals to exclude zero in *opposite* directions).
+
+### K2. `sampler.stratifyActive` flipped its own default
+
+This tier shipped **ON**, on an argument about the DRAW rather than about battles: at K = 6 the i.i.d.
+draw can pick the same active set four or five times and never draw a 25 %-usage set, and the active
+body is what every cell of the matrix is priced against. `tests/tuning_check.js` §6 proves that
+coverage gap, and it is still true. What it does not prove is that covering the pool is worth more
+than the draw it replaces, and the first win-rate reading says it is not: switching it OFF won
+**55.0 % against 40.0 %**, Δwin **+15.0 [0.0, +30.1]**, Δscore **+15.0 [+2.5, +30.0]**. The shipped
+leaf is now `stratifyActive: false` (which is bit-identical to the pre-pass build) and the ablation
+row patches it **up** (`direction: 'on'`) as the promotion candidate — the only row in the table whose
+default moved because of its own measurement. Status: **REJECTED at n = 20**, reopen with a 60-battle
+run before rebuilding the argument.
+
+### K3. The `quiescence` contradiction: `followUpWeight` is DISARMED, and both instruments now lean the same way
+
+§J left the tier DISPUTED: personas said HELPS +20.0 [+10.0, +30.0], mirror said HURTS +23.3
+[+8.3, +38.3]. This pass was asked to price the specific mechanism the asymmetry suggested — that the
+setup extension prices a full-strength Turn-2 boosted hit against a rational opponent that rarely
+clicks raw setup into an active threat — by halving it (`followUpWeight: 0.5`).
+
+**The hypothesis is DISARMED, not confirmed.** On the mirror the damped variant scored **−5.0**
+[−40.0, +25.0] against the shipped full-strength setting: halving the follow-up made the arm measured
+*against* the tier slightly WORSE, not better. On the personas it read +5.0 [0.0, +15.0] — flat, and
+its seat split is exactly the baseline's (the exploiter stalls all five again). So "over-pricing the
+Turn-2 hit" is not the lever, and the rows that do move are elsewhere in the tier.
+
+**What the sub-knobs say instead.** On the mirror, `quiescence` off and `quiescence-extendsetup` off
+are **the same battles** (both 10-8-2 at 68.9 turns), so the whole tier's mirror effect IS the setup
+ply. On the personas the picture is sharper and points at a different knob: `blockProtect` off —
+their Protect blocking our move inside the cell — is the single biggest mover (**15-0-0 against the
+10-0-5 baseline**, +25.0 [+10.0, +45.0], capped games 5 → 0), while `extendSetup` off is 13-0-2. And
+the tier's own arm reads **+25.0 [+5.0, +45.0]** on the personas (HURTS, `surprise`) and +10.0
+[−20.0, +40.0] on the mirror — the same sign §J got, so **both instruments now lean HURTS** and §H's
+HELPS +20.0 is the outlier.
+
+**The decision, and why it is deliberately NOT made here.** The shipped default did **not** move. Two
+reasons, and both are about power, not preference:
+
+1. These runs are **n = 20**, a third of the §H/§J samples that disagreed. Replacing a 60-battle
+   HELPS interval with a 20-battle HURTS interval is swapping one under-powered reading for another,
+   and this file's own rule (§H, "the ceiling, stated plainly") is that a row is not quotable until it
+   has the power to break a tie.
+2. The strongest persona evidence rests on **5 exploiter battles**. Five stalemates turning into five
+   wins is a striking, mechanistic signal, and it is also five games.
+
+**What to run next, concretely.** `blockProtect` off is the only sub-knob with a measurable effect on
+BOTH instruments' description of the problem and INERT on the mirror (§D5, §J, and the `identical` row
+above) — so the mirror cannot price it and the personas arena can. That is a 60-battle run of
+`--features quiescence,quiescence-blockprotect,quiescence-extendsetup --agent all --battles 60`, whose
+exploiter column is where the answer will be. Until it exists, §C1 stays DISPUTED and the tier stays
+where it ships.
+
+### K4. The four new tiers, in one line each
+
+* **`beam-2ply` (ships OFF) — flat, and cheap.** +5.0 [−30.0, +35.0] on the mirror, with games 8.9
+  turns shorter (64.3 vs 73.2). It changes decisions (not `identical`) and `tests/tuning_check.js` §5
+  pins the tactical swap it produces (pricing a revenge killer puts Encore above a 120 BP STAB
+  attack). It did **not** clear the gate, so it ships OFF — the 2-ply hypothesis is alive, not
+  adopted; price it at 60 battles before turning it on.
+* **`endgame-3v3` (ships OFF, the widened box) — `identical` here.** Neither the 3v3 mate nor the
+  Speed chance node came up in this corpus's endgames. That is §E7's "refuses outside its competence"
+  becoming "is competent and still never asked": inert, not refuted. `tests/endgame_check.js` §6 pins
+  both behaviours on constructed boards, so the tier is proven, just unpriced.
+* **`nash-qre` (ships OFF) — `identical`, by design.** The mirror declares no rating for the persona
+  seat, and an unknown opponent resolves to the hard response, so this instrument cannot price it.
+  Row kept; price it against the declared persona bands (§D3) if the question is ever reopened.
+* **`deepPonder` (ships ON) — not priceable here at all.** It is a `src/content.js` affordance: the
+  arena drives `laplace_core` directly through the bridge and never runs the boot. Its contract is
+  pinned by `tests/hud_check.js` §14 (scheduling, one pass per window, a new window invalidates the
+  old) and `tests/dom_check.js` §11 (the alert's DOM lifecycle), and it cannot cost win points because
+  Pass 1 — the ranking the HUD shows and the two-pass boot renders first — is unchanged and
+  synchronous. The quality of Pass 2's *advice* inherits `beam-2ply` and `endgame-3v3`, both of which
+  are flat/unpriced here, so treat the Cancel alert as a UI hint rather than a gate-adopted opinion.
+
+### K5. What this pass did NOT establish
+
+* Nothing about strength above n = 20 for any of the six tiers, except that `sampler-stratify`'s
+  default moved (§K2) — that one moved on a match-point interval that excludes zero, and it is the
+  only default this pass flipped.
+* Nothing about the `exploiter` seat's five stalemates beyond the fact that they were already there in
+  the baseline and that three sub-knob settings dissolve them. The mechanism (a shield inside the
+  cell, versus the setup ply) is a hypothesis with two measurements behind it, not a diagnosis.
+* Nothing about humans. The mirror prices a frozen twin (§I) and the personas are heuristics (§H);
+  neither is `tools/benchmark_human_match.js`'s question.

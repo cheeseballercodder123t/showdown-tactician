@@ -920,6 +920,242 @@ eq('the hyphenated move carries the confidence of the action it was matched to',
   textOf(NEW_CLIENT_BUTTONS[2].querySelector('.elo-helper-badge') ||
     (NEW_CLIENT_BUTTONS[2].children || [])[0]), '22%');
 
+/* ============================== 14. the Cancel-window background ponder */
+
+section('14. the Cancel window: what the deeper pass may say, and when it may interrupt');
+
+/* The two-pass boot (src/content.js): Pass 1 is the fast, synchronous read that paints the HUD;
+ * Pass 2 is a deeper read scheduled on the next tick. These checks are about the DECISIONS the boot
+ * makes with Pass 2's answer — the DOM lifecycle of the alert itself is tests/dom_check.js §11 — so
+ * the HUD is a recorder here rather than a document. */
+
+const PONDER_STATE = {
+  turn: 7,
+  formatSupported: true,
+  request: {
+    active: [{
+      moves: [
+        { id: 'closecombat', move: 'Close Combat', pp: 8, maxpp: 8 },
+        { id: 'moonblast', move: 'Moonblast', pp: 8, maxpp: 8 },
+        { id: 'icespinner', move: 'Ice Spinner', pp: 16, maxpp: 16 }
+      ]
+    }],
+    side: {
+      pokemon: [
+        { ident: 'p1: Iron Valiant', species: 'Iron Valiant', active: true, condition: '100/100' },
+        { ident: 'p1: Great Tusk', species: 'Great Tusk', condition: '100/100' },
+        { ident: 'p1: Gholdengo', species: 'Gholdengo', condition: '100/100' }
+      ]
+    }
+  },
+  field: {},
+  myTeam: [],
+  oppTeam: []
+};
+
+function ponderEngine(ranked, calls) {
+  return {
+    lastReadout: null,
+    preview: null,
+    evaluateTurn: function (state, opts) {
+      if (calls) calls.push(opts || null);
+      this.lastReadout = { stub: true, ranked: ranked };
+      return ranked.slice();
+    }
+  };
+}
+
+const ponderBoot = call('the boot constructs for the ponder fixture', function () {
+  return new ST.TacticianBoot({ doc: S.document });
+});
+if (!ponderBoot) {
+  check('TacticianBoot is required for section 14', false, 'no boot');
+} else {
+  const cleared = [];
+  const alerts = [];
+  ponderBoot.hud.clearCancelAlert = function () { cleared.push(1); return null; };
+  ponderBoot.hud.renderCancelAlert = function (info) { alerts.push(info); return info; };
+
+  /* --- reading the player's own commands off the wire */
+  ponderBoot._noteOutgoingChoice('/choose move 2');
+  check('a bare /choose move is read as a locked move',
+    !!ponderBoot._lockedChoice && ponderBoot._lockedChoice.kind === 'move' && ponderBoot._lockedChoice.arg === '2',
+    JSON.stringify(ponderBoot._lockedChoice));
+  const splitWire = noThrow(function () { return ponderBoot._noteOutgoingChoice('battle-gen9ou-1|/choose move 3|12'); });
+  check('the split wire form (room|command|rqid) is read too',
+    splitWire.ok && !!ponderBoot._lockedChoice && ponderBoot._lockedChoice.arg === '3',
+    splitWire.error || JSON.stringify(ponderBoot._lockedChoice));
+  ponderBoot._noteOutgoingChoice('/choose switch 2');
+  check('a locked switch is read as a switch',
+    !!ponderBoot._lockedChoice && ponderBoot._lockedChoice.kind === 'switch' && ponderBoot._lockedChoice.arg === '2');
+  ponderBoot._noteOutgoingChoice('/choose team 123456');
+  check('a team-preview choice is not a locked move', ponderBoot._lockedChoice === null);
+  ponderBoot._noteOutgoingChoice('/choose move 1');
+  ponderBoot._noteOutgoingChoice('/undo');
+  check('/undo releases the lock', ponderBoot._lockedChoice === null);
+  ponderBoot._noteOutgoingChoice('|move|p1a: Iron Valiant|Close Combat|p2a: Kingambit');
+  check('an inbound battle line is not mistaken for our own command', ponderBoot._lockedChoice === null);
+
+  /* --- the wire's slot number resolved against the REQUEST, which is the only honest mapping */
+  ponderBoot._noteOutgoingChoice('/choose move 2');
+  const lockedMove = ponderBoot._lockedAction(PONDER_STATE);
+  check('the locked slot resolves to the move the request lists there',
+    !!lockedMove && lockedMove.id === 'moonblast' && lockedMove.name === 'Moonblast', JSON.stringify(lockedMove));
+  ponderBoot._noteOutgoingChoice('/choose move 9');
+  check('an out-of-range slot resolves to NOTHING rather than a guess',
+    ponderBoot._lockedAction(PONDER_STATE) === null);
+  ponderBoot._noteOutgoingChoice('/choose switch 3');
+  const lockedSwitch = ponderBoot._lockedAction(PONDER_STATE);
+  check('a locked switch resolves to the bench body the request lists',
+    !!lockedSwitch && lockedSwitch.id === 'gholdengo', JSON.stringify(lockedSwitch));
+  ponderBoot._noteOutgoingChoice('/undo');
+  check('no lock means no locked action', ponderBoot._lockedAction(PONDER_STATE) === null);
+
+  /* --- a new window invalidates everything from the old one */
+  const clearedBefore = cleared.length;
+  const idBefore = ponderBoot._ponderId;
+  ponderBoot._noteOutgoingChoice('/choose move 1');
+  ponderBoot._closePonderWindow();
+  check('closing a window bumps the monotonic pass id', ponderBoot._ponderId === idBefore + 1);
+  check('...and drops the locked choice', ponderBoot._lockedChoice === null);
+  check('...and takes the Cancel alert down', cleared.length === clearedBefore + 1);
+
+  /* --- the plan, and the deep call's own contract */
+  const plan = ponderBoot._deepPonderPlan();
+  check('the plan comes from laplace.deepPonder',
+    !!plan && plan.deepWorlds === 14 && plan.useBeam2Ply === true && plan.cancelAlertScoreDelta === 45,
+    JSON.stringify(plan));
+  const deepCalls = [];
+  ponderBoot.engine = ponderEngine([{ name: 'Moonblast', moveId: 'moonblast', confidence: 55, score: 100 }], deepCalls);
+  ponderBoot._runDeepPonder(PONDER_STATE, plan, ponderBoot._ponderId - 1);
+  check('a pass from a CLOSED window never reaches the engine', deepCalls.length === 0);
+
+  const caseA = call('the deep pass runs for the live window', function () {
+    return ponderBoot._runDeepPonder(PONDER_STATE, plan, ponderBoot._ponderId);
+  });
+  eq('the engine is asked once', deepCalls.length, 1);
+  const deepOpts = deepCalls[0] || {};
+  eq('...with the deeper world count', deepOpts.K, 14);
+  eq('...as a RE-READ (so the per-turn side effects do not run twice)', deepOpts.reread, true);
+  eq('...and with the 2-ply beam forced on', deepOpts.beam2Ply, true);
+  check('the deeper ranking is returned and published', Array.isArray(caseA) && caseA[0].name === 'Moonblast');
+  check('...as the readout the HUD is showing', !!ponderBoot.pendingReadout && ponderBoot.pendingReadout.stub === true);
+  check('...and the menu-open case is recorded',
+    !!ponderBoot.lastPonder && ponderBoot.lastPonder.mode === 'menu-open' && ponderBoot.lastPonder.updated === true,
+    JSON.stringify(ponderBoot.lastPonder));
+  eq('the ponder is counted as work done', ponderBoot.stats.ponders, 1);
+  check('an open menu draws no alert', alerts.length === 0);
+
+  /* --- CASE B: a locked move, and a deeper ranking that agrees */
+  ponderBoot._noteOutgoingChoice('/choose move 2');
+  ponderBoot.engine = ponderEngine([
+    { name: 'Moonblast', moveId: 'moonblast', confidence: 55, score: 100 },
+    { name: 'Close Combat', moveId: 'closecombat', confidence: 20, score: 10 }
+  ], []);
+  ponderBoot._runDeepPonder(PONDER_STATE, plan, ponderBoot._ponderId);
+  check('a locked line the deeper pass still ranks first draws NO alert',
+    alerts.length === 0 && !!ponderBoot.lastPonder && ponderBoot.lastPonder.agreed === true,
+    JSON.stringify(ponderBoot.lastPonder));
+
+  const scoreAlert = function (topScore, lockedScore, topConf, lockedConf) {
+    ponderBoot._noteOutgoingChoice('/choose move 2');
+    ponderBoot.engine = ponderEngine([
+      { name: 'Close Combat', moveId: 'closecombat', confidence: topConf, score: topScore },
+      { name: 'Moonblast', moveId: 'moonblast', confidence: lockedConf, score: lockedScore }
+    ], []);
+    ponderBoot._runDeepPonder(PONDER_STATE, plan, ponderBoot._ponderId);
+    return alerts.length ? alerts[alerts.length - 1] : null;
+  };
+
+  const quiet = scoreAlert(200, 170, 20, 20);
+  check('a deeper edge BELOW both margins draws no alert', quiet === null, JSON.stringify(quiet));
+
+  const byScore = scoreAlert(200, 40, 20, 20);
+  check('...above the score margin it does', !!byScore && byScore.reason === 'score', JSON.stringify(byScore));
+  check('...naming the line to play and the line to drop',
+    !!byScore && byScore.better.name === 'Close Combat' && byScore.locked.name === 'Moonblast',
+    JSON.stringify(byScore));
+  close('...and the payoff gap it is based on', byScore && byScore.scoreDelta, 160, 0.001);
+  check('...with a reason a player can read', !!byScore && /payoff/.test(byScore.why), byScore && byScore.why);
+
+  const byConf = scoreAlert(200, 200, 60, 30);
+  check('an equal-payoff line the deeper pass is much clearer about raises the CONFIDENCE reason',
+    !!byConf && byConf.reason === 'confidence', JSON.stringify(byConf));
+
+  ponderBoot._noteOutgoingChoice('/choose move 2');
+  ponderBoot.engine = ponderEngine([
+    { name: 'Close Combat', moveId: 'closecombat', confidence: 60, score: 300 },
+    { name: 'Moonblast', moveId: 'moonblast', confidence: 0, score: -9999, isVetoed: true, vetoReason: 'Ground move into Flying type' }
+  ], []);
+  ponderBoot._runDeepPonder(PONDER_STATE, plan, ponderBoot._ponderId);
+  const vetoAlert = alerts.length ? alerts[alerts.length - 1] : null;
+  check('a locked line the deeper pass VETOES raises the alert',
+    !!vetoAlert && vetoAlert.reason === 'vetoed', JSON.stringify(vetoAlert));
+  check('...and the veto reason reaches the player',
+    !!vetoAlert && /Flying/.test(vetoAlert.why), vetoAlert && vetoAlert.why);
+
+  ponderBoot._noteOutgoingChoice('/choose move 2');
+  ponderBoot.engine = ponderEngine([
+    { name: 'Close Combat', moveId: 'closecombat', confidence: 60, score: 300 },
+    { name: 'Ice Spinner', moveId: 'icespinner', confidence: 30, score: 100 }
+  ], []);
+  ponderBoot._runDeepPonder(PONDER_STATE, plan, ponderBoot._ponderId);
+  const goneAlert = alerts.length ? alerts[alerts.length - 1] : null;
+  check('a locked line the deeper read no longer offers at all raises the alert',
+    !!goneAlert && goneAlert.reason === 'unlisted', JSON.stringify(goneAlert));
+
+  /* --- the scheduling contract: never inline, and one pass per window */
+  const timers = [];
+  const schedSandbox = noThrow(function () {
+    return H.loadAll({
+      setTimeout: function (fn) { timers.push(fn); return timers.length; },
+      setInterval: function () { return 0; },
+      clearInterval: function () { }
+    });
+  });
+  check('the manifest loads with an injected timer', schedSandbox.ok, schedSandbox.error);
+  if (schedSandbox.ok && schedSandbox.value.ST.TacticianBoot) {
+    const boot = new schedSandbox.value.ST.TacticianBoot({ doc: schedSandbox.value.document });
+    const schedCalls = [];
+    boot.engine = ponderEngine([{ name: 'Moonblast', moveId: 'moonblast', confidence: 55, score: 100 }], schedCalls);
+    const hudCalls = [];
+    boot.hud = {
+      render: function (ranked, state, readout) { hudCalls.push(readout); return ranked ? ranked.length : 0; },
+      renderTRChip: function () { return null; },
+      clearCancelAlert: function () { return null; }
+    };
+    boot.state = { state: PONDER_STATE };
+    // The LLM bridge schedules its own timeout, and it is not the subject here: with it out of the
+    // way the only NEW timer is the ponder. (`loadAll` also leaves a loadTeam watchdog behind on
+    // the sandbox's auto-started boot, which is why this counts from here rather than from zero.)
+    boot.llm = null;
+    const timersBefore = timers.length;
+    const rankedPass1 = noThrow(function () { return boot._onRequest(); });
+    check('a decision request answers SYNCHRONOUSLY from the fast pass', rankedPass1.ok && schedCalls.length === 1,
+      rankedPass1.error || String(schedCalls.length));
+    eq('...after rendering the HUD (so the frame never waits on the deep pass)', hudCalls.length, 1);
+    eq('...and the deep pass is queued, not run', timers.length, timersBefore + 1);
+    eq('...which counts as no work yet', boot.stats.ponders, 0);
+    const reRequest = noThrow(function () { return boot._onRequest(); });
+    check('a re-delivered request in the same window schedules nothing new',
+      reRequest.ok && timers.length === timersBefore + 1, reRequest.error || String(timers.length));
+    const fired = noThrow(function () { timers[timersBefore](); });
+    check('firing the queued pass runs the deeper read', fired.ok && boot.stats.ponders === 1, fired.error);
+    eq('...through the engine once more', schedCalls.length, 2);
+    eq('...with the deeper world count', schedCalls[1] && schedCalls[1].K, 14);
+    check('...and the HUD is repainted from the deeper ranking',
+      hudCalls.length === 2 && !!boot.lastPonder && boot.lastPonder.updated === true,
+      JSON.stringify(boot.lastPonder));
+    // A stale closure (scheduled for a window that has since closed) must stay silent.
+    boot._closePonderWindow();
+    const before = boot.stats.ponders;
+    check('a stale pass after the window closed does nothing', (function () {
+      const ran = noThrow(function () { return boot._runDeepPonder(PONDER_STATE, boot._deepPonderPlan(), 0); });
+      return ran.ok && ran.value === null && boot.stats.ponders === before;
+    })(), String(boot.stats.ponders));
+  }
+}
+
 /* ================================================================== summary */
 
 console.log('\n=== summary ===');

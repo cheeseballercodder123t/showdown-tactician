@@ -101,16 +101,42 @@ function makeEl(tag) {
   return el;
 }
 
-/** Does `node` match one simple selector from a comma-separated list? */
-function matchesSelector(node, part) {
+/**
+ * Does `node` match one simple (space-free) selector?
+ *
+ * `tag`, `.class`, `tag[attr]` and `tag[attr="value"]` — the four shapes the HUD actually queries.
+ * The Cancel-window alert added the last one (`button[name="undoChoice"]`), and supporting it here
+ * is the difference between a test that can fail and one that cannot.
+ */
+function matchesSimple(node, part) {
   if (!node || !part) return false;
-  if (part === 'button[data-move]') {
-    return node.tagName === 'BUTTON' && node.getAttribute('data-move') !== null;
+  const attr = /^([a-zA-Z]*)\[([a-zA-Z-]+)(?:="([^"]*)")?\]$/.exec(part);
+  if (attr) {
+    const tag = attr[1].toUpperCase();
+    if (tag && node.tagName !== tag) return false;
+    const value = node.getAttribute ? node.getAttribute(attr[2]) : null;
+    return attr[3] === undefined ? value !== null : value === attr[3];
   }
   if (part.charAt(0) === '.') {
     return String(node.className || '').split(/\s+/).indexOf(part.slice(1)) !== -1;
   }
-  return false;
+  return node.tagName === part.toUpperCase();
+}
+
+/** A compound selector: the last token matches the node, the earlier ones its ancestors. */
+function matchesSelector(node, part) {
+  const tokens = String(part || '').trim().split(/\s+/);
+  if (!tokens.length || !matchesSimple(node, tokens[tokens.length - 1])) return false;
+  let ancestor = node.parentNode;
+  for (let i = tokens.length - 2; i >= 0; i--) {
+    let found = false;
+    while (ancestor) {
+      if (matchesSimple(ancestor, tokens[i])) { found = true; ancestor = ancestor.parentNode; break; }
+      ancestor = ancestor.parentNode;
+    }
+    if (!found) return false;
+  }
+  return true;
 }
 
 function makeDoc() {
@@ -564,6 +590,121 @@ function sectionLayoutModeResolvesAndReparents() {
   eq('its resolved attribute matches', btn.getAttribute('data-st-resolved'), 'mobile');
 }
 
+/**
+ * The document's own querySelectorAll has to search the MOUNTED subtree — the HUD parents its band
+ * nodes to `document.body`, and a stub that only ever searched its button list would let clear()
+ * skip every node it is supposed to remove and still look green.
+ */
+function searchWholeBody(doc) {
+  doc.querySelectorAll = function (sel) {
+    const parts = String(sel).split(',').map(function (p) { return p.trim(); });
+    const out = [];
+    const walk = function (el) {
+      for (let i = 0; i < parts.length; i++) {
+        if (matchesSelector(el, parts[i])) { out.push(el); break; }
+      }
+      (el.children || []).forEach(walk);
+    };
+    (doc.body.children || []).forEach(walk);
+    return out;
+  };
+  doc.querySelector = function (sel) { const all = doc.querySelectorAll(sel); return all.length ? all[0] : null; };
+  return doc;
+}
+
+/**
+ * The Cancel window's alert. Showdown's `<button name="undoChoice">` is the control the alert asks
+ * the player to press, so the flag has to land ON it — and come back off when the window closes,
+ * because that button belongs to the PAGE and a flag left there would outlive our teardown.
+ */
+function sectionCancelAlertLifecycle() {
+  section('11. the Cancel-window alert flags the button, and every teardown path releases it');
+  const doc = searchWholeBody(makeDoc());
+  const hud = new ST.MobileHUD({ doc: doc });
+  const undo = makeEl('button');
+  undo.className = 'battle-control';
+  undo.setAttribute('name', 'undoChoice');
+  doc.body.appendChild(undo);
+
+  const info = {
+    locked: { id: 'closecombat', name: 'Close Combat' },
+    better: { id: 'moonblast', name: 'Moonblast', kind: 'move' },
+    reason: 'score',
+    why: 'a deeper search is worth 61.5 more payoff'
+  };
+  const rendered = hud.renderCancelAlert(info);
+  check('the alert flags the Cancel button itself', undo.classList.contains('st-cancel-alert'));
+  const badge = undo.querySelector('.st-cancel-badge');
+  check('a badge on the button names the line to undo to',
+    !!badge && badge.textContent === 'UNDO → Moonblast', badge && badge.textContent);
+  const card = doc.body.querySelector('.st-cancel-alert-card');
+  check('a card is mounted', !!card, 'no .st-cancel-alert-card under body');
+  if (card) {
+    const body = card.querySelector('.st-cancel-body');
+    const why = card.querySelector('.st-cancel-why');
+    check('...naming both the line to play and the line to drop',
+      !!body && /Moonblast/.test(body.textContent) && /Close Combat/.test(body.textContent),
+      body && body.textContent);
+    check('...and saying why the two passes disagree',
+      !!why && /payoff/.test(why.textContent), why && why.textContent);
+    eq('...and tagged with the reason for the DOM', card.getAttribute('data-reason'), 'score');
+  }
+  check('the returned handle names the button it flagged', !!rendered && rendered.button === undo);
+
+  hud.renderCancelAlert(info);
+  eq('a second alert reuses the badge instead of stacking one', undo.querySelectorAll('.st-cancel-badge').length, 1);
+  eq('and mounts only one card', doc.body.querySelectorAll('.st-cancel-alert-card').length, 1);
+
+  hud.clearCancelAlert();
+  check('clearing un-flags the button', !undo.classList.contains('st-cancel-alert'));
+  eq('clearing removes the badge', undo.querySelectorAll('.st-cancel-badge').length, 0);
+  check('clearing removes the card', !doc.body.querySelector('.st-cancel-alert-card'));
+  let twiceThrew = null;
+  try { hud.clearCancelAlert(); } catch (e) { twiceThrew = e; }
+  check('clearing twice is safe', !twiceThrew, twiceThrew && twiceThrew.message);
+
+  /* A page with no Cancel button — the opponent locked in, or an older client. The disagreement
+   * the card reports is real either way, so the card must still land. */
+  const bare = searchWholeBody(makeDoc());
+  const bareHud = new ST.MobileHUD({ doc: bare });
+  let bareThrew = null;
+  try { bareHud.renderCancelAlert(info); } catch (e) { bareThrew = e; }
+  check('a page with no Cancel button does not throw', !bareThrew, bareThrew && bareThrew.message);
+  check('...and the card still lands', !!bare.body.querySelector('.st-cancel-alert-card'));
+  check('...with no button in its handle', !!(bareHud.cancelAlert) && bareHud.cancelAlert.button === null);
+
+  /* A malformed alert clears rather than painting an empty card: a card with no line to play is
+   * worse than no card, because it asks the player to undo something it will not name. */
+  bareHud.renderCancelAlert({ locked: { name: 'Close Combat' }, better: null });
+  check('an alert with no better line clears instead of painting', !bare.body.querySelector('.st-cancel-alert-card'));
+
+  /* clear() is the full teardown: a flagged PAGE button must be released by it. */
+  const teardown = searchWholeBody(makeDoc());
+  const teardownHud = new ST.MobileHUD({ doc: teardown });
+  const undo2 = makeEl('button');
+  undo2.setAttribute('name', 'undoChoice');
+  teardown.body.appendChild(undo2);
+  teardownHud.renderCancelAlert(info);
+  teardownHud.clear();
+  check('clear() un-flags the Cancel button', !undo2.classList.contains('st-cancel-alert'));
+  eq('clear() removes the badge', undo2.querySelectorAll('.st-cancel-badge').length, 0);
+  check('clear() removes the card', !teardown.body.querySelector('.st-cancel-alert-card'));
+  check('clear() resets both handles',
+    teardownHud._nodes.cancelAlert === null && teardownHud.cancelAlert === null);
+
+  /* The `.battle-controls button[value="undo"]` spelling, which the second selector exists for. */
+  const alt = searchWholeBody(makeDoc());
+  const altHud = new ST.MobileHUD({ doc: alt });
+  const controls = makeEl('div');
+  controls.className = 'battle-controls';
+  const altUndo = makeEl('button');
+  altUndo.setAttribute('value', 'undo');
+  controls.appendChild(altUndo);
+  alt.body.appendChild(controls);
+  altHud.renderCancelAlert(info);
+  check('the older Cancel spelling is flagged too', altUndo.classList.contains('st-cancel-alert'));
+}
+
 function main() {
   console.log('Showdown Tactician — HUD node lifecycle (real elements)\n');
   sectionRollbackIsRecordedOnce();
@@ -576,6 +717,7 @@ function main() {
   sectionInitResetsTheEvaluationLatch();
   sectionAdoptedDrawerStillBindsLayoutSignals();
   sectionLayoutModeResolvesAndReparents();
+  sectionCancelAlertLifecycle();
 
   section('summary');
   console.log('checks passed: ' + passed);

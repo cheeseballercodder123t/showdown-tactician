@@ -134,6 +134,68 @@ function boardOrderDecides() {
   return board([me], [them]);
 }
 
+/* D: three of their bodies inside one hit each, none of them able to hit back (their sets are
+ * status-only, so they pass) — a mate in 3 BY CONSTRUCTION that only a three-wide search can see. */
+function boardWideMate() {
+  const me = mon('Iron Valiant', {
+    side: 'p1', isActive: true, hpPercent: 100,
+    liveSet: liveSet('Iron Valiant', ['Close Combat'], { nature: 'Jolly', evs: spread({ atk: 252, spe: 252 }) })
+  });
+  const them = [
+    mon('Kingambit', {
+      isActive: true, hpPercent: 12,
+      liveSet: liveSet('Kingambit', ['Kowtow Cleave'], { nature: 'Adamant', evs: spread({ hp: 252, atk: 252 }) })
+    }),
+    mon('Iron Treads', {
+      hpPercent: 12,
+      liveSet: liveSet('Iron Treads', ['Stealth Rock', 'Rapid Spin'], { nature: 'Jolly' })
+    }),
+    mon('Corviknight', {
+      hpPercent: 12,
+      liveSet: liveSet('Corviknight', ['Iron Defense', 'Roost'], { nature: 'Sassy' })
+    })
+  ];
+  return board([me], them);
+}
+
+/* The four sets the Speed-band section pivots on. Iron Valiant at 252 Spe Jolly is 364 and the same
+ * set with a Choice Scarf is 546; Kingambit's bulky spread is 136. */
+function ourTwelve() {
+  return mon('Iron Valiant', {
+    side: 'p1', isActive: true, hpPercent: 12, liveSet: valiantSet()
+  });
+}
+function valiantSet() {
+  return liveSet('Iron Valiant', ['Close Combat'], { nature: 'Jolly', evs: spread({ atk: 252, spe: 252 }) });
+}
+function valiantScarfSet() {
+  return liveSet('Iron Valiant', ['Close Combat'], {
+    nature: 'Jolly', evs: spread({ atk: 252, spe: 252 }), item: 'Choice Scarf'
+  });
+}
+function slowSet() {
+  return liveSet('Kingambit', ['Kowtow Cleave'], { nature: 'Adamant', evs: spread({ hp: 252, atk: 252 }) });
+}
+/* Their body as a POOL: the fast set first, the slow one second, weights straight from the caller. */
+function theirStraddle(fastWeight, slowWeight) {
+  return mon('Kingambit', {
+    isActive: true, hpPercent: 12, setMoves: ['Kowtow Cleave'], candidateSets: [
+      Object.assign({}, valiantScarfSet(), { weight: fastWeight }),
+      Object.assign({}, slowSet(), { weight: slowWeight })
+    ]
+  });
+}
+/* Ten damaging moves: more than a legal set can hold, so `maxBranchingMoves` is the thing that
+ * bounds it (`_movesOf` used to hardcode four). */
+function bodyWithTenAttacks() {
+  return mon('Iron Valiant', {
+    side: 'p1', isActive: true, setMoves: [
+      'Close Combat', 'Moonblast', 'Psycho Cut', 'Spirit Break', 'Ice Punch',
+      'Thunder Punch', 'Fire Punch', 'Zen Headbutt', 'Liquidation', 'Drain Punch'
+    ]
+  });
+}
+
 if (!ST.EndgameSolver) {
   check('ST.EndgameSolver is registered (src/endgame_solver.js must be in the manifest)', false);
   console.log('\n=== summary ===\nchecks passed: ' + passed + '\nchecks failed: ' + failures.length);
@@ -182,8 +244,13 @@ section('1. every refusal the module documents');
     mon('Great Tusk', { hpPercent: 90, setMoves: ['Earthquake'] }),
     mon('Iron Valiant', { hpPercent: 90, setMoves: ['Close Combat'] })];
   const crowded = board([mon('Iron Valiant', { side: 'p1', isActive: true, setMoves: ['Close Combat'] })], three);
-  check('three living bodies on their side refuses at maxBodies 2', s.solve(crowded, null) === null);
-  check('...with reason too-many-bodies-theirs', s.lastReport && s.lastReport.reason === 'too-many-bodies-theirs');
+  /* The body bound moved from 2 to 3 — a 3v3 board is searchable when the tier is enabled — so the
+   * refusal now has to be asked for rather than being the default. The default's own bound (four
+   * bodies) is pinned in section 6. */
+  const narrow = mkSolver({ maxBodies: 2 });
+  check('three living bodies on their side refuses at maxBodies 2', narrow.solve(crowded, null) === null);
+  check('...with reason too-many-bodies-theirs', narrow.lastReport && narrow.lastReport.reason === 'too-many-bodies-theirs',
+    JSON.stringify(narrow.lastReport));
 
   const twoByTwo = board(
     [mon('Iron Valiant', { side: 'p1', isActive: true, setMoves: ['Close Combat'] }),
@@ -345,6 +412,160 @@ section('5. the live board is never written through, and the answer is repeatabl
   check('...and its line, if any, still names legal moves of OURS', !multi ||
     multi.line.every(function (act) { return twoByTwo.myTeam.some(function (m) { return m.setMoves.indexOf(act.name) !== -1; }); }),
     JSON.stringify(multi && multi.line));
+}
+
+/* ========================== 6. three-wide boards, and an unreadable Speed order priced honestly */
+
+section('6. the wider board: 3v3 activation, and the Speed coin flip priced instead of refused');
+{
+  check('the tier allows three living bodies a side', ST.configGet('laplace.endgame.maxAlive', null) === 3);
+  check('...and the historical alias agrees', ST.configGet('laplace.endgame.maxBodies', null) === 3);
+  check('maxBranchingMoves is registered', ST.configGet('laplace.endgame.maxBranchingMoves', null) === 12);
+  check('chance nodes are on in config', ST.configGet('laplace.endgame.chanceNodes', null) === true);
+
+  const s = mkSolver();
+  check('...and one solver instance reads all three of them',
+    s.maxBodies === 3 && s.maxAlive === 3 && s.maxBranchingMoves === 12 && s.chanceNodes === true,
+    JSON.stringify([s.maxBodies, s.maxAlive, s.maxBranchingMoves, s.chanceNodes]));
+
+  /* --- the 3v3 mate. Three of their bodies at 12 %, every one of them hittable by our single move,
+   * and none of them able to hit back (their sets hold STATUS moves only, so they pass and cannot
+   * revenge). Finding this needs a search three bodies wide, which is the whole reason the bound
+   * moved. */
+  const wide = mkSolver().solve(boardWideMate(), null);
+  check('a 3v3 board is searched and the forced win is found', !!wide && wide.solved === true,
+    JSON.stringify(wide));
+  check('...and counted in turns', !!wide && wide.mateIn === 3, wide && String(wide.mateIn));
+  check('...with one line entry per turn, every one of them our own killing move',
+    !!wide && wide.line.length === 3 && wide.line.every(function (a) {
+      return a.kind === 'move' && a.name === 'Close Combat' && !!U.getMoveData(a.name);
+    }), JSON.stringify(wide && wide.line));
+  check('...inside the default node budget', !!wide && wide.nodes > 0 && wide.nodes <= 20000,
+    wide && String(wide.nodes));
+  check('a PROVEN mate never leans on a chance node', !!wide && wide.chancePairs === 0,
+    wide && String(wide.chancePairs));
+
+  const narrow = mkSolver({ maxBodies: 2 });
+  check('the same board refuses at the old bound', narrow.solve(boardWideMate(), null) === null);
+  check('...with reason too-many-bodies-theirs',
+    narrow.lastReport && narrow.lastReport.reason === 'too-many-bodies-theirs', JSON.stringify(narrow.lastReport));
+
+  const threeByTwoState = boardWideMate();
+  threeByTwoState.oppTeam = threeByTwoState.oppTeam.slice(0, 2);
+  threeByTwoState.bench.opp = threeByTwoState.oppTeam.slice(1);
+  const threeOnTwo = mkSolver().solve(threeByTwoState, null);
+  check('a 3v2 board is answered as well', !!threeOnTwo && threeOnTwo.solved === true && threeOnTwo.mateIn === 2,
+    JSON.stringify(threeOnTwo));
+
+  const fourState = boardWideMate();
+  fourState.oppTeam = fourState.oppTeam.concat([mon('Great Tusk', { hpPercent: 90, setMoves: ['Earthquake'] })]);
+  fourState.bench.opp = fourState.oppTeam.slice(1);
+  const wideSolver = mkSolver();
+  check('four living bodies is still refused: the bound is 3, not no bound',
+    wideSolver.solve(fourState, null) === null);
+  check('...with reason too-many-bodies-theirs',
+    wideSolver.lastReport && wideSolver.lastReport.reason === 'too-many-bodies-theirs',
+    JSON.stringify(wideSolver.lastReport));
+
+  check('maxBranchingMoves bounds the branch list of an over-full body',
+    mkSolver({ maxBranchingMoves: 3 })._movesOf(bodyWithTenAttacks()).length === 3);
+  check('...while a legal set is never trimmed by the default',
+    mkSolver()._movesOf(bodyWithTenAttacks()).length === 10,
+    String(mkSolver()._movesOf(bodyWithTenAttacks()).length));
+
+  /* --- the Speed band. Our exact Speed is known (we registered the set); theirs is a pool whose two
+   * candidates straddle it, so the ORDER IS A FACT THE ENGINE DOES NOT HAVE. The old rail refused
+   * the whole solve. */
+  const pooled = theirStraddle(3000, 1);
+  const bounds = mkSolver()._speedBounds(pooled);
+  check('their band reaches the FASTEST candidate, not the slowest',
+    bounds.max === U.maxSpeedForSet(valiantScarfSet()), JSON.stringify(bounds));
+  check('...while a pool still proves no floor', bounds.min === 0, JSON.stringify(bounds));
+  check('...and an observed ceiling still tightens the band it can',
+    mkSolver()._speedBounds(Object.assign({}, pooled, { speedCeiling: 200 })).max === 200);
+
+  const chanceSolver = mkSolver();
+  const nodeOf = function (them, me) {
+    return chanceSolver._nodeFrom(board([me || ourTwelve()], [them]), null);
+  };
+  const tiePool = mon('Kingambit', {
+    isActive: true, hpPercent: 12, setMoves: ['Kowtow Cleave'], candidateSets: [
+      Object.assign({}, valiantSet(), { weight: 2 }),
+      Object.assign({}, valiantScarfSet(), { weight: 6 })
+    ]
+  });
+  check('P(they act first) is the weighted share of their surviving sets, an exact tie counting 0.5',
+    chanceSolver._oppFasterProbability(nodeOf(tiePool), 'Close Combat', 'Kowtow Cleave') === 0.875,
+    String(chanceSolver._oppFasterProbability(nodeOf(tiePool), 'Close Combat', 'Kowtow Cleave')));
+  const pool = function (set, weight) {
+    return mon('Kingambit', {
+      isActive: true, hpPercent: 12, setMoves: ['Kowtow Cleave'], candidateSets: [
+        Object.assign({}, set, { weight: weight })
+      ]
+    });
+  };
+  check('...1 when every surviving set outspeeds us',
+    chanceSolver._oppFasterProbability(nodeOf(pool(valiantScarfSet(), 4)), 'Close Combat', 'Kowtow Cleave') === 1);
+  check('...0 when none of them does',
+    chanceSolver._oppFasterProbability(nodeOf(pool(slowSet(), 4)), 'Close Combat', 'Kowtow Cleave') === 0);
+  check('a priority gap decides with no coin flip at all',
+    chanceSolver._oppFasterProbability(nodeOf(theirStraddle(50, 50)), 'Close Combat', 'Sucker Punch') === 1);
+  check('an unknown Speed of OURS is not a probability to invent',
+    chanceSolver._oppFasterProbability(nodeOf(theirStraddle(50, 50), mon('Great Tusk', { side: 'p1', isActive: true, setMoves: ['Earthquake'] })), 'Close Combat', 'Kowtow Cleave') === null);
+  check('...and neither is a body with no candidate pool',
+    chanceSolver._oppFasterProbability(nodeOf(mon('Kingambit', { isActive: true, hpPercent: 12, setMoves: ['Kowtow Cleave'] })), 'Close Combat', 'Kowtow Cleave') === null);
+  const plain = chanceSolver._oppFasterProbability(nodeOf(theirStraddle(1, 2999)), 'Close Combat', 'Kowtow Cleave');
+  const trBoard = board([ourTwelve()], [theirStraddle(1, 2999)]);
+  trBoard.field.trickRoom = true;
+  const underTR = chanceSolver._oppFasterProbability(chanceSolver._nodeFrom(trBoard, null), 'Close Combat', 'Kowtow Cleave');
+  check('Trick Room INVERTS the probability rather than the answer',
+    Math.abs((plain + underTR) - 1) < 1e-12, String(plain) + ' vs ' + String(underTR));
+
+  /* --- and the arithmetic end to end. Both references are the SAME board with their order certain:
+   * with the slow set they cannot act before our killing move (we have a mate in 1), with the Scarf
+   * set they act first and the same board is a LOSS. A straddle in between must be the weighted
+   * expectation of exactly those two numbers. */
+  const vMyFirst = mkSolver().solve(board([ourTwelve()], [mon('Kingambit', {
+    isActive: true, hpPercent: 12, liveSet: slowSet()
+  })]), null);
+  const vOppFirst = mkSolver().solve(board([ourTwelve()], [mon('Iron Valiant', {
+    isActive: true, hpPercent: 12, liveSet: valiantScarfSet()
+  })]), null);
+  check('with their order certain the slow set is a mate in 1 for us',
+    !!vMyFirst && vMyFirst.solved === true && vMyFirst.mateIn === 1, JSON.stringify(vMyFirst));
+  check('...and the fast set is a certain loss (the same board, the other order)',
+    !!vOppFirst && vOppFirst.solved === false && vOppFirst.score === -(ST.EndgameSolver.WIN - 1),
+    JSON.stringify(vOppFirst));
+
+  const halfSplit = mkSolver().solve(board([ourTwelve()], [theirStraddle(50, 50)]), null);
+  check('an even split prices the pair at exactly the mean of the two orders',
+    !!halfSplit && halfSplit.score === 0, halfSplit && String(halfSplit.score));
+  check('...and that is an answer, not a refusal',
+    !!halfSplit && halfSplit.solved === false && halfSplit.reason === 'no-forced-win',
+    JSON.stringify(halfSplit));
+  check('...with the number of chance-resolved pairs reported, so a caller can tell it apart from a proof',
+    !!halfSplit && halfSplit.chancePairs === 3, halfSplit && String(halfSplit.chancePairs));
+
+  const quarterSplit = mkSolver().solve(board([ourTwelve()], [theirStraddle(25, 75)]), null);
+  check('a 25/75 split is the exact weighted expectation',
+    !!quarterSplit && quarterSplit.score === 499999.5, quarterSplit && String(quarterSplit.score));
+
+  const lopsided = mkSolver().solve(board([ourTwelve()], [theirStraddle(1, 2999)]), null);
+  const p = 1 / 3000;
+  const raw = p * vOppFirst.score + (1 - p) * vMyFirst.score;
+  check('the raw expectation of a lopsided split lands INSIDE the mate band (the clamp is load-bearing)',
+    raw >= ST.EndgameSolver.WIN - ST.EndgameSolver.MATE_BAND, String(raw));
+  check('...so the value is clamped to the top of the non-mate region',
+    !!lopsided && lopsided.score === ST.EndgameSolver.WIN - ST.EndgameSolver.MATE_BAND - 1,
+    lopsided && String(lopsided.score));
+  check('...and a coin flip can never be reported as a mate', !!lopsided && lopsided.solved === false,
+    JSON.stringify(lopsided));
+
+  const scrolling = mkSolver({ chanceNodes: false });
+  check('chanceNodes:false restores the refusal that shipped before it',
+    scrolling.solve(board([ourTwelve()], [theirStraddle(50, 50)]), null) === null);
+  check('...with reason speed-undecided', scrolling.lastReport && scrolling.lastReport.reason === 'speed-undecided',
+    JSON.stringify(scrolling.lastReport));
 }
 
 /* --------------------------------------------------------------------- summary */
