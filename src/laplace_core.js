@@ -91,6 +91,12 @@
       this.struggleChipPercent = options.struggleChipPercent || cfgGet('laplace.struggleChipPercent', 5);
       // Reward for a payoff where their switch ate our move for free.
       this.switchAteHitBonus = options.switchAteHitBonus || cfgGet('laplace.switchAteHitBonus', 25);
+      // The pivot tax: a flat drag on every switch row (see _switchTaxDelta). Same precedence as
+      // every other tunable; `enabled: false` is the shipped build and restores the ranking exactly.
+      this.switchTax = Object.assign({
+        enabled: cfgGet('laplace.switchTax.enabled', false),
+        points: cfgGet('laplace.switchTax.points', 120)
+      }, options.switchTax || {});
       // Mixed-strategy solve (same precedence as every other tunable). `enabled: false` restores
       // the pure risk blend + softmax behaviour exactly.
       this.nash = Object.assign({
@@ -552,6 +558,32 @@
         return { delta: delta, why: 'turn ' + turn + ': a passive line cannot end the game' };
       }
       return { delta: 0, why: null };
+    }
+
+    /**
+     * _switchTaxDelta(action) -> { delta, why }
+     *
+     * The pivot tax: a flat drag on every SWITCH row, so a pivot has to be better than an attack by
+     * `points` before it takes the top line. It is a POLICY term, not a deduction about the
+     * opponent — the payoff matrix already prices the incoming hit and the hazards on entry; what it
+     * does not price is the free turn a pivot hands over.
+     *
+     * Measured before it was written (tools/benchmark_human_match.js, 100 elite battles / 5,903
+     * decisions, mean rating 1,830, re-derived from that run's --out records): the engine's top line
+     * is a switch on 55.4% of contested turns where those humans switched 33.8%, and on turns the
+     * human CLICKED A MOVE it still preferred a pivot 39.0% of the time even with a full 4-attack
+     * menu (48.1% on 0-1 attacks). The two candidate causes tested first are both refuted — dropping
+     * `quiescence.extendSetup` moves top-1 by net -21 and the pivot rate UP to 54.2%, suppressing
+     * VETO4 net -22 and leaves it flat at 53.7%. The full tier then FAILED the win-rate gate
+     * (-26.7 points, 95% CI [-38.3, -15.0]); the config comment records what it did to each half.
+     * Ships OFF; `enabled: false` returns exactly 0 for every row.
+     */
+    _switchTaxDelta(action) {
+      const t = this.switchTax;
+      if (!t || t.enabled === false || !action || action.kind !== 'switch') return { delta: 0, why: null };
+      const points = (typeof t.points === 'number' && isFinite(t.points)) ? Math.abs(t.points) : 0;
+      if (!points) return { delta: 0, why: null };
+      return { delta: -points, why: 'a pivot hands the turn over' };
     }
 
     /** 'commit' | 'passive' | 'neutral' for the turn-urgency re-pricing. */
@@ -1558,6 +1590,16 @@
         urgWhy.push(u.why);
       }
 
+      // The pivot tax, computed beside them and folded in the same two places, so the mixed solve
+      // prices it exactly as it prices the volatility charge. 0 for every row on the shipped build.
+      const swDelta = [];
+      const swWhy = [];
+      for (let i = 0; i < myActions.length; i++) {
+        const sw = this._switchTaxDelta(myActions[i]);
+        swDelta.push(sw.delta);
+        swWhy.push(sw.why);
+      }
+
       // Tempo policy mask (Protect/Bunker rhythm) before vetoes, per the brief.
       const masked = this.tempo ? this.tempo.applyPolicyMask(scored, tempoVector, state) : scored;
       // The mask is a policy nudge (multiplicative for contact attacks, additive for the Bunker
@@ -1582,6 +1624,10 @@
           copy.urgencyBonus = U.round1(urgDelta[index]);
           copy.urgencyWhy = urgWhy[index] || null;
         }
+        if (swDelta[index]) {
+          copy.switchTax = U.round1(swDelta[index]);
+          copy.switchTaxWhy = swWhy[index] || null;
+        }
         // BOTH deltas are folded into the simultaneous matrix below, which is the only place they
         // reach the mixed solve — but the SOFTMAX FALLBACK reads `score` directly (see
         // _softmaxConfidence), so a delta that lived only in the matrix silently stopped existing
@@ -1590,7 +1636,7 @@
         // well. There is no double count: the solve path overwrites this with its own row value,
         // which already contains the same delta exactly once.
         if (typeof copy.score === 'number' && isFinite(copy.score)) {
-          copy.score += (volDelta[index] || 0) + (urgDelta[index] || 0);
+          copy.score += (volDelta[index] || 0) + (urgDelta[index] || 0) + (swDelta[index] || 0);
         }
         if (this.veto) {
           const verdict = this.veto.evaluateVetoes({ kind: copy.kind, name: copy.name, moveId: copy.moveId, targetId: copy.targetId }, state, tempoVector);
@@ -1618,7 +1664,7 @@
         const mean = seen ? sum / seen : 0;
         // Both deltas are per-ROW, so folding them in here (rather than overwriting a score) lets
         // the mixed solve price the risk-adjusted line without losing the tempo policy nudge.
-        const delta = (maskDelta[i] || 0) + (volDelta[i] || 0) + (urgDelta[i] || 0);
+        const delta = (maskDelta[i] || 0) + (volDelta[i] || 0) + (urgDelta[i] || 0) + (swDelta[i] || 0);
         for (let j = 0; j < row.length; j++) row[j] = (row[j] === null ? mean : row[j]) + delta;
         matrix.push(row);
       }

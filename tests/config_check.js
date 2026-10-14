@@ -113,6 +113,7 @@ const INVENTORY = [
   'laplace.K', 'laplace.temperature', 'laplace.worldBlend.avg', 'laplace.worldBlend.min',
   'laplace.maxOppActions', 'laplace.vetoScore', 'laplace.lethalBonus', 'laplace.maxSwitchFallback',
   'laplace.struggleChipPercent', 'laplace.switchAteHitBonus',
+  'laplace.switchTax.enabled', 'laplace.switchTax.points',
   'laplace.nash.enabled', 'laplace.nash.iterations',
   // quiescence (the setup punisher: the two replies the 1-ply matrix priced as no-ops)
   'laplace.quiescence.enabled', 'laplace.quiescence.extendSetup', 'laplace.quiescence.blockProtect',

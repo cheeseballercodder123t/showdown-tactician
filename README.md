@@ -230,9 +230,9 @@ tests/invariants_check.js  the Object.create leaf clones (no write-through), eva
 tests/ability_check.js     negative-space ability deduction: an observed status, or grounded-only
                            damage, disproves the candidate abilities it rules out — and the
                            unsound-evidence section pins what must NOT eliminate (56 checks)
-tests/tuning_check.js      the three tuning tiers — the Elo switch band, turn urgency (adopted) and
-                           comeback mode — each pinned both ways: its shipped default and the exact
-                           number it moves when toggled (52 checks)
+tests/tuning_check.js      the four tuning tiers — the Elo switch band, turn urgency (adopted),
+                           comeback mode and the rejected pivot tax — each pinned both ways: its
+                           shipped default and the exact number it moves when toggled (68 checks)
 tests/preview_check.js     the Turn-0 lead advisory: the parser contract, the 6x6 evaluator scoring,
                            the broker wiring and the HUD card (31 checks)
 tests/quiescence_check.js  the setup punisher: the boost table, the one extra exchange, the three
@@ -258,6 +258,8 @@ package.json               npm scripts: `test`, `test:fast`, `e2e`, `e2e:headed`
                            `e2e` job that installs Chromium and runs the browser suite
 .github/workflows/chaos-sync.yml  the monthly usage-overlay cron
 CHANGELOG.md               how the engine got here, newest first
+ATTEMPTS.md                every improvement that was tried and where it led, plus a similarity
+                           index — read it before building a scoring change
 tools/gen_abilities.js     regenerates lib/species-abilities.js from tools/pokedex.json
 tools/gen_aliases.js       regenerates lib/species-aliases.js (needs the vendored calc bundle)
 tools/pokedex.json         Showdown's dex snapshot the two generators read
@@ -270,6 +272,13 @@ tools/fetch_replays.js    a ladder search -> the replay corpus (the only step of
                           rather than only a floor, and `--input a.json,b.json` merges corpora into
                           one file, best-rated first
 tools/extract_training_data.js  a replay corpus -> 128D rows labelled by the eventual winner
+tools/benchmark_human_match.js  a replay corpus -> POLICY fidelity (not win prediction): how often the
+                           engine's top line is the line an elite human actually clicked, by turn
+                           bucket, with the action-space gaps a replay forces MEASURED and reported.
+                           `--set` ablates a config tunable (deep-merged, refused if the path does not
+                           exist in config.js, and read back after merging) and `--veto-off` suppresses
+                           one veto rule, so a policy change can be priced against human agreement
+                           before it is priced against a win rate
 tools/fit_weights.js       IRLS logistic regression over those rows -> weights + a hold-out AUC
                            taken over whole battles, not over turns of one battle; `--crosses`
                            appends interaction terms to the fitted matrix (measured, not adopted)
@@ -338,13 +347,16 @@ node tests/arena_check.js     # 125 checks: the arena — runner, splicer, agent
 node tests/invariants_check.js #  17 checks: the solver's invariants over perturbed boards
 node tests/ability_check.js   #  56 checks: the negative-space ability deduction (status, grounding, the gated absence rule,
                               #   and every observation that only LOOKS like proof)
-node tests/tuning_check.js    #  52 checks: the tuning tiers — the Elo band, turn urgency (adopted), comeback mode
+node tests/tuning_check.js    #  68 checks: the tuning tiers — the Elo band, turn urgency (adopted), comeback mode,
+                              #   and the pivot tax (measured, then rejected by the win-rate gate)
 node tests/preview_check.js   #  31 checks: the Turn-0 lead advisory (parser contract, 6x6 scoring, HUD card)
 node tests/mlp_check.js       #  48 checks: the residual head's gate, fail-safe and clamp (it ships off)
 node tests/dom_check.js       #  35 checks: the HUD's DOM lifecycle, driven through a stub parser
 node tests/ablation_check.js  # 251 checks: the ablation runner — --set and its refusals, each flag in a real
                               #   engine, the feature table, the aggregation/bootstrap maths, one live batch
 node tests/tactical_puzzles.js #   0 puzzles: the vaccine registry, green until a --harvest run writes a defect
+node tests/human_match_check.js # 140 checks: the human-move-match benchmark — what a replay DOES and does NOT say,
+                              #   including the pivot ceiling that bounds any switch-penalising change
 ```
 
 The first suite loads every script in manifest order inside a DOM-less sandbox (so a load-order
@@ -542,6 +554,26 @@ price. The sweep also exposed an instrument bug worth more than the result — `
 reads its `pruner.*` tunables at LOAD time, so any `--set` on the pruner family was measuring
 nothing; the arena now applies its patch from inside `loadHarness`, and
 tests/ablation_check.js pins the ordering both ways.
+
+A third run drove the ablation from the benchmark rather than the other way round, and it is the
+sharpest argument for the gate's existence. The pivot tax (`laplace.switchTax`) raised top-1
+agreement with 1,830-rated humans from **31.7 % to 44.0 %** and cut the engine's switch rate from
+**55.4 % to 29.2 %** of contested turns (the humans: 33.8 %, so it ends up *under*-pivoting) — and then
+cost **26.7 win points** (96.7 % → 70.0 %, 95 % CI **[-38.3, -15.0]**), restoring the 100-turn
+standoff the repo had just spent a sweep removing (1/60 → 18/60 cap ties). It also damaged the half it
+was built for: the MOVE half rises 35.0 % → 53.8 % while the SWITCH half falls **22.5 % → 16.5 %**, so
+the aggregate climb is a composition effect rather than better pivot judgement. The tier ships OFF,
+its row left in the table as the record that it was tested. The prologue matters as much as the
+verdict: two competing explanations for the over-pivoting were measured and both refuted
+(`quiescence.extendSetup` off moves top-1 by a paired net of **-21** and the pivot rate *up* to
+54.2 %; suppressing VETO4 is a net of **-22** with the pivot rate flat at 53.7 %) — and on the turns
+the human clicked a move the engine still preferred a pivot **39.0 %** of the time with a full
+4-attack menu. So the behaviour is real, the mechanism is not the obvious one, and the obvious fix was
+worse than the problem. The headroom is measured rather than guessed: on those pivot-over-attack turns
+the engine's own best NON-pivot line was the human's click 55.8 % of the time, so a policy that never
+pivoted while holding an attack would reach **45.2 %** top-1 overall against the shipped 31.7 % — the
+ceiling this work was chasing, reachable by surfacing a line the engine already ranked rather than by
+taxing every switch.
 
 ## The four rules this engine is built on
 
@@ -1254,7 +1286,11 @@ the current turn, so it says which line to click now, not how the stall resolves
   back identical and why those rows are reported as unresolved rather than as neutral. The one
   adoption so far — turn urgency — rests on that same 60-battle sample; its interval is far from
   zero and the mechanism (converting cap ties into wins) is visible in the turn shape, but the
-  headline number is a 60-battle one.
+  headline number is a 60-battle one. The one REJECTION reached the same way is the pivot tax, and
+  it is the more instructive of the two at that sample size: `-26.7 [-38.3, -15.0]` on 60 battles is
+  a wide interval, which is exactly why its first reading was taken from 30 crucible battles and was
+  wrong. Read a rejection with the same caution as an adoption — the tier is off, which costs
+  nothing, and its row is still in the table for the 500-battle run that would settle it.
 * A harvested vaccine is a failing suite entry until the defect behind it is fixed, and the
   harvester writes into a committed file. `--harvest` is therefore a mutating operation on the
   repository: run it deliberately, and commit the vaccine together with the fix that turns it green.

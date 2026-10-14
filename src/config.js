@@ -41,6 +41,46 @@
       maxSwitchFallback: 5,                   // bench switches synthesised without a |request|
       struggleChipPercent: 5,                 // stand-in damage when the opponent can only Struggle
       switchAteHitBonus: 25,                  // payoff when their switch ate our move for free
+      // The PIVOT TAX (see laplace_core._switchTaxDelta). A flat score drag on every switch row, so
+      // a pivot has to be better by `points` before it outranks an attack.
+      //
+      // Measured before it was written, over 100 elite battles / 5,903 decisions (tools/benchmark_
+      // human_match.js, mean rating 1,830), and every number here re-derived from that run's own
+      // --out records rather than from a summary: on the CONTESTED turns the engine's top line is a
+      // switch 55.4% of the time where those humans switched 33.8% — and on the 4,349 turns the human
+      // clicked a MOVE, its top line was still a pivot 48.1% of the time when it had 0-1 attacks to
+      // compare with, 49.2% on 2-3, and 39.0% even with a FULL 4-attack menu. So the starved attack
+      // menu inflates the figure (a real harness effect, 48 -> 39) without explaining it away: the
+      // engine still disagrees about whether to pivot at all on ~4 of every 10 turns the human
+      // attacked. And the headroom is exact, not rhetorical: on the 2,053 pivot-over-attack turns
+      // the engine's OWN best non-pivot line was the human's click 55.8% of the time, and a policy
+      // that never pivoted while it had an attack available would score top-1 61.3% on move clicks
+      // (45.2% overall) instead of 35.0% (31.7%). The right answer is already inside the ranking on
+      // 2 of every 5 of those turns; the tier's job was to surface it. A FLAT drag surfaced none of
+      // them — it took the switch rate down while the switch half got worse.
+      // Two candidate causes were tested and REFUTED on the same corpus with a paired
+      // per-decision count (gained/lost top-1): dropping `quiescence.extendSetup` moves top-1 by
+      // 221/242 (net -21) and moves the pivot rate UP, 53.1% -> 54.2%; suppressing VETO4 moves it by
+      // 199/221 (net -22) and leaves the pivot rate where it was, 53.1% -> 53.7%.
+      //
+      // Ships OFF, and the win-rate gate is why — the tier did what it was built to do and LOST
+      // anyway. At 120 points on that corpus top-1 agreement climbs 31.7% -> 44.0% (contested 25.5%
+      // -> 31.9%) and the pivot rate falls 55.4% -> 29.2% (the humans: 33.8%, so it now
+      // UNDER-pivots). But the climb is a COMPOSITION effect, not better pivot judgement: the move
+      // half rises 35.0% -> 53.8% while the SWITCH half gets WORSE, 22.5% -> 16.5% — the tax stops
+      // the engine pivoting without teaching it which pivot to make. At the STANDARD sample it is
+      // worse still: 60 paired battles, all three personas, one seed -> win rate 96.7% -> 70.0%,
+      // delta -26.7 points, 95% CI [-38.3, -15.0], and the 100-turn cap ties come BACK (1/60 ->
+      // 18/60, a 30% stall share, capped games losing only 4.1 of 12 bodies). The earlier positive
+      // sign rested on 30 CRUCIBLE battles, which splice a recorded human line in at turn 8+ and are
+      // explicitly NOT comparable across variants; the ablation only ever runs `--mode full`. This is
+      // the tree's whole reason for keeping agreement and strength apart: agreement is a hypothesis,
+      // the gate is the verdict, and a rejected tier stays in the table (tools/run_ablation.js, id
+      // `switch-tax`) as the record that it was tested rather than quietly dropped.
+      switchTax: {
+        enabled: false,
+        points: 120                     // score drag per switch row; 120 is the arm that was measured
+      },
       // Risk-adjusted volatility (the "tilt penalty"). A 70%-accuracy move is NOT worth 0.7 of
       // its damage when missing it hands the opponent the game: the downside of a miss is
       // asymmetric with the upside of a hit. So each of OUR rows is re-priced as

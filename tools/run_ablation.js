@@ -418,6 +418,48 @@ const FEATURES = [
       'populates it from the client\'s own |stacc| snapshot and @pkmn/sim emits no |stacc|. Any ' +
       'multiplier on a charge of 0 is 0, so a flat row here means "not measurable here", NOT that ' +
       'comeback mode does nothing. Same cause as the volatility row above.'
+  },
+  {
+    /* THE PIVOT TAX — the one tier here whose motivation is a HUMAN-MATCH measurement, and the one
+     * row where that fact is a reason for caution rather than for optimism: agreement and strength
+     * measurably disagree in this tree. Turning `quiescence` off RAISES human agreement (net +18
+     * decisions over 100 elite battles) while this same table prices the tier at +19 win points, so
+     * a policy that improves agreement is not thereby a policy that wins. This row is the only
+     * evidence that may promote the tier; the benchmark cannot. */
+    id: 'switch-tax',
+    label: 'pivot tax (on)',
+    tier: 'laplace',
+    direction: 'on',
+    patch: { 'laplace.switchTax.enabled': true },
+    expect: 'helps',
+    note: 'On, every SWITCH row carries a flat score drag, so a pivot has to beat the best attack ' +
+      'by `points` before it takes the top line. It is a POLICY term, not a deduction about the ' +
+      'opponent: the matrix already prices the incoming hit and the hazards on entry, and what it ' +
+      'cannot price is the free turn a pivot hands over (their Stealth Rock, their Dance, or the ' +
+      'coverage move that greets the arrival). Motivations, all measured in tools/benchmark_' +
+      'human_match.js over 100 elite battles / 5,903 decisions (mean 1,830) and re-derived from that ' +
+      'run\'s own --out records: the engine\'s top line is a switch on 55.4% of contested turns where ' +
+      'those humans switched 33.8%; and on the 4,349 turns the human clicked a MOVE its top line was ' +
+      'a pivot 48.1% of the time on a 0-1 attack menu, 49.2% on 2-3, and 39.0% even with a FULL ' +
+      '4-attack menu — so a thin menu inflates the figure without explaining it away. Two competing ' +
+      'explanations were tested and BOTH REFUTED on the same corpus with paired counts: ' +
+      '`quiescence.extendSetup=false` is net -21 top-1 decisions AND raises the pivot rate ' +
+      '(53.1% -> 54.2%); suppressing VETO4 is net -22 with the pivot rate flat (53.1% -> 53.7%).',
+    caveat: 'MEASURED AND REJECTED BY THIS ROW, and the pre-registration that did NOT hold. The ONLY ' +
+      'positive sign it ever had came from 30 CRUCIBLE battles (a single seed against the anti-setup ' +
+      'exploiter, 66.7% -> 80.0% by converting 5 of its 10 cap ties into wins, at the cost of 1 chaos ' +
+      'win) — and crucible mode splices a recorded human line in at turn 8+, which this runner never ' +
+      'does because it is NOT comparable across variants. At the standard sample the tax is one of the ' +
+      'clearest HURTS rows in the table: 96.7% -> 70.0%, delta -26.7 points, 95% CI [-38.3, -15.0], ' +
+      'and it re-creates the exact pathology turn urgency was adopted to remove — the 100-turn cap ' +
+      'ties come back 1/60 -> 18/60 (30% stall) with only 4.1 of 12 bodies down, a STANDOFF. So the ' +
+      'tier ships OFF and this row is the evidence for that, kept so it is re-measured rather than ' +
+      'rediscovered. It is also the cleanest demonstration of why this table exists: the same change ' +
+      'raised human agreement by 12.3 points (31.7% -> 44.0% overall) and cost 26.7 win points, so ' +
+      'agreeing with a 1,830-rated human is not the same thing as beating one. And the agreement it ' +
+      'bought was not even the agreement the tier was built for: the MOVE half rises 35.0% -> 53.8% ' +
+      'while the SWITCH half FALLS 22.5% -> 16.5%, so the pivot rate came down (55.4% -> 29.2%, now ' +
+      'UNDER the humans\' 33.8%) without the engine learning which pivot to make.',
   }
 ];
 
@@ -509,6 +551,9 @@ function printUsage(out) {
     '',
     'Every variant runs --mode full: a spliced battle hands the engine a recorded human line,',
     'which is not comparable across variants.',
+    '',
+    'What every row has decided so far — adopted, rejected, inert here, or unresolved — is',
+    'registered in ATTEMPTS.md, indexed by the shape of the idea. Check it before adding a row.',
     ''
   ];
   (out || console.log)(lines.join('\n'));

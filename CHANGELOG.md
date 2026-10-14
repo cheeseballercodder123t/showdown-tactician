@@ -4,6 +4,11 @@ Newest first. The README is declarative (what is true now); this file and the co
 provenance — why a number is what it is, and what was tried and rejected. Entries before
 "Unreleased" are the project's own history, condensed from the commit log.
 
+This file is the dated NARRATIVE. The cross-cutting register — every attempt, its verdict (adopted,
+rejected, inert, unresolved) and the artifact behind it, indexed by the shape of the idea so a
+re-proposal can be matched to a prior attempt — is `ATTEMPTS.md`. Add a row there when a row here
+reaches a verdict.
+
 ## Unreleased
 
 ### Fixed
@@ -276,6 +281,108 @@ than the bug. Stated here rather than hidden:
 
 ### Added
 
+- **The pivot tax — a switch-row policy drag, built to act on the benchmark's own finding, and
+  REJECTED by the win-rate gate** (`laplace.switchTax`, `LaplaceEngine._switchTaxDelta`). The
+  benchmark says that on the CONTESTED turns the engine's top line is a switch **55.4%** of the time
+  where the 1,830-rated humans it is compared with switched **33.8%**, and that on the 4,349 turns the
+  human clicked a MOVE its top line was still a pivot **39.0%** of the time even with a full 4-attack
+  menu. The *preference* is wrong; what was NOT established is why. Three things had to be settled
+  before anything was written, and every number below was re-derived from the run's own `--out`
+  records after an earlier draft of this entry quoted figures no artifact carried:
+  - **The over-pivoting is not a harness artefact.** A replay forces the engine's attack menu to be
+    rebuilt, so a starved menu could make a switch the only comparison left. Counted directly: on
+    turns the human clicked a MOVE the engine's top line was a pivot **48.1%** of the time with 0-1
+    attacks to compare with, **49.2%** on 2-3, and **39.0%** even with a FULL 4-attack menu — against
+    a human switch rate of **26.3%**. Starvation visibly inflates the figure (48 -> 39); it does not
+    explain it away. Real behaviour.
+  - **The ranking already contains the right answer, which is what makes it a PREFERENCE bug.** On
+    the 2,053 turns where the engine's top-1 was a pivot while the human clicked a move, its own best
+    NON-pivot line WAS that human's click **55.8%** of the time. A policy that never pivoted while it
+    held an attack would score top-1 **61.3% on move clicks** (and **45.2% overall**) instead of
+    35.0%/31.7%. So the ceiling a pivot fix could reach is exactly the 45-50% band this investigation
+    was chasing — and it is reachable by surfacing the line the engine already ranked, not by
+    penalising every switch.
+  - **It is not `quiescence.extendSetup`.** The plausible story was that pricing their boosted reply
+    as a certainty makes "stay in and attack" look worse than it is. Measured with the benchmark's
+    new `--set`: `extendSetup=false` moves the pivot rate the WRONG way, **53.1% -> 54.2%**, and moves
+    top-1 by **221 gained / 242 lost — a paired net of -21**. Refuted.
+  - **It is not VETO4 (`SPEED_SUICIDE`).** The benchmark showed 106 of 177 refusals of elite clicks
+    were that one code, and because the veto hard-bans attacking it *mechanically* forces a switch.
+    Measured with the benchmark's new `--veto-off`: suppressing it leaves the pivot rate essentially
+    where it was, **53.1% -> 53.7%**, and moves top-1 by **199 gained / 221 lost — a paired net of
+    -22**. Also refuted. Both rules are left exactly as they were.
+  - **The trap that made the gate mandatory.** Agreement cannot be the adoption criterion, and this
+    run is the proof rather than an argument: the tax raised agreement by **12.3 points** and cost
+    **26.7 win points**. A benchmark measurement is a reason to open a row in the feature table,
+    never a reason to change the shipped config.
+  The tier itself is a flat score drag on every SWITCH row (a pivot must beat the best attack by
+  `points` before it takes the top line), folded into the mix matrix *and* the row score, the same two
+  places `urgency` and `volatility` fold into, and exactly `0` for every row while the flag is off —
+  the shipped build is byte-identical. It does what it was built to do: at 120 points the pivot rate
+  falls to **29.2%** (the humans: 33.8%, so it now UNDER-pivots) and top-1 agreement climbs **31.7% ->
+  44.0%** (contested **25.5% -> 31.9%**). But the climb is a COMPOSITION effect and not better pivot
+  judgement: the MOVE half rises **35.0% -> 53.8%** while the SWITCH half gets WORSE, **22.5% ->
+  16.5%** — the tax stopped the engine pivoting without teaching it which pivot to make, so it
+  measurably damaged the very half it was built to fix. Unlike the tax, the headroom above is
+  reachable: 55.8% of those suppressed pivots were sitting on the human's click one row down. Then the gate ran: **60 paired battles, all
+  three personas, one seed, `--mode full` -> win rate 96.7% -> 70.0%, delta -26.7 points, 95% CI
+  [-38.3, -15.0]**, and the 100-turn cap ties come BACK **1/60 -> 18/60** (a 30% stall share, capped
+  games losing only 4.1 of 12 bodies). It re-creates the exact pathology turn urgency was adopted to
+  remove, so the tier ships OFF and its row stays in the feature table. The
+  earlier positive sign it had rested on **30 CRUCIBLE battles** (66.7% -> 80.0%) — and crucible mode,
+  the default of `tools/run_arena.js`, splices a recorded human line in at turn 8+, which the ablation
+  runner itself refuses as "not comparable across variants". Re-run afterwards at that exact
+  configuration to confirm the diagnosis rather than assert it (mode `crucible`, 30 battles, seed
+  1337), the baseline reproduces **20/0/10 = 66.7%** exactly, with every one of those ties belonging
+  to the anti-setup exploiter: 0 wins, 10 draws, p90 101 turns. The comparison was made entirely
+  inside a mode whose baseline ties are the exploiter's Protect loop rather than the engine's own
+  reluctance to commit, so the "improvement" measured was 5 of another agent's stalls. A
+  small-sample sign in a non-comparable mode is not a result, and the gate is what caught it.
+- **Two instruments on the benchmark, so a policy change can be priced before it is adopted**
+  (`tools/benchmark_human_match.js`). `--set <dotted.path>=<value>` (repeatable) patches a
+  `src/config.js` tunable for the whole run, and `--veto-off <CODE>` suppresses one veto rule, to
+  measure what that rule costs; both make the run NOT the shipped build and the report says so. The
+  `--set` path is built as a DEEP patch, because `configMerge` merges one level only and a nested
+  patch would silently destroy the sibling keys it did not name. It refuses a path `config.js` does
+  not define, and it READS THE VALUE BACK after merging, because the first version built the patch and
+  never applied it — which the control caught rather than the feature: `nash.enabled=false` must move
+  rankings and moved **0** records. A patch that cannot be shown to have landed must not be
+  measurable, and `tests/human_match_check.js` pins the read-back.
+- **`tools/benchmark_human_match.js` — the Human-Move-Match (policy fidelity) benchmark, and the
+  honest version of it.** Every turn of a replay is a decision a real human made, with their rating
+  attached, so `--input elite.json --battles 100` answers the one question win-prediction AUC cannot:
+  how often is the engine's top line the line an elite human actually clicked? It reports top-1 and
+  top-2 agreement overall, on the contested subset (the engine had two or more alternative lines of
+  the same kind as the click), move-vs-move, and on the revealed-moveset subset; a turn-bucket
+  breakdown (1-5 / 6-15 / 16+); every turn it could NOT score, by reason; a Wilson interval on every
+  rate; the veto code behind every line the deterministic guard refused; and the uniform-over-menu
+  floor the top-1 rate has to beat, because a rate in the twenties means nothing on its own.
+  Measured on 100 battles of the 1,799-1,992 slice (mean 1,830): **top-1 31.7%, top-2 53.2%** over
+  5,903 decisions; top-1 25.5% on the contested subset against a 16.6% uniform-pick floor (1.53x
+  chance). Splitting it by action kind is what makes it readable, and it INVERTED the expectation
+  that motivated the split: the engine matches elite humans on **attacks 35.0% of the time** (top-2
+  59.0%, 1.94x the floor) and on **switches only 22.5%** (top-2 36.9%, 1.29x the floor) — and it is
+  the SWITCH half that is measured fairly, because the bench menu is complete, while the attack half
+  is a lower bound (36.1% of clicks were moves the log had not revealed yet). So the pivot half is
+  the weak half, and the engine leans on it anyway: its top-1 is a switch 55.4% of the time against
+  the humans' 33.8%. The tool refuses to call any of that a rating — the band table is printed as an
+  UNCALIBRATED heuristic and the report explicitly warns against averaging the two halves into one
+  number. The other number worth carrying: **3.0% of elite clicks were on a line the deterministic
+  guard VETOES**, and 106 of those 177 refusals were `SPEED_SUICIDE`.
+  Three things had to be got right before any of those numbers meant anything, and the first version
+  of the tool got two of them wrong, visibly: a replay carries no `|request|`, so (a) its clicks are
+  INFERRED from `|move|`/`|switch|` results — a `[from]`-tagged move the player never chose, a forced
+  replacement after a `|faint|`, and a pivot move's own `[from] U-turn` switch must all be told apart
+  (this alone was 12% of the corpus thrown away as "ambiguous", now 0.1%, with the forced switches
+  counted separately); (b) the engine's attack menu is rebuilt per decision and the clicked move
+  added to it — and it has to stay added DURING `evaluateTurn`, which the first version got wrong by
+  restoring before the call, so every first-use move was scored against a menu that could not contain
+  it; and (c) `state.mySide` is written only by a `|request|` line, so without setting it a "p2" pass
+  silently built p1's team and scored p2's clicks against p1's bodies — which reads as a low score
+  rather than as a bug, and made every p2 switch unscoreable. All three are pinned by
+  `tests/human_match_check.js` (132 checks), including the purity probe the benchmark relies on
+  (`evaluateTurn` twice on an unchanged board must give the same ranking, or the measurement is
+  measuring its own nondeterminism).
 - **The HUD works on a desktop viewport, and there is a button that switches.** The whole overlay was
   designed for one screen size — a 411×891 portrait phone — and on a desktop it was wrong in the way
   that matters: the bottom band is `position: fixed` and full-width, so at 1920 px it was a 1920 px

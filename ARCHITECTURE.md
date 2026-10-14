@@ -1018,6 +1018,25 @@ arena never supplies (`|player|p2|Name|avatar|` with an empty last field). The `
 behind those rows is itself pinned — a pruner-family flag is captured at LOAD time, so the arena
 applies its patch from inside `loadHarness`, the moment `src/config.js` has run.
 
+`laplace.switchTax` (`_switchTaxDelta`) is the newest of them and the only one REJECTED after being
+measured. It is a flat score drag on every SWITCH row, folded into the same two places `urgency` and
+`volatility` use — the mix matrix and the row score — and exactly `0` for every row while `enabled` is
+false, so the shipped build is byte-identical. It was written to act on a human-match measurement (the
+engine's top line is a switch on 55.4% of contested turns against 1,830-rated humans' 33.8%, and on
+the turns the human clicked a move it still preferred a pivot 39.0% of the time with a full 4-attack
+menu, so it is neither a starved-menu artefact nor explained by `quiescence.extendSetup` or VETO4 —
+both measured first and both refuted, at paired nets of -21 and -22). It moved the number it was built
+to move — switch rate 55.4% → 29.2%, top-1 agreement 31.7% → 44.0% — and the gate then priced it at
+**-26.7 win points** (95% CI [-38.3, -15.0]) while re-creating the very standoff `urgency` had just
+removed (1/60 → 18/60 cap ties). Worse, the agreement was a composition effect: the MOVE half rose
+35.0% → 53.8% while the SWITCH half FELL 22.5% → 16.5%. It ships OFF with its row kept in the feature
+table, which is the concrete reason this repo keeps policy agreement and playing strength as two
+separate measurements: the same change bought 12.3 points of agreement and cost 26.7 points of win
+rate. The ceiling any pivot fix could reach is measured too, not guessed: on the 2,053 turns it
+preferred a pivot while the human attacked, its own best non-pivot line was that click 55.8% of the
+time, and never pivoting while holding an attack would score top-1 45.2% overall against the shipped
+31.7%. The ranking is not what is broken — the preference is.
+
 **The Turn-0 lead advisory** (`leadAdvisory` / `_matchupScore`). `|teampreview|` is inert to the
 parser by design (pinned by `tests/parser_fuzz.js`), so `src/content.js` hangs the read off the raw
 command. Each of our bodies is scored against every opposing body through the SAME leaf evaluator
@@ -1056,6 +1075,7 @@ Frozen surfaces — what the suites pin, and what the CLI calls:
 | `engine_bridge.js` | `SIM_FORMAT_ID`, `createSession(opts)`, `EngineSession`, `choiceForRanked`, `teamPreviewOrder`, `loadHarness`, `loadSim` |
 | `run_arena.js` | `parseArgs(argv)`, `main(argv)`, `createEngineAgent`, `renderSummary`, `applyConfigPatch(ST, sets)`, `parseConfigValue`, `formatConfigValue`, `SetupError` |
 | `run_ablation.js` | `parseArgs(argv)`, `main(argv)`, `FEATURES`, `buildVariants(ids)`, `validateFeaturePaths(variants)`, `arenaArgs(variant, opts, jsonPath)`, `summarizeRun(payload)`, `verifyPairing(base, variant)`, `pairedBootstrap(a, b, B, seed)`, `compareToBaseline(baseSummary, variantSummary, descriptor, opts)`, `renderTable(rows)` |
+| `benchmark_human_match.js` | `parseArgs(argv)`, `main(argv)`, `evaluateBattle(ST, U, replay, sides, opts)`, `scoreDecision(engine, state, cls, ctx)`, `classifySide(bucketLines, side)`, `extractChoices(replayLines)`, `summarize(records, meta)`, `wilson(k, n)`, `eloBand(rate)`, `strideSample(list, n)` |
 
 **An agent** is anything with `chooseAction(request, { side, turn, request, log, runner })` returning
 a choice string. The runner normalizes it, falls back to the first legal option when an agent
@@ -1150,3 +1170,8 @@ everything else is reported as *no measurable effect at this sample size*, which
 for neutral. `stall` is a separate flag raised only when the CHANGE against the baseline is longer
 games or a higher stall-tie share — flagging an absolute share would mark every paired variant that
 inherited a stalling tie from the shared battles.
+
+Every attempt this project has made — every row that was adopted, rejected, left inert or left
+unresolved — is registered in `ATTEMPTS.md`, indexed by the shape of the idea rather than its name so
+a re-proposal is caught before it is built. That file is the reason a rejected tier keeps its row: an
+untraced rejection gets rebuilt.

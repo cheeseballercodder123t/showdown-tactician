@@ -90,8 +90,21 @@ function mkEngine(opts) {
     veto: new ST.BlunderVetoGuard({ damage: damage, trickRoom: trickRoom }), trickRoom: trickRoom,
     comeback: (opts && opts.comeback) || null,
     urgency: (opts && opts.urgency) || null,
-    nash: (opts && opts.nash) || null
+    nash: (opts && opts.nash) || null,
+    switchTax: (opts && opts.switchTax) || null
   });
+}
+
+/** The board plus a legal bench switch, so a switch ROW actually exists to be priced. */
+function boardWithBench() {
+  const b = board();
+  const bench = mon('Iron Valiant', {
+    side: 'p1', evs: OFFENSE, ivs: IVS, nature: 'Jolly', ability: 'Quark Drive',
+    isActive: false, hpPercent: 100
+  });
+  b.myTeam = b.myTeam.concat([bench]);
+  b.bench.my = [bench];
+  return b;
 }
 
 const ICE = { kind: 'move', name: 'Ice Spinner', moveId: 'icespinner' };
@@ -296,7 +309,6 @@ const URGENCY = {
     confOf(base, 'Ice Spinner') + ' -> ' + confOf(tuned, 'Ice Spinner'));
 }
 
-/* ====================================================== 3. comeback mode */
 
 section('3. comeback mode scales the risk charge, and only that');
 
@@ -344,6 +356,66 @@ const COMEBACK = { enabled: true, winMargin: 300, lossMargin: -300, winChargeSca
   same('with the tier off, even a won board leaves the charge untouched',
     disabled._volatilityDelta(RISKY, b, b.field, 200).penalty, level, 1e-6);
 }
+
+/* ====================================================== 4. the pivot tax */
+
+section('4. the pivot tax (a policy drag on switch rows, OFF until a win-rate gate admits it)');
+
+const TAX_OFF = mkEngine();
+const TAX_ON = mkEngine({ switchTax: { enabled: true, points: 40 } });
+const TAX_ZERO = mkEngine({ switchTax: { enabled: true, points: 0 } });
+const rowsOff = TAX_OFF.evaluateTurn(boardWithBench());
+const rowsOn = TAX_ON.evaluateTurn(boardWithBench());
+const scoreOf = function (rows, kind) {
+  const r = rows.filter(function (x) { return x.kind === kind; })[0];
+  return r ? r.score : null;
+};
+const confOf2 = function (rows, kind) {
+  const r = rows.filter(function (x) { return x.kind === kind; })[0];
+  return r ? r.confidence : null;
+};
+const sigOf = function (rows) {
+  return rows.map(function (r) { return [r.name, r.kind, r.score, r.isVetoed]; });
+};
+
+eq('the shipped config ships the pivot tax OFF', ST.configGet('laplace.switchTax.enabled', null), false);
+same('...with a documented default of 120 points (the arm the ablation row measures)',
+  ST.configGet('laplace.switchTax.points', null), 120, 0);
+eq('the delta itself is 0 for an attack', TAX_ON._switchTaxDelta({ kind: 'move', name: 'Ice Spinner' }).delta, 0);
+eq('and 0 for no action at all', TAX_ON._switchTaxDelta(null).delta, 0);
+eq('and -points for a switch', TAX_ON._switchTaxDelta({ kind: 'switch', name: 'Iron Valiant' }).delta, -40);
+eq('an off engine returns 0 for a switch too', TAX_OFF._switchTaxDelta({ kind: 'switch' }).delta, 0);
+
+check('off: a switch row exists on this board', rowsOff.some(function (r) { return r.kind === 'switch'; }), '');
+check('off: and carries NO switchTax field at all',
+  rowsOff.filter(function (r) { return r.kind === 'switch'; }).every(function (r) { return r.switchTax === undefined; }), '');
+same('ON: the switch row score drops by exactly the drag',
+  scoreOf(rowsOff, 'switch') - scoreOf(rowsOn, 'switch'), 40, 1e-6);
+same('ON: the attack rows are untouched',
+  scoreOf(rowsOn, 'move') - scoreOf(rowsOff, 'move'), 0, 1e-6);
+eq('ON: the drag is published on the row',
+  rowsOn.filter(function (r) { return r.kind === 'switch'; })[0].switchTax, -40);
+check('ON: the attack rows carry no drag',
+  rowsOn.filter(function (r) { return r.kind === 'move'; }).every(function (r) { return r.switchTax === undefined; }), '');
+check('ON: the mixed solve sees it (the pivot gains no confidence)',
+  confOf2(rowsOn, 'switch') <= confOf2(rowsOff, 'switch') + 1e-9,
+  confOf2(rowsOff, 'switch') + ' -> ' + confOf2(rowsOn, 'switch'));
+
+/* The same trap `urgency` had: the softmax fallback reads `score` directly, so a delta that lived
+ * only in the matrix would silently stop existing whenever the solve did not run. */
+const NO_NASH_OFF = mkEngine({ nash: { enabled: false } });
+const NO_NASH_ON = mkEngine({ nash: { enabled: false }, switchTax: { enabled: true, points: 40 } });
+const rNnOff = NO_NASH_OFF.evaluateTurn(boardWithBench());
+const rNnOn = NO_NASH_ON.evaluateTurn(boardWithBench());
+same('with the mixed solve OFF the drag still reaches the row score (this was the urgency bug)',
+  scoreOf(rNnOff, 'switch') - scoreOf(rNnOn, 'switch'), 40, 1e-6);
+
+eq('points:0 is a no-op even with the tier enabled', sigOf(TAX_ZERO.evaluateTurn(boardWithBench())), sigOf(rowsOff));
+const HUGE = mkEngine({ switchTax: { enabled: true, points: 5000 } });
+const rowsHuge = HUGE.evaluateTurn(boardWithBench());
+check('a drag bigger than any payoff puts the pivot last among the live lines',
+  rowsHuge.filter(function (r) { return !r.isVetoed; })[0].kind !== 'switch',
+  rowsHuge.map(function (r) { return r.kind; }).join(','));
 
 /* ------------------------------------------------------------------- summary */
 
