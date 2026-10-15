@@ -11,6 +11,61 @@ reaches a verdict.
 
 ## Unreleased
 
+### Verified — the protect cell prices no decay, and QRE cannot move our own frequencies
+
+Two claims the block-ships-OFF decision rested on were re-checked against the code on 2026-10-15 and
+pinned, because both had been asserted rather than measured (the tables are in `ATTEMPTS.md` §L).
+
+- **The 1-ply Protect cell prices NO decay, which is why a staller looked invincible in it.** The
+  `shielded` flag in `_payoff` reads the ACTION (`oppAction.kind === 'protect' || oppData.isProtect`)
+  and never the opponent's protect chain, so a shield blocks our move however long the chain is —
+  including the repeat that FAILS in the real game. On the `quiescence_check` fixture a fresh block
+  cell scores **37.53** against the legacy cell's **614.43** (the shield is worth **576.89** of our
+  hit); a board whose chain is already two long still blocks, **86.80** vs **656.90** (the shield eats
+  **570.10**, 98.8 % of the fresh gap); and a five-deep chain prices EXACTLY like a two-deep one. The
+  only thing in the cell that reads the chain is the evaluator's `protectRhythm` term (dim 126, +0.5
+  once the consecutive count reaches 2), and it shifts the block-ON and the legacy cells by the same
+  small amount without ever letting the hit through. This is the mechanism under §K6/K6b: pricing the
+  shield turns a staller's whole column into free turns for them, so the engine's committing lines all
+  score 0 and it disengages. `tests/quiescence_check.js` §3b pins the table.
+- **`laplace.nash.qre` is near-inert for the ranking by construction, not merely unrated.** The flat
+  mirror row was filed as "the league declares no rating for the persona seat" (§K4), and the ramp is
+  exactly as documented (no rating → `0`; at or below `lowRating` **1100** → the full **30**; at or
+  above `highRating` **1850** → `0`; linear between) — so the mirror is inert because it declares
+  **no** rating, not because it "was set to 1800+", which would be a non-zero `tau` of **2.0**. But the
+  load-bearing half is structural: in `solveNashFictitiousPlay` the soft column mix reaches only the
+  PUBLISHED opponent strategy, while each side still best-responds to the hard argmax and OUR own
+  cumulative payoff reads that hard index, so a temperature cannot reach our frequency counts on ANY
+  matrix (12/12 random 9×9). `tests/tuning_check.js` §7b pins that on three fixed matrices and on a
+  real board: with the tier genuinely engaged (a seat rated 1200) the engine's confidence / frequency
+  column and the published top line are **bit-identical** with the tier on and off; only the opponent
+  mix and the row VALUES move. The row's `caveat` now says so, and its `direction: 'on'` is kept, so
+  the cost of turning it back on stays one sweep away. The question `ATTEMPTS.md` E5 left open —
+  whether the hard equilibrium is wrong about **people** — is therefore NOT answered by this row as
+  built.
+
+### Measured — `beam-2ply` did not replicate across seeds, so the default stays OFF
+
+Two runs of the same row on the mirror, 60 paired battles each, two seeds, 0 errors. Seed 1337:
+baseline **41.7 % (25-34-1)**, beam-ON **61.7 % (37-21-2)**, Δwin **+20.0 [+3.3, +36.7]**, Δscore
+**+20.8 [+4.1, +37.5]** — the interval excludes zero. Seed 20261016: baseline **43.3 % (26-28-6)**,
+beam-ON **45.0 % (27-28-5)**, Δwin **+1.7 [−15.0, +20.0]**, Δscore **+0.8 [−16.7, +19.2]** — flat.
+Seed 1337's interval floor (+3.3) sits above the second seed's point estimate, so the two seeds do not
+overlap the way a replicated effect would, and the pooled reading is the one n = 20 already gave
+(**+5.0 [−30.0, +35.0]**, "no measurable effect"), now at three times the power. The n = 20 "games 8.9
+turns shorter" does not hold either: the beam is −5.5 turns on seed 20261016 and +0.6 on seed 1337.
+
+**`laplace.beam2Ply.enabled` therefore stays `false`** — the seed disagreement first, and two standing
+caveats second: the mirror is the instrument most confounded for a DEPTH increase (the variant
+outsearches the frozen, SHALLOWER twin it is measured against, so a win there cannot separate "finds
+better lines" from "outsearches the twin"), and enabling the beam runs its 3×3×K = 54 cells on Pass 1,
+the synchronous ranking, in a project already ~3× its 10 ms per-turn target. The tier stays a live
+promotion candidate (`direction: 'on'`); the decisive run is a non-self-play instrument (or
+`tools/benchmark_human_match.js` on the tactical swap `tests/tuning_check.js` §5 pins) plus a bench
+delta. `ATTEMPTS.md` §L3 carries both seeds' tables, and the observation that a single-seed mirror row
+here is a 60-game deal from a distribution with a real seed-to-seed wobble — which is exactly why the
+second seed was run.
+
 ### Added — a second ply for the cells that can still change the answer, and a match-point scale for the gate
 
 Six changes in one pass, all of them behind a config leaf, all of them measured before adoption

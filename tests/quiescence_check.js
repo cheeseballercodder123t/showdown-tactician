@@ -97,7 +97,7 @@ function mon(species, extra) {
 const MY_MOVES = ['Ice Spinner', 'Headlong Rush', 'Rapid Spin', 'Close Combat'];
 const THEIR_MOVES = ['Dragon Dance', 'Extreme Speed', 'Earthquake', 'Roost'];
 
-function board(theirExtra) {
+function board(theirExtra, protectExtra) {
   const me = mon('Great Tusk', {
     side: 'p1', evs: OFFENSE, ivs: IVS, nature: 'Jolly', ability: 'Protosynthesis',
     isActive: true, hpPercent: 100, setMoves: MY_MOVES.slice()
@@ -109,10 +109,10 @@ function board(theirExtra) {
   return {
     turn: 12, mySide: 'p1', oppSide: 'p2', formatSupported: true,
     myTeam: [me], oppTeam: [them], active: { my: me, opp: them }, bench: { my: [], opp: [] },
-    protect: {
+    protect: Object.assign({
       oppTurnsSinceLastProtect: 2, oppConsecutiveProtects: 0,
       myTurnsSinceLastProtect: 4, myConsecutiveProtects: 0
-    },
+    }, protectExtra || {}),
     recoveryPP: {},
     field: {
       turn: 12, trickRoom: false, weather: '', terrain: '',
@@ -277,6 +277,46 @@ section('3. their Protect blocks our move, and the phantom KO with it');
     OFF._payoff(ICE, PROTECT, st, st.field), legacy);
   same('a Protect reported as a plain move is shielded as well',
     ON._payoff(ICE, { kind: 'move', name: 'Protect', moveId: 'protect' }, st, st.field), live);
+}
+
+/* ==================================== 3b. the cell prices NO Protect decay, and that is the point */
+
+section('3b. the shield is absolute: the cell has no decay rule, so a staller looks invincible in it');
+{
+  /* WHY THIS IS PINNED, AND WHAT IT VERIFIES. In the game Protect FAILS if it is clicked twice in a
+   * row, so a staller cannot shield forever. The 1-ply cell cannot say that: `shielded` reads the
+   * ACTION only (`oppAction.kind === 'protect' || oppData.isProtect`), never the opponent's protect
+   * chain, so a shield in the cell blocks our move however long the chain is. The only thing in the
+   * engine that reacts to the chain is the 128D evaluator's `protectRhythm` term (dim 126, +0.5 once
+   * the consecutive count reaches 2), and it is a NUDGE applied to both arms, not a rule that lets
+   * our hit through. That asymmetry is why shipping `blockProtect: false` bought 15 win points
+   * against the staller (ATTEMPTS.md K6) and 70 with the seat to itself (K6b): with the shield
+   * priced, every cell in their column reads as a free turn for them, so the engine's committing
+   * lines all score 0 and it disengages; with the block off the cell credits the hit a live shield
+   * would eat, and it stands its ground. This block establishes the MECHANISM behind those numbers
+   * rather than restating them. */
+  const fresh = board();
+  const freshOn = ON._payoff(ICE, PROTECT, fresh, fresh.field);
+  const freshLegacy = OFF._payoff(ICE, PROTECT, fresh, fresh.field);
+  /* Their chain is already two long, so THIS Protect would fail in-game. */
+  const chained = board({}, { oppConsecutiveProtects: 2, oppTurnsSinceLastProtect: 1 });
+  const chainedOn = ON._payoff(ICE, PROTECT, chained, chained.field);
+  const chainedLegacy = OFF._payoff(ICE, PROTECT, chained, chained.field);
+  const freshGap = freshLegacy - freshOn;                 // what the shield costs us at a fresh board
+  check('a REPEAT Protect still eats essentially the whole hit — the cell prices no decay',
+    chainedLegacy - chainedOn > 0.85 * freshGap,
+    (chainedLegacy - chainedOn).toFixed(2) + ' vs fresh ' + freshGap.toFixed(2));
+  const deep = board({}, { oppConsecutiveProtects: 5, oppTurnsSinceLastProtect: 1 });
+  same('...and the block does not react to chain depth at all: five deep prices like two deep',
+    ON._payoff(ICE, PROTECT, deep, deep.field), chainedOn);
+  const chainShift = chainedOn - freshOn;
+  check('the only term that reads the chain is the evaluator nudge, and it cannot unblock a hit',
+    chainShift > 0 && chainShift < 0.15 * freshGap,
+    chainShift.toFixed(2) + ' vs ' + freshGap.toFixed(2));
+  check('...and the SAME nudge shifts the legacy cell, so it is the evaluator, not the block',
+    chainedLegacy > freshLegacy &&
+      Math.abs((chainedLegacy - freshLegacy) - chainShift) < 0.25 * freshGap,
+    (chainedLegacy - freshLegacy).toFixed(2) + ' vs ' + chainShift.toFixed(2));
 }
 
 /* ========================================= 4. their setup buys exactly one exchange */

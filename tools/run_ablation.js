@@ -596,11 +596,26 @@ const FEATURES = [
       'board. The tier is a BEAM (3 x 3 x K cells, 54 on the shipped numbers) rather than a tree ' +
       'because 9 x 9 x 6 is ~2,000 ms, and it blends at 0.35 so a cell the second ply cannot speak ' +
       'to is left where the 1-ply matrix put it.',
-    caveat: 'THE HYPOTHESIS, NOT A RESULT: the tier exists because one ply cannot ask what a ' +
-      'knockout LEAVES BEHIND (tests/tuning_check.js §5 pins the swap it produces on a constructed ' +
-      'board: pricing the revenge killer puts Encore above a 120 BP STAB attack). Whether that ' +
-      'tactical improvement is worth its cost over a whole corpus is exactly what this row decides, ' +
-      'so the config ships it OFF until the row says otherwise.'
+    caveat: 'MEASURED 2026-10-15 ON TWO SEEDS \u2014 AND IT DID NOT REPLICATE, SO THE DEFAULT ' +
+      'DOES NOT MOVE. Seed 1337: beam-ON 61.7 % (37-21-2) against the shipped 41.7 % ' +
+      '(25-34-1), \u0394win +20.0 [+3.3, +36.7], \u0394score +20.8 [+4.1, +37.5] \u2014 the gate cleared. ' +
+      'Seed 20261016: 45.0 % (27-28-5) against 43.3 % (26-28-6), \u0394win +1.7 [\u221215.0, +20.0], ' +
+      '\u0394score +0.8 [\u221216.7, +19.2] \u2014 flat. Seed 1337\'s interval floor (+3.3) is above the ' +
+      'second seed\'s point estimate, so the two do not overlap the way a replicated effect ' +
+      'would, and the pooled reading is the n = 20 one (+5.0 [\u221230.0, +35.0], “no measurable ' +
+      'effect”) at three times the power. The n = 20 “games 8.9 turns shorter” does not hold ' +
+      'either (\u22125.5 on one seed, +0.6 on the other). Two standing caveats remain. (1) ' +
+      'INSTRUMENT \u2014 the mirror is the instrument most confounded for a DEPTH increase: the ' +
+      'variant searches a ply deeper than the FROZEN, SHALLOWER twin it is measured against, ' +
+      'so a win here cannot separate “finds better lines” from “outsearches the twin”, and ' +
+      '\u00a7J\'s own rule is that a self-play reading is not quotable as strength. (2) COST \u2014 once ' +
+      'enabled the beam runs on Pass 1 (the synchronous ranking), 54 cells into a project ' +
+      'already ~3x its 10 ms per-turn target, and that trade is unbudgeted. So it stays a ' +
+      'live promotion candidate; the decisive runs are a non-self-play instrument (or ' +
+      'tools/benchmark_human_match.js on the tactical swap tests/tuning_check.js \u00a75 pins) ' +
+      'plus a bench delta. Rerunning --features beam-2ply --mirror --battles 60 on a THIRD ' +
+      'seed should precede any flip: one seed is enough to clear this gate and a second is ' +
+      'enough to disagree with it.'
   },
   {
     id: 'endgame-3v3',
@@ -674,13 +689,21 @@ const FEATURES = [
       '`highRating` 1850) instead of a hard argmax, so their mix spreads the way a noisy player\'s ' +
       'replies do. OUR side keeps the hard best response, so the worst case we are willing to ' +
       'accept is unchanged: QRE changes what we expect THEM to do, never the bound we play against.',
-    caveat: 'NOT PRICED ON THE MIRROR, BY DESIGN: the mirror league declares no rating for the ' +
-      'persona seat, and `_qreTau` resolves an unknown seat to the hard response (an unknown ' +
-      'opponent is not evidence of a noisy one). The rows that can price it are the personas, whose ' +
-      'declared bands (anchor 1700 / exploiter 1500 / chaos 1100) sit inside the ramp. The question ' +
-      'this row exists to answer is the one ATTEMPTS.md E5 left open — whether the ~8.3 % the hard ' +
-      'solve gave up against the pure softmax is the equilibrium being wrong about PEOPLE — so a ' +
-      'flat row is a result about the corpus, not a refutation of the tier.'
+    caveat: 'NEAR-INERT BY CONSTRUCTION, NOT MERELY UNRATED — verified 2026-10-15, and a rated run ' +
+      'cannot rescue it. On the mirror the row is `identical` because that league declares no ' +
+      'rating for the persona seat and `_qreTau` resolves an unknown opponent to the hard response ' +
+      '(an unknown opponent is not evidence of a noisy one). That is only the smaller half: in the ' +
+      'fictitious-play loop the soft column mix is accumulated into the PUBLISHED opponent strategy, ' +
+      'while the action each side best-responds to is still the hard argmax — so a temperature ' +
+      'provably cannot reach OUR frequency counts on ANY matrix (tests/tuning_check.js §7b). What ' +
+      'it moves is the mix the profiler reads next turn and the per-row VALUES; our confidence ' +
+      'column, and so the ranking, can move only through the score tie-break among equal ' +
+      'frequencies. The personas declare bands inside the ramp (anchor 1700 / exploiter 1500 / ' +
+      'chaos 1100), so they are the instrument to read it on — but expect flat, and treat a ' +
+      'non-flat persona row as the surprise rather than the confirmation. The question the tier ' +
+      'exists to answer is still the one ATTEMPTS.md E5 left open (whether the ~8.3 % the hard ' +
+      'solve gave up against the pure softmax is the equilibrium being wrong about PEOPLE); this ' +
+      'row as written does not answer it, which is itself the finding.'
   }
 ];
 

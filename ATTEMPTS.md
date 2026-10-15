@@ -622,3 +622,100 @@ between these runs is the LEAF, not the seed, and the single-seed caveat above i
 knob: the direction is the same on both seeds and both instruments' descriptions of the mechanism
 (the shield is what produces the standoff) agree. What is still one seed each: the exact magnitude
 (−70 vs −15 on this seat), and every number in §K6's four-seat table.
+
+
+---
+
+## L. The verification pass (2026-10-15) — the two claims under the block decision, checked
+
+The block-ships-OFF decision (§K6/K6b) rested on two claims that had been *asserted* rather than
+verified: that the 1-ply Protect cell prices no decay (so a staller reads as invincible in it), and
+that the flat `nash-qre` row was the rating ramp declining to fire. Both are now checked against the
+code and pinned. The first is confirmed; the second is confirmed **and then goes further than the
+docs said**.
+
+### L1. The 1-ply Protect cell prices NO decay — the "invincible staller" story is mechanism-real
+
+`_payoff` decides `shielded` from the ACTION alone (`oppAction.kind === 'protect' || oppData.isProtect`)
+and never consults the opponent's protect chain. So a shield in the cell blocks our move no matter
+how long the chain is — **including the repeat that fails in the real game.** In the game, Protect
+fails on consecutive use, so a staller cannot shield forever; the cell has no way to say so, and a
+shield-spammer's entire column prices as a free turn for them.
+
+Measured on the `quiescence_check` fixture (Great Tusk into Dragonite, Ice Spinner is the KO line):
+
+| board | block-ON cell | legacy cell | what the shield eats |
+|---|---|---|---|
+| fresh (chain 0) | **37.53** | **614.43** | 576.89 |
+| chain 2 (this Protect would FAIL) | **86.80** | **656.90** | 570.10 (**98.8 %** of the fresh gap) |
+| chain 5 | **86.80** (== chain 2) | **656.90** | 570.10 |
+
+The only thing in the cell that reacts to the chain at all is the evaluator's `protectRhythm` term
+(dim 126, `+0.5` once their consecutive count reaches 2); it shifts the block-ON and the legacy cells
+by the same small amount (+49.3 and +42.5 here — both far smaller than the ~570 the shield eats) and
+never lets the hit through. So the block is **absolute**: the cell is a staller's free-turn generator,
+which is exactly why pricing it is worth 15 win points on the four-seat sweep and **70** with the
+exploiter seat to itself. `tests/quiescence_check.js` §3b pins the whole table above, including that
+a five-deep chain prices *exactly* like a two-deep one.
+
+### L2. `nash-qre` is near-inert for the RANKING by construction — not merely unrated
+
+§K4 filed the flat mirror row as "the mirror league declares no rating for the persona seat, and an
+unknown opponent resolves to the hard response". That is true, and the ramp is exactly as documented
+(no rating → `0`; at or below `lowRating` **1100** → the full **30**; at or above `highRating` **1850**
+→ `0`; linear between). It is worth naming the misreading it invites: the mirror is inert because it
+declares **no** rating — not because it "was set to 1800+", which would be a non-zero `tau` of **2.0**.
+
+But the ramp is the SMALLER half. In `solveNashFictitiousPlay` the opponent's soft column mix is
+accumulated only into their PUBLISHED strategy (`oppCount[j] += oppMix[j]`), while the action each
+side best-responds to is still the hard argmax (`oppAction = bestJ`), and **our** cumulative payoff
+reads that hard index (`myCum[i] += payoffMatrix[i][oppAction]`). A temperature therefore **cannot
+reach our own frequency counts on any matrix**: over 12 random 9×9 matrices the `myStrategy` output is
+bit-identical with the tier on and off, while `oppStrategy` and `rowValues` move on every one.
+`tests/tuning_check.js` §7b pins that on three fixed matrices and on a real board: with a seat rated
+1200 (inside the ramp, so the tier really is engaged) the engine's **confidence / frequency column and
+the published top line are unchanged**, and only the opponent mix and the row VALUES differ.
+
+**The consequence, stated plainly.** `nash-qre` can change a decision only through the score
+tie-break among equal frequencies (plus the opponent mix it hands the profiler next turn) — it cannot
+rescore a line. So the row needs no "mid-ladder opponent" to be priceable; it is near-inert for the
+ranking *by construction*, and the personas' declared bands (1700/1500/1100) cannot rescue it either.
+The question E5 left open — whether the hard equilibrium is wrong about **people** — is **not**
+answered by this row as built: answering it needs the soft response to enter our best-response step,
+which is a different code path. The row's `caveat` in `tools/run_ablation.js` now says this, and its
+`direction: 'on'` is kept, so the cost of turning it back on is still one sweep away.
+
+### L3. The mirror n60 reading for `beam-2ply`: it did not REPLICATE across seeds, so the default stays OFF
+
+Two runs, the same row on the same instrument, two seeds (120 battles each, 0 errors):
+
+| seed | baseline | `beam-2ply` (on) | Δwin | 95 % CI | Δscore | 95 % CI (score) | Δturns | capped |
+|---|---|---|---|---|---|---|---|---|
+| 1337 | 41.7 % (25-34-1) | **61.7 %** (37-21-2) | **+20.0** | [+3.3, +36.7] | +20.8 | [+4.1, +37.5] | +0.6 | 2/60 |
+| 20261016 | 43.3 % (26-28-6) | 45.0 % (27-28-5) | +1.7 | [−15.0, +20.0] | +0.8 | [−16.7, +19.2] | −5.5 | 6/60 |
+
+**Two results, one sign, and no agreement on magnitude: +20.0 on seed 1337 and +1.7 on seed 20261016.**
+Seed 1337's interval floor (+3.3) sits above the second seed's point estimate, so the two seeds do not
+overlap in the way a replicated effect would. Neither reading is quotable alone, and the honest pooled
+statement is the one the n = 20 run already gave: **no measurable effect at this sample size**, now
+checked at three times the power.
+
+**Where the n = 20 story went.** That run also reported “games 8.9 turns shorter”. Across these two
+seeds the beam is −5.5 turns on one and +0.6 on the other (mean ≈ −2.5), so the shortening is small and
+seed-dependent rather than the mechanism behind seed 1337's +20.
+
+**THE DECISION: `laplace.beam2Ply.enabled` stays `false`**, and the seed disagreement is now the whole
+reason — which is exactly what §K6b ran a second seed to check for the quiescence leaf. The row stays a
+promotion candidate (`direction: 'on'`). Two further caveats stand from the first seed: the mirror is
+the instrument most confounded for a DEPTH increase (the variant outsearches the frozen, shallower twin
+it is measured against, so a win here cannot separate “finds better lines” from “outsearches the twin”),
+and enabling the beam puts its 3×3×K = 54 cells into Pass 1 (the synchronous ranking the HUD renders) of
+a project already ~3× its 10 ms per-turn target. The decisive run is therefore still the same one: a
+non-self-play instrument, or `tools/benchmark_human_match.js` pricing the tactical swap
+`tests/tuning_check.js` §5 pins, plus a bench delta for Pass 1.
+
+**What this pair of runs prices, beyond the flag.** The two seeds differ on more than the beam: seed
+1337 plays 62-turn games with 2/60 capped and 1.7 % ties, seed 20261016 plays 69-turn games with 6/60
+capped and 10 % ties. So a single-seed mirror row here is a 60-game deal from a distribution with a
+visible wobble — which is precisely the case §K6b's “second seed” rule exists for. Any future mirror row
+that clears its interval on one seed should be read as a candidate for a second seed, not as a result.

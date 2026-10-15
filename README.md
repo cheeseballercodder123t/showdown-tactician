@@ -235,11 +235,12 @@ tests/tuning_check.js      the four tuning tiers — the Elo switch band, turn u
                            comeback mode and the rejected pivot tax — each pinned both ways: its
                            shipped default and the exact number it moves when toggled — plus the
                            selective 2-ply beam, the stratified worlds that flipped their own default,
-                           and the quantal-response opponent (194 checks)
+                           and the quantal-response opponent, whose temperature cannot reach our own
+                           frequencies (200 checks)
 tests/preview_check.js     the Turn-0 lead advisory: the parser contract, the 6x6 evaluator scoring,
                            the broker wiring and the HUD card (31 checks)
 tests/quiescence_check.js  the setup punisher: the boost table, the one extra exchange, the three
-                           guards (104 checks)
+                           guards, and the shield's own no-decay cell (108 checks)
 tests/profile_check.js     the opponent profiler: the deviation estimator, label/factor agreement,
                            every refusal (80 checks)
 tests/entropy_check.js     the scouting entropy: Shannon arithmetic against hand-computed constants,
@@ -343,7 +344,7 @@ node tests/hud_check.js       # 238 checks: the seven HUD extras (stub DOM), the
 node tests/discrete_check.js  # 110 checks: the 16 discrete rolls, the exact KO count, EV pinning, residual order
 node tests/scout_check.js     #  78 checks: the scouting tool, the overlay, the pruner's re-weighting
 node tests/pressure_check.js  # 151 checks: the PP-stall pivot, the volatility charge, the format sentinel
-node tests/quiescence_check.js # 104 checks: the setup punisher, the boost table, the follow-up
+node tests/quiescence_check.js # 108 checks: the setup punisher, the boost table, the follow-up
                               #   weight (1.0 is an exact identity), the guards
 node tests/profile_check.js   #  80 checks: the opponent profiler (deviation, labels, clamping)
 node tests/entropy_check.js   #  48 checks: the scouting entropy and its assumed-response model
@@ -353,7 +354,7 @@ node tests/arena_check.js     # 157 checks: the arena — runner, splicer, agent
 node tests/invariants_check.js #  17 checks: the solver's invariants over perturbed boards
 node tests/ability_check.js   #  56 checks: the negative-space ability deduction (status, grounding, the gated absence rule,
                               #   and every observation that only LOOKS like proof)
-node tests/tuning_check.js    # 194 checks: the tuning tiers — the Elo band, turn urgency (adopted), comeback mode,
+node tests/tuning_check.js    # 200 checks: the tuning tiers — the Elo band, turn urgency (adopted), comeback mode,
                               #   the pivot tax (rejected), the 2-ply beam, the stratified active-set
                               #   worlds (which flipped their own default) and the QRE opponent
 node tests/preview_check.js   #  31 checks: the Turn-0 lead advisory (parser contract, 6x6 scoring, HUD card)
@@ -698,7 +699,11 @@ number by hand.
   ply, not a tree.
 * Their **Protect** reply can block our move for the turn — and **this half ships OFF**, on its own
   row's reading at 60 paired battles (`ATTEMPTS.md` §K6).
-  Blocking the hit is the rule; pricing the block inside a one-turn cell makes the engine pivot and
+  Blocking the hit is the rule. What the cell cannot represent is that a **repeat** Protect fails in
+  game, so `shielded` reads the action and never the chain: a shield-spammer's column prices as a
+  free turn for them *every* turn rather than one turn in two, and the 1-ply model then reads every
+  committing line as worth 0 (`tests/quiescence_check.js` §3b pins the no-decay cell). Pricing that
+  block inside a one-turn cell makes the engine pivot and
   grind instead of committing, which against the Protect-heavy `exploiter` persona is worth about
   fifteen win points (its seat goes **4-0-11 → 13-0-2** when the block is off, Δwin **+15.0
   [+6.7, +23.3]**, Δscore **+7.5 [+3.3, +11.7]**, cap games **11/60 → 2/60**). The mirror cannot price
@@ -739,7 +744,7 @@ number by hand.
   the same 432 `_payoff` calls per busy turn, and the suite pins the per-cell counts. It is a config
   flag (`laplace.quiescence.enabled`) rather than a constant because that trade is a taste, not a fact.
 
-`tests/quiescence_check.js` (104 checks) pins the table's completeness, the override contract it
+`tests/quiescence_check.js` (108 checks) pins the table's completeness, the override contract it
 rides on, the arithmetic of the extra exchange as identities against the damage engine's own
 numbers, the three guards, purity and the cost.
 
@@ -826,8 +831,9 @@ computes no game logic of its own, and every threshold it colours against is in 
    id bumps on every new turn, init or decision frame, so a stale pass publishes nothing, and every
    teardown path releases the flag. `tests/hud_check.js` §14 pins the scheduling contract and
    `tests/dom_check.js` §11 the DOM lifecycle. Read it as a UI hint, not as a gate-adopted opinion:
-   its deeper ranking inherits `beam-2ply` and the endgame tier, both flat/unpriced at this sample
-   (`ATTEMPTS.md` §K4).
+   its deeper ranking inherits `beam-2ply` (which cleared the mirror gate on ONE seed at n = 60 and
+   did NOT replicate on a second, so it ships OFF — `ATTEMPTS.md` §L3) and the endgame tier
+   (still flat/unpriced at this sample — §K4).
 
 The first real-browser pass over this HUD found a defect the stub DOM could not: `_el()` added a
 compound class name through `classList.add`, which throws `InvalidCharacterError` in a real DOM,

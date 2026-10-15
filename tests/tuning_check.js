@@ -1104,6 +1104,66 @@ section('7. the quantal-response opponent (OFF, and the hard response it replace
       rowsOff.map(function (r) { return [r.name, r.score, r.confidence]; })]));
 }
 
+/* ====================== 7b. the tier's blast radius: it re-prices THEM, and never US */
+
+section('7b. what a positive temperature can and cannot move (it never moves our own strategy)');
+{
+  /* THE 2026-10-15 VERIFICATION, and it is a claim about the SOLVER rather than about a corpus.
+   * A flat `nash-qre` row was read as "the mirror declares no rating, so the ramp disables it"
+   * (ATTEMPTS.md K4). That is true of the mirror, but it is not the whole reason the row cannot
+   * move: in the fictitious-play loop the opponent's SOFT mix is accumulated into their reported
+   * strategy, while the action each side best-responds to is STILL the hard argmax (`oppAction =
+   * bestJ`), and OUR cumulative payoff (`myCum[i] += payoffMatrix[i][oppAction]`) reads that hard
+   * index. A temperature therefore cannot reach our own frequency counts on ANY matrix. QRE
+   * changes the mix we expect THEM to play (published for the profiler next turn) and the per-row
+   * VALUES; our strategy can only move through the score tie-break among equal frequencies. That
+   * is why the row needs no "mid-ladder opponent" to be priceable — it is near-inert for the
+   * ranking by construction. */
+  const solve = ST.LaplaceEngine.solveNashFictitiousPlay;
+  const MATRICES = [
+    [[2, -1], [-1, 1]],
+    [[10, -4, 6], [3, 8, -5], [-6, 2, 9]],
+    [[10, -4, 6, -2], [3, 8, -5, 4], [-6, 2, 9, -3], [5, -7, 1, 7], [-1, 4, 3, 6]]
+  ];
+  let myMoved = 0, oppMoved = 0, rowMoved = 0;
+  MATRICES.forEach(function (m) {
+    const h = solve(m, 2000);
+    const s = solve(m, 2000, { tau: 30 });
+    if (JSON.stringify(h.myStrategy) !== JSON.stringify(s.myStrategy)) myMoved++;
+    if (JSON.stringify(h.oppStrategy) !== JSON.stringify(s.oppStrategy)) oppMoved++;
+    if (JSON.stringify(h.rowValues) !== JSON.stringify(s.rowValues)) rowMoved++;
+  });
+  same('a positive temperature never moves OUR own strategy (our frequencies), on any matrix',
+    myMoved, 0);
+  eq('...while on every matrix it DOES move the mix it expects them to play', oppMoved, 3);
+  eq('...and the per-row values those mixes imply', rowMoved, 3);
+
+  /* And at the engine level, on a real board: `confidence` is 100 x that same frequency, so the
+   * column that ranks our lines is identical with the tier on and off — only the published
+   * opponent mix and the row VALUES differ. */
+  const seat = board();
+  seat.opponentRating = 1200;                     // inside the ramp: 30 * (1850 - 1200) / 750 = 26
+  const qreOff = mkEngine({ qre: { enabled: false, tau: 30 } });
+  const qreOn = mkEngine({ qre: { enabled: true, tau: 30, highRating: 1850, lowRating: 1100 } });
+  const liveRows = function (rows) {
+    return rows.filter(function (r) { return !r.isVetoed; });
+  };
+  const conf = function (rows) {
+    return liveRows(rows).map(function (r) {
+      return [r.name, U.round1(r.confidence), U.round1(r.nashFrequency || 0)];
+    }).sort();
+  };
+  const offRows = qreOff.evaluateTurn(seat);
+  const onRows = qreOn.evaluateTurn(seat);
+  check('a rated seat really does engage the tier (otherwise this block is vacuous)',
+    !!(qreOn.lastReadout && qreOn.lastReadout.qre && qreOn.lastReadout.qre.tau > 0),
+    JSON.stringify(qreOn.lastReadout && qreOn.lastReadout.qre));
+  eq('the confidence / frequency column is bit-identical with the tier on and off',
+    conf(onRows), conf(offRows));
+  eq('...so the published TOP LINE is unchanged (no frequency tie on this board to break)',
+    onRows[0] && onRows[0].name, offRows[0] && offRows[0].name);
+}
+
 /* ------------------------------------------------------------------- summary */
 
 console.log('');
