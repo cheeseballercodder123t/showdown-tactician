@@ -716,9 +716,21 @@ function checkAggregation() {
     /never arrived in these battles/.test(flat) && /arrived and never changed a ranking/.test(flat), flat);
   check('...and it explicitly refuses to call a flat row worthless',
     /unresolved rather than as evidence the feature is worthless/.test(flat), flat);
+  /* The protect-block row USED to be the table's example of "inert here, not dead code". Its own
+   * measurement flipped the shipped leaf (ATTEMPTS.md K6), so the row now turns the block back ON
+   * and its caveat has to carry the numbers that moved the default — a reader must be able to see
+   * from the table alone why a shipped default is off, and that the mirror's `identical` reading is
+   * about the opponent rather than about the knob. */
   const blockFeature = ablation.FEATURES.filter(function (f) { return f.id === 'quiescence-blockprotect'; })[0] || {};
-  check('the protect-block row says it is inert-here, not dead code',
-    /INERT IN THIS CORPUS, NOT DEAD CODE/.test(blockFeature.caveat || ''), blockFeature.caveat);
+  eq('the protect-block row turns the leaf ON, because the shipped leaf is now OFF',
+    [blockFeature.direction, blockFeature.patch],
+    ['on', { 'laplace.quiescence.blockProtect': true }]);
+  check('...and its caveat carries the arm that moved the default',
+    /\+15\.0 \[\+6\.7, \+23\.3\]/.test(blockFeature.caveat || '') &&
+    /4-0-11 -> 13-0-2/.test(blockFeature.caveat || ''), blockFeature.caveat);
+  check('...and says a flat reading elsewhere is the opponent, not the knob',
+    /flat reading THERE is a statement about the opponent, not about the knob/.test(blockFeature.caveat || ''),
+    blockFeature.caveat);
   let noNotes = '';
   const returned = ablation.renderFootnotes([Object.assign({}, winRow, { caveat: null })],
     function (text) { noNotes += text + '\n'; });

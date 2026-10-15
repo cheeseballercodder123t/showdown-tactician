@@ -2141,11 +2141,17 @@
      * repeated. On a switch row there is no second hit: the body is still coming in.
      *
      * STATED APPROXIMATIONS, because a one-turn solver has no business implying more certainty:
-     *   - No speed order is modelled, so both second actions land. A KO either way still gets its
-     *     lethal bonus, but "who moves first" is NOT claimed.
+     *   - The second exchange IS ordered by the Speed each body will have there (the boost applied,
+     *     Trick Room and move priority included) whenever `respectTurn2Speed` is on, which is the
+     *     shipped default: a body that faints first does not act, and a KO either way still gets its
+     *     lethal bonus. A TIE, or a Speed this board cannot read, falls back to the pre-existing
+     *     "both actions land" pricing rather than to an invented coin flip.
      *   - Their second action is their best move from the boosted state, priced by the damage
      *     engine; the boost is passed to `calculateDamage` as an override, so stat stages, Choice
      *     lock, weather and ability all run through the one calculator the engine already uses.
+     *     `followUpWeight` scales the DAMAGE of both second actions and nothing else: the boost still
+     *     reaches the leaf, the Belly Drum HP cost is still paid in full, and 1.0 is an exact
+     *     identity.
      *   - One extension, not a tree: their Protect is not re-checked on the second turn.
      */
     _setupFollowUp(myAction, myActive, oppActive, mySideMon, gain, hpCostPct, hp, field, state) {

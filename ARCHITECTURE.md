@@ -929,9 +929,15 @@ cell credited us a free hit while ignoring the stat stages the move grants) and 
 on the real board blocks our move, so a line that KO'd them kept its lethal bonus through the
 shield).
 
-`config.laplace.quiescence = { enabled: true, extendSetup: true, blockProtect: true }`. Every switch
-is `false`-able, and each one on its own restores the raw 1-ply payoff bit-for-bit (the same
-`enabled:false` contract `nash`, `volatility` and the veto switches keep).
+`config.laplace.quiescence = { enabled: true, extendSetup: true, blockProtect: false,
+followUpWeight: 1, respectTurn2Speed: true }`. Every switch is `false`-able, and each one on its own
+restores the raw 1-ply payoff bit-for-bit (the same `enabled:false` contract `nash`, `volatility` and
+the veto switches keep). `followUpWeight: 1` is an exact identity on the second exchange, and
+`blockProtect` **ships OFF**: the block is a game rule, but pricing it inside a one-turn cell measured
+the wrong way round at 60 paired battles (its own row takes the Protect-heavy persona from 4-0-11 to
+13-0-2 when the block is off, `ATTEMPTS.md` §K6), so the shipped leaf is the legacy reading and the
+ablation row is what turns the block back on. `respectTurn2Speed` orders the extension's second
+exchange by the Speed each body will have there.
 
 `_payoff` classifies the reply from its own move data: `isProtect` (or an action `kind` of
 `'protect'`) skips our move entirely, and `isSetup` asks `U.setupBoosts(name)` for the stages the
@@ -972,8 +978,9 @@ Guards, each pinned by `tests/quiescence_check.js`:
 * Recovery replies are NOT priced: heal amounts vary by move and by weather, so `isRecovery` stays a
   no-op rather than an invented number.
 
-Stated approximations (they are repeated at the call site): no speed order is modelled, so both
-second actions land and "who moves first" is never claimed; their Protect is not re-checked on the
+Stated approximations (they are repeated at the call site): the second exchange IS ordered by the
+Speed each body will have there whenever `respectTurn2Speed` is on (the shipped default) — a tie, or a
+Speed the board cannot read, falls back to "both actions land"; their Protect is not re-checked on the
 second turn; their damaging replies keep the pre-existing symmetric treatment.
 
 ### 6.8 Ability deduction, the gated tuning tiers, and Turn-0

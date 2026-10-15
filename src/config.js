@@ -124,7 +124,33 @@
         extendSetup: true,
         // Their PROTECT reply blocks OUR move this turn (a game rule). Without it the matrix
         // credited us the hit anyway, lethal bonus included.
-        blockProtect: true,
+        //
+        // SHIPS OFF, AND IT MOVED ON A MEASUREMENT — the second default this branch has ever flipped
+        // (the first is `sampler.stratifyActive`, ATTEMPTS.md K2). The rule it encodes is real: a
+        // shield that is up DOES block the move. What the sweep priced is the PRICING of that rule
+        // inside a one-turn cell, and it costs games: 60 paired battles on the personas arena (seed
+        // 1337), switching it off won **78.3 % against 63.3 %**, delta win **+15.0 [+6.7, +23.3]**
+        // and delta match score **+7.5 [+3.3, +11.7]** — both intervals exclude zero on the SAME arm
+        // — with the 100-turn cap games cut **11/60 -> 2/60**. The whole movement is ONE seat: against
+        // the `exploiter` persona (a Protect-heavy staller) the baseline goes 4-0-11 and switching
+        // this off goes 13-0-2, while the anchor and chaos seats are 15-0-0 and 13-2-0 either way.
+        // On the self-play mirror it is INERT (`identical` at n=20 and in the 60-battle sweep), so
+        // the harm is specific to an opponent that actually clicks Protect into us.
+        //
+        // WHY OFF AND NOT "FIX THE PRICING": the block IS the pricing. Inside the cell their shield
+        // makes our move a wasted turn, so the engine prefers a pivot or a different move and grinds
+        // out a standoff against a body that keeps shielding. Off restores the legacy 1-ply reading
+        // (their Protect is a no-op for the cell) — exactly what this tier was built to correct — so
+        // this is a deliberate, measured step back from the correction, taken because the correction
+        // is worth -15 to -70 win points against a shield-spammer, depending on the seed and whether
+        // the whole seat or one column of four is being read. The ablation row
+        // `quiescence-blockprotect` keeps the cost of turning it back ON measurable, and
+        // tests/quiescence_check.js still proves the block works whenever it is on. CONFIRMED
+        // ON A SECOND SEED, exploit-only: with the block back ON the seat drops to 16.7 %
+        // (10-0-50, 50/60 capped) against the shipped 86.7 % (52-0-8) — delta win -70.0 [-83.3,
+        // -56.7]. The same run settles the OTHER half in the opposite direction: removing the setup
+        // ply costs -40.0 win [-55.0, -25.0], so `extendSetup` stays on. ATTEMPTS.md K6/K6b.
+        blockProtect: false,
         // Turn 2 of the setup extension is ordered by the SPEED each body will actually have there
         // (the boost applied, plus Trick Room and move priority). Without it both second actions
         // landed unconditionally, so "boost, then kill the setup user" and "boost, die to the setup

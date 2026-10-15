@@ -163,22 +163,30 @@ const FEATURES = [
       '`quiescence-extendsetup` contradiction is still open.'
   },
   {
+    /* THE SECOND ROW WHOSE MEASUREMENT MOVED ITS OWN DEFAULT (the first is `sampler-stratify`).
+     * The leaf now ships OFF, so this row turns the block back ON (`direction: 'on'`) and its win
+     * rate is the price of pricing their shield correctly. */
     id: 'quiescence-blockprotect',
-    label: 'quiescence: protect block (off)',
+    label: 'quiescence: protect block (on)',
     tier: 'laplace',
-    direction: 'off',
+    direction: 'on',
     parent: 'quiescence',
-    patch: { 'laplace.quiescence.blockProtect': false },
+    patch: { 'laplace.quiescence.blockProtect': true },
     expect: 'helps',
-    note: 'Off stops their Protect from blocking our move inside the cell, so a lethal bonus goes ' +
-      'through a shield again.',
-    /* The distinction that matters for this row: it is NOT dead code and NOT unmeasurable. */
-    caveat: 'INERT IN THIS CORPUS, NOT DEAD CODE: tests/quiescence_check.js proves the shield blocks ' +
-      'our move inside the cell and that blockProtect:false reproduces the legacy 1-ply number ' +
-      'exactly, so the knob works and its input (their Protect) does reach it. It still changed no ' +
-      'decision in 150 arena battles, which means their shield never landed on a cell where the ' +
-      'block flipped the choice. This row is NOT implicated in the tier\u2019s harm and is NOT ' +
-      'evidence the block is useless.'
+    note: 'SHIPS OFF. On (the variant), their Protect blocks our move inside the cell, so the cell is ' +
+      'scored as the wasted turn it really is and a lethal bonus does NOT go through a shield. Off ' +
+      '(the baseline) is the legacy 1-ply reading, where the matrix credits us the hit the shield ' +
+      'would have eaten. The rule the ON arm encodes is real; what measured badly is its price.',
+    caveat: 'MEASURED AND THE DEFAULT FLIPPED, on ONE instrument and ONE seed. Personas arena, 60 ' +
+      'paired battles, seed 1337: the block-ON arm won 63.3 % (38-11-11) and the block-OFF arm won ' +
+      '78.3 % (47-11-2) — \u0394win +15.0 [+6.7, +23.3] and \u0394score +7.5 [+3.3, +11.7], both ' +
+      'intervals excluding zero on the same arm, cap games 11/60 -> 2/60. The movement is one SEAT: ' +
+      'the `exploiter` persona goes 4-0-11 -> 13-0-2, while anchor is 15-0-0 and chaos 13-2-0 either ' +
+      'way. On the mirror the row is `identical` (their shield never lands on a cell where the block ' +
+      'flips the choice), so a flat reading THERE is a statement about the opponent, not about the ' +
+      'knob — which is why this one is priced on an opponent that actually clicks Protect into us. ' +
+      'tests/quiescence_check.js proves the block works whenever it is on, and that switching it off ' +
+      'reproduces the legacy 1-ply number exactly.'
   },
   {
     id: 'quiescence-turn2speed',

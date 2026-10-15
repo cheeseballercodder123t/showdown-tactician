@@ -156,8 +156,14 @@ const qcfg = ST.CONFIG && ST.CONFIG.laplace && ST.CONFIG.laplace.quiescence;
 check('config.js carries the three quiescence switches', !!qcfg &&
   typeof qcfg.enabled === 'boolean' && typeof qcfg.extendSetup === 'boolean' && typeof qcfg.blockProtect === 'boolean',
   JSON.stringify(qcfg));
-check('the extension SHIPS enabled (the decision this suite exists to pin)',
-  qcfg && qcfg.enabled === true && qcfg.extendSetup === true && qcfg.blockProtect === true, JSON.stringify(qcfg));
+/* WHAT IT SHIPS, AND WHY ONE LEAF IS OFF. The tier was built to price two replies the 1-ply matrix
+ * read as no-ops, and the setup half is still on. The PROTECT half measured badly on the personas
+ * arena (+15.0 win [+6.7, +23.3] and +7.5 match score [+3.3, +11.7] for switching it OFF, cap games
+ * 11/60 -> 2/60, all of it one seat), so it ships off and the ablation row patches it back ON —
+ * ATTEMPTS.md K6 has the tables. Everything below drives the ON path through an explicit engine, so
+ * the mechanism is still fully covered while the shipped default is the measured one. */
+check('the extension SHIPS enabled with the setup ply on, and the protect block OFF (the measured default)',
+  qcfg && qcfg.enabled === true && qcfg.extendSetup === true && qcfg.blockProtect === false, JSON.stringify(qcfg));
 check('an engine with no override mirrors the config',
   SHIPPED.quiescence.enabled === qcfg.enabled && SHIPPED.quiescence.extendSetup === qcfg.extendSetup &&
   SHIPPED.quiescence.blockProtect === qcfg.blockProtect, JSON.stringify(SHIPPED.quiescence));

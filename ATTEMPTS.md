@@ -81,7 +81,7 @@ wins** (16 of the 17) by making progress outrank passivity late in a game.
 
 | # | attempt | measured | why it is still open |
 |---|---|---|---|
-| C1 | **`quiescence` (the setup punisher)** — prices the opponent's boosted reply and their Protect inside the cell | **SUPERSEDED — the sign has FLIPPED.** The old reading was `feature HURTS`: removing the whole tier won **+19.3 [+12.0, +26.7]** (66.7 % → 86.0 %, cap ties 46/150 → 15/150), with the harm attributed entirely to `extendSetup`. Re-measured 2026-10-13 at the standard sample on the fixed instrument (see §H), switching `extendSetup` off **LOSES 20.0 [−30.0, −10.0]** (98.3 % → 78.3 %, 13 capped) — so the knob **HELPS** — while switching the whole tier off is **−5.0 [−11.7, +1.7]**, not measurable at this sample. **Then the mirror disagreed (§J, 2026-10-14):** the same patch, 60 paired mirror battles at seed 1337, wins **+23.3 [+8.3, +38.3]** (41.7 % → 65.0 %, capped 2/60 → 4/60) — i.e. **feature HURTS**, flipped and `surprise`-flagged against its `expect: helps` | **CLOSED 2026-10-13 — and it closed against the old verdict.** The open question was whether the harm survived the urgency change; it does not survive the *instrument* fix. The old number was taken on a build whose arena fed the engine a one-Pokemon team (§H), so it measured a crippled engine and is **not quotable**. On the fixed instrument the tier ships ON with a measurement **supporting** it. **REOPENED 2026-10-14 by §J:** the mirror reads the opposite way (**HURTS, +23.3**), so the row is now **DISPUTED — one instrument each way**, both intervals excluding zero, and the knob stays where it ships until a higher-power row (500 battles, a second seed, or a declared stronger opponent) breaks the tie. The mirror is the instrument WITH headroom (41.7 % baseline vs §H's 98.3 % ceiling), but a self-play number also prices how exploitable a frozen twin is, which is not the same question as strength against a human — so neither reading is quotable as "the" answer yet. **AMENDED 2026-10-14 by §K:** a third run (20 paired battles per instrument) reproduced the mirror's sign (+10.0, flat at that power) AND produced the same sign on the personas — the tier off won **+25.0 [+5.0, +45.0]** with the exploiter's five 100-turn stalemates as the whole of the movement — so **both instruments now lean HURTS** and §H's HELPS +20.0 is the outlier. That is still not the power to move a shipped default (n = 20, one seat's five games), so the tier stays where it ships; §K3 names the run that can settle it and reports that the `followUpWeight` hypothesis came back DISARMED |
+| C1 | **`quiescence` (the setup punisher)** — prices the opponent's boosted reply and their Protect inside the cell | **SUPERSEDED — the sign has FLIPPED.** The old reading was `feature HURTS`: removing the whole tier won **+19.3 [+12.0, +26.7]** (66.7 % → 86.0 %, cap ties 46/150 → 15/150), with the harm attributed entirely to `extendSetup`. Re-measured 2026-10-13 at the standard sample on the fixed instrument (see §H), switching `extendSetup` off **LOSES 20.0 [−30.0, −10.0]** (98.3 % → 78.3 %, 13 capped) — so the knob **HELPS** — while switching the whole tier off is **−5.0 [−11.7, +1.7]**, not measurable at this sample. **Then the mirror disagreed (§J, 2026-10-14):** the same patch, 60 paired mirror battles at seed 1337, wins **+23.3 [+8.3, +38.3]** (41.7 % → 65.0 %, capped 2/60 → 4/60) — i.e. **feature HURTS**, flipped and `surprise`-flagged against its `expect: helps` | **CLOSED 2026-10-13 — and it closed against the old verdict.** The open question was whether the harm survived the urgency change; it does not survive the *instrument* fix. The old number was taken on a build whose arena fed the engine a one-Pokemon team (§H), so it measured a crippled engine and is **not quotable**. On the fixed instrument the tier ships ON with a measurement **supporting** it. **REOPENED 2026-10-14 by §J:** the mirror reads the opposite way (**HURTS, +23.3**), so the row is now **DISPUTED — one instrument each way**, both intervals excluding zero, and the knob stays where it ships until a higher-power row (500 battles, a second seed, or a declared stronger opponent) breaks the tie. The mirror is the instrument WITH headroom (41.7 % baseline vs §H's 98.3 % ceiling), but a self-play number also prices how exploitable a frozen twin is, which is not the same question as strength against a human — so neither reading is quotable as "the" answer yet. **AMENDED 2026-10-14 by §K:** a third run (20 paired battles per instrument) reproduced the mirror's sign (+10.0, flat at that power) AND produced the same sign on the personas — the tier off won **+25.0 [+5.0, +45.0]** with the exploiter's five 100-turn stalemates as the whole of the movement — so **both instruments now lean HURTS** and §H's HELPS +20.0 is the outlier. That is still not the power to move a shipped default (n = 20, one seat's five games), so the tier stays where it ships; §K3 names the run that can settle it and reports that the `followUpWeight` hypothesis came back DISARMED. **SETTLED FOR ONE LEAF 2026-10-15 by §K6:** the 60-battle version of that run moved `quiescence.blockProtect` to **off** (+15.0 win [+6.7, +23.3], +7.5 match score [+3.3, +11.7], cap games 11/60 -> 2/60, and the whole movement is the `exploiter` seat going 4-0-11 -> 13-0-2), while `extendSetup` stayed ON because its own arm's floor on the win indicator is −5.0 and its match-point floor is exactly 0.0 — **and §K6b then SETTLED that half too, in the tier's favour:** with the block already off, removing the setup ply costs −40.0 win [−55.0, −25.0] and −20.0 match score [−27.5, −12.5] on a second seed, so the personas' earlier "no effect" reading was the seat being saturated by the mispriced shield. Both halves are now decided, in opposite directions; **this row's status line above is history** |
 | C2 | **VETO4 (`SPEED_SUICIDE`) firing on stale speed information** | 106 of the 177 elite clicks the guard refuses are this one code | unproven either way. The question is whether those refusals are boards where the human was right because the engine's speed estimate was blind to the field (an unrevealed Scarf, a weather ability, Tailwind). Answering it needs the **speed race itself instrumented**, which has not been done. Suppressing the rule is *not* an answer — see §F2. |
 | C3 | Smaller open defects | see the "Known — open, from the same review sweep" list in `CHANGELOG.md` (`residualOrder.trust` shipping at 1, `shelter`'s unverified effect, G-Max Steelsurge's flat 12.5 %, two HUDs double-handling a bench tap, the Protosynthesis ceiling's sun/terrain case) and the deliberate-omission list in `BUGS_AUDIT_REPORT.md`. **TWO ARE NOW CLOSED** (2026-10-14): `mon.knockOffSurvived` was a read of nothing (the live field is `mon.itemKnockedOff`, now withheld for a Sticky Hold body), and the whole-`possibleAbilities` hard veto in VETO2 became a proof requirement. The Protosynthesis / Quark Drive SPEED misread is fixed for every speed layer, but the ceiling's sun/terrain-only case is not | four remain open, each with its narrow fix |
 
@@ -106,7 +106,7 @@ arrives and the situation simply never arises.
 | D2 | `clock` (opponent clock prior) | **ARRIVES — and reading it took a second fix.** `_close()` returns early unless `mySubmitTs` is set, and that is set only by an **outgoing `/choose`** line; the arena answered the sim runner directly and never sent one, so the history stayed empty. `run_arena` now sends it, which made the clock live — and immediately exposed a second defect: with both players on one event loop the measured lead is ~0 ms, so it labelled **every** turn `auto` (0.25), below `switchKeepThreshold`, DELETING their switch replies for the whole battle. The arena therefore **declares** the opponent's pace now (`normal` = identity by default; `--deliberation auto` prices a fast one). **The +28.3 first reported here is retracted** — it priced that artifact | a declared fast/slow opponent (`--deliberation`), or the live client |
 | D3 | `clock.ratingBands` (Elo switch bands) | **FIXED, MEASURABLE.** Needs the opponent's ladder rating, carried only as a fifth field on the **player** line; the arena created both players with no `rating` option, so `state.opponentRating` stayed `null` and `ratingFactor()` returned 1 by design. Each persona now **declares** the band its name implies (anchor 1700 / exploiter 1500 / chaos 1100) and `sim_runner` passes it to the sim, so one sweep exercises all three. Measured at 24 a side: the flag changed at least one battle (no `identical` row), while the win-rate interval still included zero — read it against a 100% baseline, so harm is visible here long before gain | a stronger opponent, so the baseline is not at the ceiling |
 | D4 | `laplace.comeback` | **FIXED, SAME STATE AS D1.** Scales **only** the volatility charge, which was 0 in the arena — any multiplier on 0 is 0. The charge is now non-zero, so the multiplier is live; but the charge changed no decision at 24 a side, so nothing changed here either. This row cannot be decisive until the row it multiplies is | same as D1 |
-| D5 | `quiescence-blockprotect` | **INERT IN THIS CORPUS, NOT DEAD CODE.** `tests/quiescence_check.js` proves the shield blocks our move inside the cell and that `blockProtect: false` reproduces the legacy 1-ply number exactly — so the knob works and its input does arrive. Their Protect simply never landed on a cell where the block flipped the choice | a corpus where a shield lands on a flipped decision |
+| D5 | `quiescence-blockprotect` | **WAS INERT HERE — AND THEN A CORPUS APPEARED.** `tests/quiescence_check.js` proves the shield blocks our move inside the cell and that `blockProtect: false` reproduces the legacy 1-ply number exactly, so the knob works and its input arrives; on the mirror it is still `identical` (their shield never lands on a cell where the block flips the choice). **The `exploiter` persona is the corpus this row was waiting for:** 60 paired battles at seed 1337 take it from 4-0-11 to 13-0-2 when the block is switched off, Δwin +15.0 [+6.7, +23.3] and Δscore +7.5 [+3.3, +11.7], which is why the shipped leaf is now `false` (§K6) | done: the knob is priced, and the row now measures the cost of turning it back ON |
 | D6 | `pruner.scout`, `usage` (overlay) | **documented controls**: they ship with empty overlays, so flat is the *expected* result and a non-zero delta there would be the bug | populate the overlay (monthly cron / `scout_replays.js`) |
 
 ---
@@ -423,9 +423,9 @@ coverage gap, and it is still true. What it does not prove is that covering the 
 than the draw it replaces, and the first win-rate reading says it is not: switching it OFF won
 **55.0 % against 40.0 %**, Δwin **+15.0 [0.0, +30.1]**, Δscore **+15.0 [+2.5, +30.0]**. The shipped
 leaf is now `stratifyActive: false` (which is bit-identical to the pre-pass build) and the ablation
-row patches it **up** (`direction: 'on'`) as the promotion candidate — the only row in the table whose
-default moved because of its own measurement. Status: **REJECTED at n = 20**, reopen with a 60-battle
-run before rebuilding the argument.
+row patches it **up** (`direction: 'on'`) as the promotion candidate — the FIRST of two rows whose default moved because of
+its own measurement (§K6 is the second). Status: **REJECTED at n = 20**, reopen with a 60-battle run
+before rebuilding the argument.
 
 ### K3. The `quiescence` contradiction: `followUpWeight` is DISARMED, and both instruments now lean the same way
 
@@ -449,8 +449,11 @@ the tier's own arm reads **+25.0 [+5.0, +45.0]** on the personas (HURTS, `surpri
 [−20.0, +40.0] on the mirror — the same sign §J got, so **both instruments now lean HURTS** and §H's
 HELPS +20.0 is the outlier.
 
-**The decision, and why it is deliberately NOT made here.** The shipped default did **not** move. Two
-reasons, and both are about power, not preference:
+**The decision, and why it is deliberately NOT made here.** At n = 20 the shipped default did **not**
+move. (**AMENDED BY §K6, which ran the 60-battle version of this experiment: ONE sub-knob moved —
+`quiescence.blockProtect` now ships OFF on +15.0 win [+6.7, +23.3] and +7.5 score [+3.3, +11.7] for
+switching it off. The master switch and `extendSetup` did not move.**) Two reasons, and both are
+about power, not preference:
 
 1. These runs are **n = 20**, a third of the §H/§J samples that disagreed. Replacing a 60-battle
    HELPS interval with a 20-battle HURTS interval is swapping one under-powered reading for another,
@@ -465,6 +468,10 @@ above) — so the mirror cannot price it and the personas arena can. That is a 6
 `--features quiescence,quiescence-blockprotect,quiescence-extendsetup --agent all --battles 60`, whose
 exploiter column is where the answer will be. Until it exists, §C1 stays DISPUTED and the tier stays
 where it ships.
+
+**RAN — see §K6.** The 60-battle version of that experiment moved ONE leaf: `blockProtect` now ships
+off. The exploiter column is where the answer was, exactly as this paragraph predicted, and the other
+half of the tier (`extendSetup`) did not move because its own arm does not clear zero.
 
 ### K4. The four new tiers, in one line each
 
@@ -492,9 +499,126 @@ where it ships.
 
 * Nothing about strength above n = 20 for any of the six tiers, except that `sampler-stratify`'s
   default moved (§K2) — that one moved on a match-point interval that excludes zero, and it is the
-  only default this pass flipped.
+  first of the two defaults this pass flipped.
 * Nothing about the `exploiter` seat's five stalemates beyond the fact that they were already there in
   the baseline and that three sub-knob settings dissolve them. The mechanism (a shield inside the
   cell, versus the setup ply) is a hypothesis with two measurements behind it, not a diagnosis.
 * Nothing about humans. The mirror prices a frozen twin (§I) and the personas are heuristics (§H);
   neither is `tools/benchmark_human_match.js`'s question.
+
+### K6. The 60-battle re-run §K3 asked for — and the SECOND default this pass moved
+
+`node tools/run_ablation.js --features quiescence,quiescence-extendsetup,quiescence-blockprotect,
+quiescence-followup-damped,quiescence-turn2speed --agent all --battles 60 --seed 1337 --parallel 2`:
+6 variants, **360 battles, 0 errors, 1,478 s**. This is the run §K3 named, at the power §H/§J used.
+Sixty battles over four seats is **15 per seat**, so every column below is thinner than §H's 20-per-seat
+— but it is three times §K's sample, and it is the first reading of this question with intervals narrow
+enough to move a default.
+
+**Baseline: 38-11-11 = 63.3 %, 56.0 turns, 11/60 capped.** (Not comparable to §H's 98.3 %: `all`
+includes the mirror seat, and on this build the personas' own baseline has moved with it.)
+
+| row (leaf the variant patches) | variant win% | Δwin | 95 % CI | Δscore | 95 % CI (score) | capped | verdict |
+|---|---|---|---|---|---|---|---|
+| `quiescence` (off) | **76.7 %** (46-5-9) | **+13.3** | [+1.7, +25.0] | **+11.7** | [+4.2, +20.0] | 9/60 | **feature HURTS** (`surprise`) |
+| `quiescence-extendsetup` (off) | 68.3 % (41-5-14) | +5.0 | [−5.0, +16.7] | +7.5 | [0.0, +15.8] | 14/60 | no measurable effect |
+| `quiescence-blockprotect` (off) | **78.3 %** (47-11-2) | **+15.0** | [+6.7, +23.3] | **+7.5** | [+3.3, +11.7] | **2/60** | **feature HURTS** (`surprise`) |
+| `quiescence-followup-damped` (on, 0.5) | 61.7 % (37-12-11) | −1.7 | [−10.0, +6.7] | −1.7 | [−10.0, +6.7] | 11/60 | no measurable effect |
+| `quiescence-turn2speed` (off) | 63.3 % (38-11-11) | 0.0 | `identical` | | | 11/60 | inert here |
+
+**The same six runs, split by seat** (identical seeds, so these are paired against the same battles):
+
+| run | anchor | exploiter | chaos | three personas | mirror seat |
+|---|---|---|---|---|---|
+| baseline (shipped) | 15-0-0 (31t) | **4-0-11 (99t)** | 13-2-0 (36t) | 32-2-11 = 71.1 % | 6-9 (58t) |
+| `quiescence` off | 15-0-0 | **9-0-6** | 13-2-0 | 37-2-6 = 82.2 % | **9-3-3** |
+| `quiescence-extendsetup` off | 15-0-0 | 4-0-11 | 13-2-0 | 32-2-11 = 71.1 % | **9-3-3** |
+| `quiescence-blockprotect` off | 15-0-0 | **13-0-2** | 13-2-0 | **41-2-2 = 91.1 %** | 6-9 |
+| `quiescence-followup-damped` | 15-0-0 | 4-0-11 | 13-2-0 | 32-2-11 = 71.1 % | 5-10 |
+| `quiescence-turn2speed` off | 15-0-0 | 4-0-11 | 13-2-0 | 32-2-11 = 71.1 % | 6-9 |
+
+**The decomposition is the finding: each half of the tier is harmful on a DIFFERENT instrument.**
+
+* **`blockProtect` is the exploiter's** — and it is the whole of it. The shield-spamming persona goes
+  **4-0-11 → 13-0-2** (nine stalemates become wins), the three-persona column goes 71.1 % → 91.1 %,
+  and the **mirror seat does not move at all** (6-9 either way). The tier's own arm (+13.3 [+1.7,
+  +25.0], +11.7 [+4.2, +20.0] on match score) and the protect arm (+15.0 [+6.7, +23.3], +7.5 [+3.3,
+  +11.7]) are the same movement: both exclude zero on **both scales**, and the cap games fall
+  11/60 → 2/60.
+* **`extendSetup` is the mirror's**, and it is the whole of ITS movement: the personas do not move a
+  single battle (32-2-11 → 32-2-11, and the exploiter column is 4-0-11 either way) while the mirror
+  seat goes **6-9 → 9-3**. That reproduces §J's 60-battle mirror reading (HURTS +23.3 [+8.3, +38.3])
+  at the seat level and once again fails to reproduce §H's personas reading (HELPS +20.0 [+10.0,
+  +30.0]): on today's instrument the same patch is worth **+0.0 on the three personas**.
+* `followUpWeight` 0.5 and `turn2speed` off are flat here too (−1.7 and `identical`), so §K3's
+  two verdicts stand at 3× the power.
+
+**THE DECISION: `laplace.quiescence.blockProtect` now ships OFF.** It is the second default this
+branch has ever flipped, and the case for it is the arm AND the mechanism: switching it off wins
++15.0 win points [+6.7, +23.3] and +7.5 match points [+3.3, +11.7] on the same arm, on a single seed,
+with the movement localized to the opponent that actually clicks Protect into us (and the mirror
+saying `identical`, i.e. this knob cannot be priced there at all).
+
+**Why NOT the other two available moves.**
+
+* **Not the whole tier.** Its arm also excludes zero (+13.3 / +11.7), but the pair of sub-arms says the
+  mass is `blockProtect`'s, and `extendSetup` is the half that is (weakly) doing the job the tier was
+  built for. Turning the tier off would also turn off the half whose harm lives on a different
+  instrument and whose own arm does not clear zero.
+* **Not `extendSetup`.** Its arm reads +5.0 [−5.0, +16.7] on the win indicator — a floor of −5.0, so
+  it does not clear zero — and its match-point interval's **floor is exactly 0.0**. The mirror's
+  evidence against it is real (§J's dedicated 60-battle run) and this run agrees in direction at the
+  seat level, but the two instruments still disagree about the aggregate (personas: no effect), and
+  §C1 is explicit that a shipped default does not move on a contested reading. It stays ON with §K3's
+  contradiction narrowed to "the mirror says the setup ply is wrong; the personas cannot see it".
+
+**What this decision costs, stated rather than hidden.** `blockProtect: false` is a deliberate return
+to the 1-ply reading in which their shield is a no-op for the cell — i.e. the matrix credits us a hit
+that a live Protect would eat. It is not a claim that the block is wrong (it is a game rule, and
+`tests/quiescence_check.js` still proves the block works whenever it is on) but a claim about its
+VALUE: with the shield priced, the engine pivots and grinds instead of committing, and against a
+staller that is worth about fifteen win points. The row stays in the table, `direction: 'on'`, so the
+cost of turning it back on is a single sweep away.
+
+**Limits at seed 1337.** One seed for the decision; the personas arena is the only instrument that
+can price this knob (the mirror is `identical`); and 15 battles per seat means the exploiter column is
+15 games. The run that closes all three is the same question with the `exploiter` seat ALONE
+(`--agent exploiter --battles 60`, so all sixty battles go to the shield-spammer) on a SECOND seed.
+
+### K6b. The second seed, and the seat alone — both halves of the tier, settled
+
+`node tools/run_ablation.js --features quiescence-blockprotect,quiescence --agent exploiter --battles
+60 --seed 20261015 --parallel 2`: 3 variants, **180 battles, 0 errors, 849 s**. The baseline is the
+SHIPPED config **as it now stands** (setup ply on, protect block off), which is what makes this run
+decisive: each row now removes exactly one half, so the two arms answer two different questions
+without interacting.
+
+| row (leaf the variant patches) | variant win% | Δwin | 95 % CI | Δscore | 95 % CI (score) | capped | verdict |
+|---|---|---|---|---|---|---|---|
+| `quiescence-blockprotect` (**on**) | **16.7 %** (10-0-50) | **−70.0** | [−83.3, −56.7] | **−35.0** | [−41.7, −28.3] | **50/60** | **turning the block back on HURTS** (`surprise`, `stall`) |
+| `quiescence` (off — removes the SETUP PLY) | **46.7 %** (28-0-32) | **−40.0** | [−55.0, −25.0] | **−20.0** | [−27.5, −12.5] | 32/60 | **removing the setup ply HURTS** (`stall`) |
+
+**Both halves are now settled, and in opposite directions**, on the shipped configuration and on a
+seed neither of them was chosen on:
+
+* **The protect block is confirmed OFF.** Turning it back on takes the exploiter seat from **86.7 %
+  (52-0-8) to 16.7 % (10-0-50)** — Δwin −70.0 [−83.3, −56.7], Δscore −35.0 [−41.7, −28.3], and
+  **50 of 60 battles hit the 100-turn cap**. That is the same sign as seed 1337's arm (+15.0 for
+  switching it off) at five times the magnitude, so the leaf is not marginal on the seat it is aimed
+  at: with the shield priced, the engine stops committing against a body that keeps shielding.
+* **The setup ply is confirmed ON**, which is the half §K3/§K6 could only call "contested". Removing
+  it (with the block already off, so this arm isolates it) costs **−40.0 win [−55.0, −25.0]** and
+  **−20.0 match score [−27.5, −12.5]**, with the cap games going 8/60 → 32/60. So the personas' "no
+  measurable effect" reading for `extendSetup` (seed 1337, 4-0-11 either way on this seat) was the
+  seat being **saturated**: with the block mispriced, the exploiter column was already a wall of
+  stalemates and the setup ply's benefit had nowhere to show up. Price the block correctly and the
+  setup ply's value appears at once. That interaction is why the two rows had to be measured with the
+  other leaf already at its shipped value.
+
+**Cross-seed variance worth naming.** The exploiter seat is bimodal: with the block priced it sits at
+**17-27 %** across two seeds (seed 1337's baseline, seed 20261015's block-on arm), and with it
+unpriced at **78-87 %** (seed 1337's block-off arm, seed 20261015's baseline). So most of the spread
+between these runs is the LEAF, not the seed, and the single-seed caveat above is discharged for this
+knob: the direction is the same on both seeds and both instruments' descriptions of the mechanism
+(the shield is what produces the standoff) agree. What is still one seed each: the exact magnitude
+(−70 vs −15 on this seat), and every number in §K6's four-seat table.

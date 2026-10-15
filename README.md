@@ -316,7 +316,7 @@ tools/run_ablation.js      the config-flag ablation runner: one arena batch per 
                            a shared seed, a table of win/loss/tie deltas against the baseline, and
                            a paired bootstrap that says when a delta is only noise
 tests/arena_check.js       the arena's own suite (157 checks; skips without @pkmn/sim)
-tests/ablation_check.js    the ablation runner's suite (292 checks; the live batch skips without
+tests/ablation_check.js    the ablation runner's suite (294 checks; the live batch skips without
                            @pkmn/sim)
 tests/tactical_puzzles.js  the harvested-vaccine registry and runner; ships with zero puzzles
 ARCHITECTURE.md            frozen interface contract every module binds to
@@ -359,7 +359,7 @@ node tests/tuning_check.js    # 194 checks: the tuning tiers — the Elo band, t
 node tests/preview_check.js   #  31 checks: the Turn-0 lead advisory (parser contract, 6x6 scoring, HUD card)
 node tests/mlp_check.js       #  48 checks: the residual head's gate, fail-safe and clamp (it ships off)
 node tests/dom_check.js       #  99 checks: the HUD's DOM lifecycle, driven through a stub parser
-node tests/ablation_check.js  # 292 checks: the ablation runner — --set and its refusals, each flag in a real
+node tests/ablation_check.js  # 294 checks: the ablation runner — --set and its refusals, each flag in a real
                               #   engine, the feature table, the aggregation/bootstrap maths, one live batch
 node tests/tactical_puzzles.js #   0 puzzles: the vaccine registry, green until a --harvest run writes a defect
 node tests/human_match_check.js # 140 checks: the human-move-match benchmark — what a replay DOES and does NOT say,
@@ -696,10 +696,21 @@ number by hand.
 * Their **setup** reply is extended exactly one exchange: they keep the stages their move grants,
   their best attack lands again from that boosted state, and our row's own move is repeated. One
   ply, not a tree.
-* Their **Protect** reply blocks our move for the turn.
-* `laplace.quiescence.enabled` (default `true`) is the master switch; `extendSetup` and
-  `blockProtect` are each switchable on their own. Any of the three set to `false` restores the raw
-  1-ply payoff **bit-for-bit**, the same contract `nash.enabled` and `volatility.enabled` keep.
+* Their **Protect** reply can block our move for the turn — and **this half ships OFF**, on its own
+  row's reading at 60 paired battles (`ATTEMPTS.md` §K6).
+  Blocking the hit is the rule; pricing the block inside a one-turn cell makes the engine pivot and
+  grind instead of committing, which against the Protect-heavy `exploiter` persona is worth about
+  fifteen win points (its seat goes **4-0-11 → 13-0-2** when the block is off, Δwin **+15.0
+  [+6.7, +23.3]**, Δscore **+7.5 [+3.3, +11.7]**, cap games **11/60 → 2/60**). The mirror cannot price
+  it at all (`identical`), so the ablation row turns it back **ON**. A second seed with the seat to
+  itself is worse still: block **ON** drops that seat to **16.7 % (10-0-50, 50/60 capped)** against the
+  shipped **86.7 % (52-0-8)**, Δwin **−70.0 [−83.3, −56.7]** — and the same run confirms the `extendSetup`
+  half stays ON (removing it costs **−40.0 win [−55.0, −25.0]**). The block itself is still fully covered
+  by `tests/quiescence_check.js` whenever it is on.
+* `laplace.quiescence.enabled` (default `true`) is the master switch, and `extendSetup` (default
+  `true`) and `blockProtect` (default **`false`**, see above) are each switchable on their own. Any
+  of the three set to `false` restores the raw 1-ply payoff **bit-for-bit**, the same contract
+  `nash.enabled` and `volatility.enabled` keep.
 * **Guards, because a one-turn model has no business implying certainty.** If our move already
   finished them this turn, the extension does not apply at all: a fainted body keeps no boost and
   attacks no more, which is exactly the "KO the setup user" line the feature exists to reward. A

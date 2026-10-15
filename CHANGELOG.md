@@ -113,12 +113,60 @@ into `all`): `quiescence` off **+25.0 [+5.0, +45.0]**, `quiescence-extendsetup` 
 [+10.0, +50.0]**, `quiescence-blockprotect` off **+25.0 [+10.0, +45.0]** with the exploiter's five
 100-turn stalemates turned into five wins, `followUpWeight` 0.5 flat, `turn2speed` `identical`.
 
-**Decisions.** `sampler.stratifyActive` shipped back to the i.i.d. draw (§K2) — the only default this
+**Decisions.** `sampler.stratifyActive` shipped back to the i.i.d. draw (§K2) — the first of the two defaults this
 pass flipped, and it flipped because the match-point interval excludes zero against the tier while the
 pre-pass build is the i.i.d. draw. `beam2Ply`, `nash.qre` and the endgame tier all stay OFF: none
 cleared the gate. The `quiescence` tier stays ON with its contradiction **narrowed rather than
 resolved** (§K3): both instruments now lean the same way at n = 20, which is not the power to move a
 shipped default, and §K3 names the 60-battle run that can.
+
+
+### Changed — the protect block ships OFF, because its own row priced it against a shield-spammer
+
+`laplace.quiescence.blockProtect` now ships **`false`**, and this is a measurement rather than a
+preference — the second default this branch has flipped (the first is `sampler.stratifyActive`, above).
+The leaf encodes a real game rule: a shield that is up blocks our move. What the sweep priced is the
+*consequence of pricing it inside a one-turn cell*, and it is worth about fifteen win points.
+
+The run `ATTEMPTS.md` §K3 named: `--agent all --battles 60 --seed 1337` (four seats, so 15 battles
+each), 6 variants, 360 battles, 0 errors. Switching the block off won **78.3 % (47-11-2) against the
+baseline's 63.3 % (38-11-11)** — Δwin **+15.0 [+6.7, +23.3]**, Δscore **+7.5 [+3.3, +11.7]**, both
+intervals excluding zero on the same arm — and cut the 100-turn cap games from **11/60 to 2/60**. The
+whole movement is one opponent: the `exploiter` persona (a Protect-heavy staller) goes **4-0-11 →
+13-0-2**, while the anchor seat is 15-0-0 and chaos 13-2-0 either way, and the **mirror is
+`identical`** — their shield never lands on a cell where the block flips the choice, so a flat row
+there is a statement about the opponent, not about the knob.
+
+**Why not the other two available moves.** The whole tier's arm also excludes zero (+13.3 [+1.7,
++25.0] win, +11.7 [+4.2, +20.0] score), but the sub-arms localize the mass: `blockProtect` is the
+exploiter's half and `extendSetup` is the mirror's half (6-9 → 9-3 there, **0.0 on the three
+personas**). `extendSetup` therefore stays ON: its own arm's floor is −5.0 on the win indicator and
+**exactly 0.0** on match score, the two instruments still disagree about it (§H vs §J), and §C1's rule
+is that a shipped default does not move on a contested reading. The tier's master switch stays ON too,
+because that half is the thing the tier was built for.
+
+**What it costs, stated rather than hidden.** With the block off, the matrix reads their Protect as the
+no-op the legacy 1-ply cell read — i.e. it credits us a hit a live shield would eat. That is not a
+claim the block is wrong; `tests/quiescence_check.js` still proves the block works whenever it is on,
+and that switching it off reproduces the legacy number exactly. It is a claim about its VALUE: pricing
+the shield makes the engine pivot and grind instead of committing, and against a staller that is worth
+fifteen win points. The ablation row `quiescence-blockprotect` now turns the block back **ON**
+(`direction: 'on'`, the second row in the table whose own measurement moved its default), so the cost
+of reverting is one sweep away, and `tests/ablation_check.js` pins that row's numbers in its caveat so
+the reason travels with the table.
+
+**Confirmed on a second seed, with the seat to itself.** `--features quiescence-blockprotect,quiescence
+--agent exploiter --battles 60 --seed 20261015` (180 battles, 0 errors) asks the same question with all
+sixty battles against the shield-spammer and with the baseline at the NEW shipped value, so each row
+removes exactly one half. Turning the block back **ON** takes that seat from **86.7 % (52-0-8) to
+16.7 % (10-0-50)** — Δwin **−70.0 [−83.3, −56.7]**, Δscore **−35.0 [−41.7, −28.3]**, **50 of 60 battles
+capped**. Same sign, five times the magnitude. The same run settles the OTHER half in the opposite
+direction: removing the SETUP ply costs **−40.0 win [−55.0, −25.0]** and **−20.0 match score
+[−27.5, −12.5]** (cap games 8/60 → 32/60), so `extendSetup` stays ON — the personas' "no measurable
+effect" for that half at seed 1337 was the seat being saturated by the mispriced shield, and with the
+block off its value shows up immediately. **Both halves are therefore settled, in opposite
+directions**, and the exploiter seat turns out to be bimodal in a way that is mostly the LEAF rather
+than the seed: 17–27 % with the block priced, 78–87 % without it, on either seed.
 
 
 ### Fixed — a turn holds more than one decision window, and the engine answered the second with the first one's ranking
