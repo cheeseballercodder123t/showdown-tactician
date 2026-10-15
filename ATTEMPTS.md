@@ -189,7 +189,12 @@ dead idea under a new name.
    cannot adopt the change.
 3. **Run the gate** on one seed and all three personas:
    `node tools/run_ablation.js --features <id> --battles 60 --seed 1337` (the sweep's standard; `--battles 500`
-   is the number to quote, ~5 h single-threaded, ~1.5 h at `--parallel 4`).
+   is the number to quote, ~5 h single-threaded, ~1.5 h at `--parallel 4`). On a two-core box
+   `--parallel 2` is the working value and `--mirror` is the league where a variant has headroom at all;
+   if a sweep dies half-way, `--baseline <a finished arena report>` reuses the reference arm instead of
+   re-paying it, and it REFUSES any report that is not the same experiment (`--battles` / `--agent` /
+   `--seed` / `--max-turns`) or that was itself run with `--set`, so a variant arm can never be
+   mistaken for a baseline.
 4. **Quote the interval, not the point estimate.** `helps`/`hurts` means the 95 % interval excludes
    zero; anything else is *no measurable effect at this sample size*.
 5. **If the row is flat, check the flag's INPUT before reading it as a result.** `identical` is the
@@ -198,6 +203,11 @@ dead idea under a new name.
    with the numbers and the artifact. A rejected attempt that leaves no trace gets rebuilt.
 7. **If it is adopted:** re-point the row's `patch` at the value it now ships (`direction: 'off'`) so
    the row keeps measuring what turning the feature off costs, and record the adoption numbers here.
+   Then **expect pins to move, and move them deliberately**: every pin that encodes "ships OFF" or
+   "the OFF path == the shipped build" is retired by construction (§N4 lists the four that moved for
+   `nash-prior`, and what replaced each). Isolate the fixtures of OTHER tiers with an explicit option
+   rather than letting them inherit the new default, so a pin about the beam stays a pin about the
+   beam.
 
 **Two calibration facts to keep you honest:** at 60 paired battles the standard error is near **6** win
 points (so only a large effect clears its interval — 15 of 19 rows were flat in the first sweep); and
@@ -685,6 +695,13 @@ answered by this row as built: answering it needs the soft response to enter our
 which is a different code path. The row's `caveat` in `tools/run_ablation.js` now says this, and its
 `direction: 'on'` is kept, so the cost of turning it back on is still one sweep away.
 
+**CLOSED, same day, in §N — and the diagnosis above is what made it findable.** The ceiling was a code
+path, not a law: our step read the opponent's hard argmax *index* while their published strategy
+accumulated the soft *mixture*. §N changes the one line to read the mixture (exactly zero effect when
+no mixture exists), so a temperature now reaches our own frequency counts. What §L2 got right and §N
+does not retract: the ramp, the no-rating resolution, and the fact that a **strictly dominant row** is
+immune to every opponent model — which is why this row still reads flat on the mirror instrument.
+
 ### L3. The mirror n60 reading for `beam-2ply`: it did not REPLICATE across seeds, so the default stays OFF
 
 Two runs, the same row on the same instrument, two seeds (120 battles each, 0 errors):
@@ -825,6 +842,10 @@ threaded into our step. (2) `priorWeight: 0.25` stays a guess: the quantity that
 corpus of the opponent's own action frequencies) is exactly what this repository does not have offline,
 and a flat row cannot validate a magnitude.
 
+**Superseded the same day by §N, and the prediction in the last sentence of M3 was right.** §N threads
+the mix into our own best-response step — the "same code path" named above — and the row is re-measured
+there. `priorWeight` remains a guess.
+
 ### M4. The decision, and the six dims that DID move
 
 **No adoption.** All three rows keep `enabled: false`, and no row's `patch` is re-pointed: none of them
@@ -849,3 +870,150 @@ fitting a column that cannot move.
   That is deliberate: §L3's lesson is that a single-seed reading is a candidate for a second seed, not a
   result — and no row here produced a reading worth one (two `identical`, one `stall`). A future change
   that makes either of them rank-affecting should be measured on two seeds before it is quoted.
+
+---
+
+## N. The one-way solve, and the first adopted opponent model (2026-10-15)
+
+Two findings from §M were structural rather than statistical, and this pass closes both: §L2/§M3's
+*"a softer opponent cannot reach our own frequencies"* was a code path, not a law, and §M1's *"the
+endgame row is a structural null instrument"* was a missing line in the ranking path. Fixing them
+un-silenced the rows, and one of them then WON — on two seeds — so this is also the first adoption in
+the project that rests on a replicated mirror reading.
+
+### N1. The ceiling was a code path: our own step now reads the MIXTURE
+
+`solveNashFictitiousPlay` accumulated the opponent's soft/anchored column mix into their PUBLISHED
+strategy (`oppCount[j] += oppMix[j]`) while the action **each side** best-responded to was still the
+hard argmax index (`oppAction = bestJ`), and our own cumulative payoff read that index
+(`myCum[i] += payoffMatrix[i][oppAction]`). Every opponent-model tier was therefore **one-way**: a
+temperature, a prior or a masked matrix could re-price `rowValues` and could not touch our own
+frequency counts on ANY matrix. That is the ceiling §L2 pinned, and it is why `nash-prior` came back
+`identical` over 60 paired battles in §M3.
+
+**The fix is the accumulation rule, not a new heuristic.** Our expected payoff against a mixture the
+opponent is playing *is that mixture's expectation*, so with a mixture present our step accumulates
+`sum_j oppMix[j] * payoff[i][j]`; with no mixture (no temperature, no prior — i.e. every pre-adoption
+build) the historical line runs character for character, which is what keeps the shipped path
+bit-identical. The identity is pinned in `tests/tuning_check.js` §7b on three fixed matrices: `tau 0`,
+no prior and blend 0 each reproduce the bare solve exactly, while each of the three tilted arguments
+now moves our strategy on all three.
+
+**`laplace.nash.exploitBlend` (ships `0.0`) is the second half.** Our published frequencies were the
+*unexploitable* mix, which by construction leaves value on the table against an opponent the same
+solve has just priced as NOT playing it: with `b` = `exploitBlend`,
+`confidence = (1 - b) * equilibriumFrequency + b * softmax(rowValues)`. At `0` the blend is skipped
+entirely — no copy, no rescale — so `nashFrequency` and `confidence` stay the same number and the
+ranking is the equilibrium one, bit for bit; at `1` it is the softmax over the solve's own row values
+at `laplace.temperature`; in between it is the exact convex combination. §10 pins the identity, the
+softmax, the combination and the distribution property, and `nash-exploitblend` is the row that
+prices it. **It is not adopted** (see N3), and its caveat says why a flat row here is expected.
+
+### N2. The endgame tier can now rank a proof: `laplace.endgame.promoteMate` (ON)
+
+§M1's finding was that `_tiers` wrote the endgame solver's report into `lastReadout.endgame` and
+**nothing in the ranking path read it**, so enabling the solver could not change a single decision at
++31 % wall clock (and +55 % once `solveAcrossWorlds` priced every world). The tier was a measurement
+whose only measured property was its cost.
+
+`laplace.endgame.promoteMate` makes a PROOF rank: when the report says `solved && isMate` (the search
+refuses mates through a Speed chance node, and with `multiWorld` on, `solveAcrossWorlds` requires
+every surviving sampled world to prove the same root), the root action is spliced to the top of
+`ranked` with confidence 100 while every other line drops to 0, stamped `mateProven` / `mateIn` /
+`mateReason` so the override is visible rather than silent. It returns null — the promotion is
+SKIPPED, never approximated — when the report is not a mate, when the root is not one of our
+non-vetoed rows, or when the leaf is off. Like the five hardening corrections it ships ON, and like
+them it is inert in the shipped build because the tier it belongs to still ships `enabled: false`.
+
+`tests/endgame_check.js` §7 pins the promotion on constructed proofs (and a non-mate report, a vetoed
+root, and the leaf off). The new row **`endgame-promote`** is the control the pair needs: it runs the
+SAME tier with the promotion switched off, so `Δ(endgame-3v3) - Δ(endgame-promote)` is what the search
+itself is worth rather than what the tier costs.
+
+### N3. The sweep: five rows, one winner, and one row that stayed `identical`
+
+`node tools/run_ablation.js --features surprise-mask,endgame-promote,nash-prior,nash-exploitblend
+--mirror --battles 60 --seed 1337 --parallel 2 --keep-tmp --baseline <reused report>` — mirror, 60
+paired battles per row, **0 errors**, 3,187.7 s wall on a 2-core box. `nash-qre` and `endgame-3v3`
+were measured in the same sweep's first half against the same baseline (kept reports), so all six rows
+sit on ONE reference arm: **25-34-1 = 41.7 %** win, 42.5 % match score, 62.3 turns, 2/60 capped.
+
+| row (the leaf the variant patches) | variant win % | Δwin | 95 % CI | Δscore | 95 % CI (score) | Δturns | verdict |
+|---|---|---|---|---|---|---|---|
+| `nash-prior` (on) | **63.3 %** (38-17-5) | **+21.7** | **[+5.0, +36.7]** | **+25.0** | **[+8.3, +40.0]** | +0.8 | **feature HELPS → ADOPTED** |
+| `surprise-mask` (on) | 38.3 % (23-37-0) | −3.3 | [−15.0, +8.3] | −4.2 | [−15.0, +6.7] | +0.9 | no measurable effect |
+| `nash-exploitblend` (on) | 41.7 % (25-34-1) | +0.0 | [−6.7, +6.7] | +0.0 | [−6.7, +6.7] | **−1.1** | no measurable effect (moved games, not outcomes) |
+| `endgame-3v3` (on) | 41.7 % (25-34-1) | +0.0 | [+0.0, +0.0] | +0.0 | [+0.0, +0.0] | **−0.03** | no measurable effect; NOT `identical` any more |
+| `endgame-promote` (off) | 41.7 % (25-34-1) | +0.0 | `identical` | +0.0 | `identical` | +0.0 | `identical` — expected, and it is the control |
+| `nash-qre` (on) | 41.7 % (25-34-1) | +0.0 | `identical` | +0.0 | `identical` | +0.0 | `identical` — the mirror declares no rating (see below) |
+
+**Three readings worth more than their deltas.**
+
+1. **The endgame pair finally separates search from promotion.** `endgame-promote` reproduced the
+   baseline in EVERY battle (same winner and same turn count): with the promotion off, the tier —
+   running, at the same bounds, with `solveAcrossWorlds` pricing every world — changed no decision at
+   all. `endgame-3v3`, the same tier with the promotion ON, moved one battle by one turn. That is a
+   null instrument becoming a live one, measured rather than asserted, and it is the honest size of
+   the effect at this sample: a proven mate is rare in a 60-battle mirror, so the row is now
+   *priceable* without being *priced* — the win-rate value of ranking a proof needs a corpus that
+   reaches endgames.
+2. **`nash-qre` is still `identical`, for the documented reason and not the old one.** The mirror
+   league declares no rating for the persona seat and `_qreTau` resolves an unknown opponent to the
+   hard response (an unknown opponent is not evidence of a noisy one), so the tier resolves to
+   `tau = 0` and the whole argument is absent. §7b pins the tier engaged on a rated board (1200 →
+   tau 22.9) where the temperature now DOES move our frequencies, so the row's flatness is a property
+   of this instrument. It is not resolvable here: the personas arena is the only other instrument and
+   its baseline sits at 98.3 % with no headroom (§H).
+3. **`surprise-mask` did not reproduce §M2's `stall`, and that is the fix showing.** The old reading
+   (four seats, 73.3 % against 78.3 %, three wins and three losses converted into 100-turn standoffs)
+   was taken with the loop still one-way; the mask now reaches a ranking, and on the mirror it is
+   −3.3 with **zero** cap ties against the baseline's one. Still not adopted (there is nothing to
+   adopt), and the assumption to keep in view is its own: the mirror's lead sets are fully revealed
+   from turn 1, which is the one board where the tier is inert by construction.
+
+### N4. The adoption: `laplace.nash.priorAnchored.enabled` is now `true`, on TWO seeds
+
+| seed | baseline | `nash-prior` (on) | Δwin | 95 % CI | Δscore | 95 % CI (score) | Δturns | cap ties |
+|---|---|---|---|---|---|---|---|---|
+| 1337 | 41.7 % (25-34-1) | **63.3 %** (38-17-5) | **+21.7** | [+5.0, +36.7] | +25.0 | [+8.3, +40.0] | +0.8 | 2/60 → 5/60 |
+| 20261016 | 43.3 % (26-28-6) | **68.3 %** (41-15-4) | **+25.0** | [+8.3, +41.7] | +23.3 | [+8.3, +38.3] | **−9.6** | 7/60 → 5/60 |
+
+Each seed's point estimate sits inside the other's interval, both intervals exclude zero on BOTH
+scales, neither seed flags a stall, and the second seed's games are 9.6 turns SHORTER with fewer cap
+ties — a behavioural reading agreeing with the win-rate one. §L3 established that a single-seed mirror
+row is a candidate for a second seed and not a result; this is the first row in the table to clear
+that bar, and it is why the default flipped. Per §H.7 the row was re-pointed (`direction: 'off'`,
+patching the leaf DOWN), so it now measures the price of switching the tier back off.
+
+**What moved, and why — the pins the adoption retired.** Four of the suite's pins encoded "ships OFF"
+or "off == the shipped build", so each was updated in the direction the decision requires, and none of
+them was weakened:
+
+* `tests/tuning_check.js` §9's flag pin now asserts `true`, with the adoption named.
+* §9b's `enabled: false is bit-identical to the shipped build` is RETIRED AS SUCH — the shipped build
+  IS the anchored solve now, so "off" cannot equal "the shipped default" any more. It is replaced by
+  the two facts that still matter: the default publishes the anchored mix at the measured weight, and
+  the OFF engine is a genuinely different policy. The solver-level identity (no argument at all = the
+  historical loop) is pinned separately in §7b and is untouched.
+* §10's lure fixture reads the shipped config, so its sighted split moved 47.6 % → 46.4 %; the claim
+  (the mask carries the lure to the top of the ranking, at 99.9 %) is unchanged.
+* §5's beam fixtures and §7's temperature fixtures now pin `priorAnchored` OFF, because they measure a
+  DIFFERENT tier: the beam's own illustration (Encore above Close Combat) no longer holds on the
+  anchored base, and §5d now pins that interaction explicitly instead of quietly attributing the
+  anchored ordering to the beam.
+
+### N5. What this pass did NOT establish
+
+* **Nothing about the ladder.** The `nash-prior` win is against a **frozen copy of this engine**. It
+  is a replicated, two-scale, two-seed *self-play* result; whether exploiting a softer opponent model
+  transfers to human opposition is the question E5 asked and this instrument cannot answer. The
+  personas arena is the only available check and it has no headroom left (§H).
+* **Nothing about `priorWeight`.** 0.25 is the midpoint of `[0, 1]`, adopted because it is the value
+  the two seeds measured. The quantity that would set it — a usage corpus of the opponent's own action
+  frequencies — is exactly what this repository does not have offline.
+* **Nothing about the endgame tier's win-rate value.** See N3.1: the pair proves the promotion is live
+  and that the search without it is inert; it does not price a mate.
+* **Nothing about `surprise-mask` on the board it was built for.** The mirror's lead sets are fully
+  revealed from turn 1, so a flat row here is the documented construction and not a refutation.
+* **Nothing on a second instrument for anything but `nash-prior`.** Every other row here is one seed,
+  n = 60, SE ≈ 6 win points — the §H standard, and still a 60-game deal.

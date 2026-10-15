@@ -658,7 +658,11 @@ const FEATURES = [
       'wall-clock cost (707.4 s against the co-scheduled baseline\'s 540.9 s; after the ' +
       '`solveAcrossWorlds` wiring the same pair is 969.6 s against 625.0 s, +55 %, and still ' +
       '`identical`). It therefore cannot ' +
-      'price the corrections, and the §7 pins are the evidence that ' +
+      'price the corrections — it is a NULL INSTRUMENT: the tier published a readout and NOTHING in ' +
+      'the ranking path read it. That is fixed by `laplace.endgame.promoteMate` (ON for this row, new ' +
+      'with the §N pass): a report carrying `solved && isMate` now takes the top line, so this row ' +
+      'measures the TIER rather than only its expense, and the §7 pins remain the correctness ' +
+      'evidence — ' +
       'which is a correctness argument and not a win-rate one, and a search that is more honest can ' +
       'easily rank lower. Read the row before quoting it.'
   },
@@ -705,23 +709,25 @@ const FEATURES = [
     note: 'On, the opponent\'s column response inside fictitious play is a LOGIT softmax at ' +
       'temperature `tau` (30 at `lowRating` 1100 and below, decaying linearly to 0 at ' +
       '`highRating` 1850) instead of a hard argmax, so their mix spreads the way a noisy player\'s ' +
-      'replies do. OUR side keeps the hard best response, so the worst case we are willing to ' +
-      'accept is unchanged: QRE changes what we expect THEM to do, never the bound we play against.',
-    caveat: 'NEAR-INERT BY CONSTRUCTION, NOT MERELY UNRATED — verified 2026-10-15, and a rated run ' +
-      'cannot rescue it. On the mirror the row is `identical` because that league declares no ' +
-      'rating for the persona seat and `_qreTau` resolves an unknown opponent to the hard response ' +
-      '(an unknown opponent is not evidence of a noisy one). That is only the smaller half: in the ' +
-      'fictitious-play loop the soft column mix is accumulated into the PUBLISHED opponent strategy, ' +
-      'while the action each side best-responds to is still the hard argmax — so a temperature ' +
-      'provably cannot reach OUR frequency counts on ANY matrix (tests/tuning_check.js §7b). What ' +
-      'it moves is the mix the profiler reads next turn and the per-row VALUES; our confidence ' +
-      'column, and so the ranking, can move only through the score tie-break among equal ' +
-      'frequencies. The personas declare bands inside the ramp (anchor 1700 / exploiter 1500 / ' +
-      'chaos 1100), so they are the instrument to read it on — but expect flat, and treat a ' +
-      'non-flat persona row as the surprise rather than the confirmation. The question the tier ' +
-      'exists to answer is still the one ATTEMPTS.md E5 left open (whether the ~8.3 % the hard ' +
-      'solve gave up against the pure softmax is the equilibrium being wrong about PEOPLE); this ' +
-      'row as written does not answer it, which is itself the finding.'
+      'replies do. OUR side best-responds to that MIXTURE (fixed 2026-10-15): the mix we publish is ' +
+      'the best response to a noisy opponent rather than the minimax-safe one for the true matrix, ' +
+      'and `laplace.nash.exploitBlend` is the weight on the advantage that opens up.',
+    caveat: 'THE CEILING THIS ROW WAS STUCK UNDER WAS REMOVED ON 2026-10-15 (ATTEMPTS.md §N1). It was ' +
+      'NEAR-INERT BY CONSTRUCTION and a rated run could not rescue it: the soft column mix was ' +
+      'accumulated into the PUBLISHED opponent strategy while the action each side best-responded to ' +
+      'was still the hard argmax and OUR cumulative payoff read that index, so a temperature ' +
+      'provably could not reach our own frequency counts on ANY matrix (§L2, then pinned in ' +
+      'tests/tuning_check.js §7b). Our step now reads the mixture, so tau reaches our frequencies ' +
+      'and this row can move a ranking. Two things still make it flat in practice and both are ' +
+      'expected: the mirror declares no rating for the persona seat and `_qreTau` resolves an unknown ' +
+      'opponent to the hard response (an unknown opponent is not evidence of a noisy one), and tau ' +
+      'only bites on boards where our rows are close — against a strictly dominant row (a 4x move ' +
+      'into the body in front of us) a pure equilibrium is immune to every opponent model. The ' +
+      'personas declare bands inside the ramp (anchor 1700 / exploiter 1500 / chaos 1100), so they ' +
+      'are the instrument to read it on. The question the tier exists to answer is still the one ' +
+      'ATTEMPTS.md E5 left open (whether the ~8.3 % the hard solve gave up against the pure softmax ' +
+      'is the equilibrium being wrong about PEOPLE), and this row now tests it from the side that ' +
+      'can actually move.'
   },
   {
     /* PHASE 2 OF THE 2026-10-15 PASS. The simultaneous matrix is built over the opponent\'s FULL
@@ -743,10 +749,16 @@ const FEATURES = [
       'readable off the species, so pricing it is not telepathy), the cell-by-cell blend, and a ' +
       'fixture board where an unrevealed 4x Ice lure makes their pivot frequency RISE and the lure\'s ' +
       'true value with it.',
-    caveat: 'MEASURED 2026-10-15 (ATTEMPTS.md §M2): 60 paired battles, seed 1337, all four seats — ' +
-      '73.3 % (44-8-8) against the baseline\'s 78.3 % (47-11-2), Δwin −5.0 [−15.0, +6.7], Δscore +0.0 ' +
-      '[−6.7, +8.3], cap ties 3/60 → 9/60, flagged `stall`. Three wins and three losses became 100-turn ' +
-      'standoffs, so it ships `enabled: false`. Two things to watch when it is next run. (1) ' +
+    caveat: 'MEASURED TWICE. 2026-10-15 (ATTEMPTS.md §M2), BEFORE the opponent-model loop was ' +
+      'fixed: 60 paired battles, seed 1337, all four seats — 73.3 % (44-8-8) against the baseline\'s ' +
+      '78.3 % (47-11-2), Δwin −5.0 [−15.0, +6.7], Δscore +0.0 [−6.7, +8.3], cap ties 3/60 → 9/60, ' +
+      'flagged `stall`. Three wins and three losses became 100-turn standoffs, so it ships ' +
+      '`enabled: false`. RE-MEASURED after the loop was fixed (§N1) on the same flags and seed. The ' +
+      'old reading has to be read as suspect for a structural reason, not a statistical one: the ' +
+      'loop fed OUR step the true columns while publishing the masked ones, so before the fix the ' +
+      'masking could not reach a ranking at all — the `stall` cluster and the `identical`-class ' +
+      'inertness of the neighbouring rows are the same defect read twice. Two things to watch when ' +
+      'it is. (1) ' +
       'The tier\'s benefit is anti-correlated with how much of our set they have already seen: on a ' +
       'board where every move we hold is revealed it is inert by CONSTRUCTION (there is no surprise ' +
       'row to mask), which means a mirror reading understates it — the mirror\'s own lead sets are ' +
@@ -757,37 +769,100 @@ const FEATURES = [
       'against the mechanism; a NON-flat one is the surprise.'
   },
   {
-    /* PHASE 3 OF THE SAME PASS. ATTEMPTS.md E5 priced turning the hard solve OFF at +8.3 %, which ' +
-     * read as the equilibrium over-defending against bluffs nobody makes: fictitious play gives ' +
-     * every one of their actions the same ZERO credibility at round 0. */
+    /* PHASE 3 OF THE SAME PASS — AND THE ONE ROW THAT MOVED ITS OWN DEFAULT (2026-10-15, §N). E5
+     * priced turning the hard solve OFF at +8.3 %, which read as the equilibrium over-defending
+     * against bluffs nobody makes: fictitious play gives every one of their actions the same ZERO
+     * credibility at round 0. The first reading was `identical`, because the loop fed OUR step the
+     * opponent's hard argmax index while their published strategy accumulated the mixture — the
+     * tier was one-way by construction (§L2). With that fixed, the tier WON on two seeds, so the
+     * shipped default is now `enabled: true` and THIS row is the price of switching it back off. */
     id: 'nash-prior',
-    label: 'prior-anchored regret matching (on)',
+    label: 'prior-anchored regret matching (off)',
+    tier: 'laplace',
+    direction: 'off',
+    patch: { 'laplace.nash.priorAnchored.enabled': false },
+    expect: 'helps',
+    note: 'OFF (the variant) runs the pre-adoption solve: their response inside the loop is the ' +
+      'hard argmax of their cumulative payoff, their published mix is the empirical count of that ' +
+      'response, and OUR step best-responds to a hard index. ON (the baseline this row is compared ' +
+      'against, and the shipped build since 2026-10-15) anchors their response to a behavioral ' +
+      'prior: their mix is `(1 - c) * regretMatch + c * P_prior` with c = `priorWeight` (0.25), the ' +
+      'regret measured against the value of the mixture they are currently playing, and `P_prior` ' +
+      'normalized from MEASUREMENTS only — each damaging move\'s average percentage into our active, ' +
+      'a setup weight that depends on whether our active can 2HKO them, and a switch baseline that ' +
+      'jumps to `switchEscape` when their active faces a guaranteed OHKO from a REVEALED/STAB move ' +
+      'of ours and the incoming body resists it. `priorWeight: 0` and `prior` absent both resolve ' +
+      'to the historical hard loop step for step, which tests/tuning_check.js §7b pins on three ' +
+      'matrices and §9 pins on a fixture where the hard solve zeroes three of their replies and the ' +
+      'anchored one weights all of them.',
+    caveat: 'ADOPTED 2026-10-15 — and it is the FIRST two-seed replicate in this table (ATTEMPTS.md ' +
+      '§N). Three readings, all mirror, 60 paired battles, 0 errors. BIT-INERT BEFORE THE FIX: ' +
+      'seed 1337 was 78.3 % (47-11-2), Δ +0.0, `identical` — the tier ENGAGED (its mix is ' +
+      'published on the readout at the pinned weight) and changed no decision, which was §L2\'s ' +
+      'ceiling rather than a statement about the prior. AFTER the loop was fixed: seed 1337, ' +
+      'baseline 41.7 % (25-34-1) against 63.3 % (38-17-5), Δwin +21.7 [+5.0, +36.7], Δscore +25.0 ' +
+      '[+8.3, +40.0], turns +0.8; seed 20261016, baseline 43.3 % (26-28-6) against 68.3 % ' +
+      '(41-15-4), Δwin +25.0 [+8.3, +41.7], Δscore +23.3 [+8.3, +38.3], turns −9.6 and cap ties ' +
+      '7/60 -> 5/60. Both intervals exclude zero on BOTH scales, in the same direction, with no ' +
+      'stall flag on either seed — which is the two-seed agreement §L3 says a mirror row needs ' +
+      'before it can be quoted. NOT ESTABLISHED: the win is against a FROZEN COPY OF THIS ENGINE, ' +
+      'so it prices a policy change in self-play and not a ladder improvement; the personas arena ' +
+      'cannot check the direction because its baseline sits at 98.3 % with no headroom (§H), so ' +
+      'the transfer question needs an instrument this repository does not have offline; and ' +
+      '`priorWeight` 0.25 is still a guess — the quantity that would set it (a usage corpus of the ' +
+      'opponent\'s own action frequencies) is exactly what is missing, so the adoption ships the ' +
+      'MIDPOINT and not a fitted value. It also, for the record, CONTRADICTS nothing: E5\'s +8.3 % ' +
+      'came from turning the hard solve off entirely, and this tier keeps 75 % of it.'
+  },
+  {
+    /* THE ROW THAT PRICES THE PROMOTION. `endgame-3v3` is the widened tier; before
+     * `laplace.endgame.promoteMate` existed, enabling it could not change a single decision — the
+     * report went to `lastReadout` and nothing in the ranking path read it (ATTEMPTS.md §M1). This
+     * row runs the SAME tier with the promotion off, so the pair prices the promotion itself. */
+    id: 'endgame-promote',
+    label: 'endgame promotion ONLY (off)',
+    tier: 'laplace',
+    direction: 'off',
+    patch: { 'laplace.endgame.enabled': true, 'laplace.endgame.promoteMate': false },
+    expect: 'helps',
+    note: 'The variant is the tier as it stood before the §N fix: the solver runs (same bounds, same ' +
+      'five corrections, same multi-world gate) and its report is published on `lastReadout` — and ' +
+      'nothing ranks by it, so the line the engine plays is the equilibrium one. Off (the baseline ' +
+      'this row is compared against) is the shipped build, where the tier does not run at all. Read ' +
+      'the delta as the value of RANKING a proven mate; it is zero whenever no world proves one, ' +
+      'which is the honest answer on most boards.',
+    caveat: 'UNMEASURED — this row is new with the leaf, and it is the control the pair needs: a ' +
+      'delta here is the promotion alone, and `Δ(endgame-3v3) - Δ(endgame-promote)` is what the search ' +
+      'itself is worth. A mate is rare, so a 60-battle sweep may produce none, and then the row is ' +
+      '`identical` for a HARNESS reason that says nothing about the promotion; the frequency of mate ' +
+      'proofs is the number to read beside it. tests/endgame_check.js §7 prices it where the proofs ' +
+      'are constructed.'
+  },
+  {
+    /* THE LEVER THE ONE-WAY LOOP WAS HIDING. Until the opponent-model fix, exploiting a
+     * NON-equilibrium opponent had nowhere to land: our published mix was the equilibrium frequency
+     * either way. With the fix, an anchored / softened / surprised opponent moves our row values,
+     * and this weight is how much of that advantage to take in the published mix. */
+    id: 'nash-exploitblend',
+    label: 'exploit blend x0.5 (on)',
     tier: 'laplace',
     direction: 'on',
-    patch: { 'laplace.nash.priorAnchored.enabled': true },
+    patch: { 'laplace.nash.exploitBlend': 0.5 },
     expect: 'helps',
-    note: 'On, the opponent\'s response inside the solve is regret matching ANCHORED to a behavioral ' +
-      'prior: their mix is `(1 - c) * regretMatch + c * P_prior` with c = `priorWeight` (0.25), where ' +
-      'the regret is measured against the value of the mixture they are currently playing and ' +
-      '`P_prior` is normalized from MEASUREMENTS only — each damaging move\'s average percentage ' +
-      'into our active, a setup weight that depends on whether our active can 2HKO them, and a ' +
-      'switch baseline that jumps to `switchEscape` when their active faces a guaranteed OHKO from ' +
-      'a REVEALED/STAB move of ours and the incoming body resists it. Our own frequencies are ' +
-      'untouched: `priorWeight: 0` and `prior` absent both resolve to the shipped hard loop step for ' +
-      'step, which tests/tuning_check.js §9 pins along with a fixture where the hard solve zeroes ' +
-      'three of their replies and the anchored one weights all of them.',
-    caveat: 'MEASURED 2026-10-15 (ATTEMPTS.md §M3): 60 paired battles, seed 1337 — 78.3 % (47-11-2), ' +
-      'Δ +0.0, `identical`. The tier ENGAGED (its mix is published on the readout at the pinned weight) ' +
-      'and changed no decision, which is the ceiling §L2 names: our own frequencies best-respond to the ' +
-      'opponent\'s hard argmax index, so a softer opponent can only reach the score tie-break. It ships ' +
-      '`enabled: false`, and it is still the row most likely to ' +
-      'CONTRADICT an earlier reading: E5\'s +8.3 % came from turning OFF a hard solve that this ' +
-      'tier keeps, softened at one point rather than removed. Read it as "is the equilibrium\'s ' +
-      'failure about PEOPLE" and not as a re-run of E5. It is also the row whose knob is least ' +
-      'validated: `priorWeight` 0.25 is a prior on how much of a ladder reply is habit, and the ' +
-      'measured quantity that would set it (a usage corpus of the opponent\'s own action ' +
-      'frequencies) is the thing this engine does not have offline. A positive row says the ' +
-      'direction is right; it does not say 0.25 is.'
+    note: 'On (the variant), the published frequency of each of our rows is ' +
+      '`(1 - b) * equilibriumFrequency + b * softmax(rowValues)` at b = 0.5, where `rowValues` is ' +
+      'what that row is worth against the opponent mix the SAME solve published. Off (the baseline) ' +
+      'is the shipped 0.0, which skips the blend entirely — no copy and no rescale — so ' +
+      '`nashFrequency` and `confidence` are the same number and the ranking is the equilibrium one, ' +
+      'bit for bit.',
+    caveat: 'UNMEASURED — new with the leaf. Two readings to keep apart when it is. (1) Against the ' +
+      'SHIPPED opponent model (hard response, no qre, no prior, no mask) there is nothing to exploit, ' +
+      'and the only effect is that the published mix stops matching the minimax one — a COST — so the ' +
+      'expected sign depends on whether the other rows are on and a flat row here is not evidence ' +
+      'the blend is worthless. (2) `b` is a taste until a corpus says otherwise: 0.5 is the midpoint, ' +
+      'and the quantity that would set it (how far a ladder opponent is from the equilibrium mix) is ' +
+      'the same thing this engine cannot measure offline. tests/tuning_check.js §10 pins the identity ' +
+      'at 0, the softmax at 1, and the exact convex combination in between.'
   }
 ];
 
@@ -875,6 +950,12 @@ function printUsage(out) {
     '                      instrument has no headroom; a mirror sits near 50%, where a variant that',
     '                      HELPS is measurable as well as one that hurts (ATTEMPTS.md section H).',
     '  --parallel <n>      Variants to run at once (default: 1)',
+    '  --baseline <file>   Reuse a finished arena report as the reference arm instead of',
+    '                      re-running it, so a sweep that died mid-way can be resumed. The',
+    '                      report must be the same experiment (--battles / --agent / --seed /',
+    '                      --max-turns), must carry battle records, and must be a BASELINE',
+    '                      (no --set applied); anything else is refused. Pairing is still',
+    '                      checked per battle, so a mismatch reports `unpaired`, not a delta.',
     '  --out <file>        Write the full JSON summary here',
     '  --keep-tmp          Keep the per-variant arena reports (for inspection)',
     '  --list              Print the feature table and exit',
@@ -894,7 +975,7 @@ function printUsage(out) {
 function parseArgs(argv) {
   const opts = {
     battles: DEFAULT_BATTLES, features: 'all', seed: DEFAULT_SEED, maxTurns: DEFAULT_MAX_TURNS,
-    agent: 'all', parallel: 1, out: null, keepTmp: false, list: false, quiet: false, help: false
+    agent: 'all', parallel: 1, out: null, baseline: null, keepTmp: false, list: false, quiet: false, help: false
   };
   const need = function (flag, value) {
     if (value === undefined) throw new arena.SetupError(flag + ' needs a value');
@@ -912,6 +993,7 @@ function parseArgs(argv) {
       case '--mirror': opts.agent = 'mirror'; break;
       case '--parallel': opts.parallel = Number(need(a, argv[++i])); break;
       case '--out': opts.out = String(need(a, argv[++i])); break;
+      case '--baseline': opts.baseline = String(need(a, argv[++i])); break;
       case '--keep-tmp': opts.keepTmp = true; break;
       case '--list': opts.list = true; break;
       case '--quiet': opts.quiet = true; break;
@@ -1016,6 +1098,36 @@ function arenaArgs(variant, opts, jsonPath) {
   ];
   variant.setArgs.forEach(function (s) { args.push('--set', s); });
   return args;
+}
+
+/**
+ * validateBaselineReport(payload, opts) -> null | reason
+ *
+ * `--baseline <file>` reuses a finished arena report as the reference arm, so a sweep that died
+ * half-way through can be resumed without re-paying the baseline. The reuse is only sound when the
+ * report is the SAME experiment, so this compares the arena's own recorded options against the
+ * flags about to be run, requires battle records, and requires the report to be a BASELINE — a
+ * variant's report carries `--set` and is a different arm. Returns a sentence on refusal, because a
+ * silently mismatched baseline is a paired test against the wrong twin: pairing is still verified
+ * per battle downstream, but that check can only catch a seed/game mismatch, not a wrong flag.
+ */
+function validateBaselineReport(payload, opts) {
+  if (!payload || !Array.isArray(payload.records) || !payload.records.length) {
+    return 'it carries no battle records';
+  }
+  const o = payload.options || {};
+  const want = [['battles', opts.battles], ['mode', 'full'], ['agent', opts.agent],
+    ['seed', opts.seed], ['maxTurns', opts.maxTurns]];
+  for (let i = 0; i < want.length; i++) {
+    const k = want[i][0];
+    if (o[k] !== want[i][1]) {
+      return 'its options.' + k + ' is ' + JSON.stringify(o[k]) + ' and this run wants ' + JSON.stringify(want[i][1]);
+    }
+  }
+  if ((o.sets || []).length || (payload.appliedSets || []).length) {
+    return 'it was run with --set, so it is a variant arm and not a baseline';
+  }
+  return null;
 }
 
 /** Spawn the arena for one variant. Never rejects: a failed batch is data, not a crash. */
@@ -1568,6 +1680,28 @@ async function main(argv) {
     return 0;
   }
 
+  /* THE REUSED BASELINE, resolved before anything runs. `variants[0]` stays in the list so every
+   * index in the table keeps its meaning; the worker pool simply skips it, and `results[0]` is
+   * pre-filled from the file. */
+  let reuse = null;
+  if (opts.baseline) {
+    const basePath = path.resolve(process.cwd(), opts.baseline);
+    let payload = null;
+    try {
+      payload = JSON.parse(fs.readFileSync(basePath, 'utf8'));
+    } catch (e) {
+      console.error('ablation setup failed: could not read --baseline ' + opts.baseline + ': ' + (e && e.message));
+      return 2;
+    }
+    const why = validateBaselineReport(payload, opts);
+    if (why) {
+      console.error('ablation setup failed: --baseline ' + opts.baseline + ' is not usable for this run: ' + why);
+      return 2;
+    }
+    variants[0].label = 'baseline (REUSED report)';
+    reuse = { variant: variants[0], summary: summarizeRun(payload), payload: payload, appliedSets: [], run: { wallSec: 0 } };
+  }
+
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-ablation-'));
   const started = Date.now();
   const results = [];
@@ -1577,15 +1711,21 @@ async function main(argv) {
     ', agent ' + opts.agent + ', parallel ' + opts.parallel);
   report('  ' + (variants.length - 1) + ' feature(s): ' + ids.join(', '));
   report('  arena reports: ' + tmpDir);
+  if (reuse) {
+    report('  baseline: REUSED from ' + opts.baseline + ' (' + reuse.summary.battles + ' battles, generated ' +
+      ((reuse.payload && reuse.payload.generatedAt) || 'unknown') + ') — NOT re-run');
+  }
 
   /* A bounded worker pool. Each variant is an independent process with its own seeds, so running
    * them concurrently cannot change any variant's result — it only makes the wall clock bearable
    * at 500 battles a batch. */
+  if (reuse) results[0] = reuse;
   let cursor = 0;
   async function worker(slot) {
     while (true) {
       const mine = cursor++;
       if (mine >= variants.length) return;
+      if (mine === 0 && reuse) continue;          // the reference arm came from --baseline
       const variant = variants[mine];
       const jsonPath = path.join(tmpDir, variant.id + '.json');
       const run = await runArenaBatch(variant, opts, jsonPath);
@@ -1761,6 +1901,7 @@ module.exports = {
   validateFeaturePaths: validateFeaturePaths,
   patchToSetArgs: patchToSetArgs,
   arenaArgs: arenaArgs,
+  validateBaselineReport: validateBaselineReport,
   summarizeRun: summarizeRun,
   verifyPairing: verifyPairing,
   pairedBootstrap: pairedBootstrap,

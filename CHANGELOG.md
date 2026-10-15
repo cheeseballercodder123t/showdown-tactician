@@ -11,6 +11,66 @@ reaches a verdict.
 
 ## Unreleased
 
+### Changed — the opponent model stops being one-way, and the first one is adopted on two seeds
+
+A follow-up pass (2026-10-15) on the three findings `ATTEMPTS.md` §M left open. **This one DOES move
+the shipped ranking**: `laplace.nash.priorAnchored.enabled` is now `true`.
+
+**The solve was one-way, and that was the ceiling §L2 named.** In `solveNashFictitiousPlay`, the
+opponent's soft/anchored column mix was accumulated into their PUBLISHED strategy while the action
+each side best-responded to stayed the hard argmax index, and our own cumulative payoff read that
+index. So `qre`, `priorAnchored` and `surpriseMask` could re-price `rowValues` and could not touch our
+own frequency counts on any MATRIX — which is why §M3 measured `nash-prior` as `identical` over 60
+paired battles. Our step now accumulates the MIXTURE's expectation (`sum_j oppMix[j] * payoff[i][j]`)
+whenever a mixture exists, and the historical line character for character when none does, so the
+pre-adoption path is untouched: `tests/tuning_check.js` §7b pins that `tau 0`, no prior and blend 0
+each reproduce the bare solve exactly on three matrices, and that each of the three tilted arguments
+now moves our own strategy on all three.
+
+**`laplace.nash.exploitBlend` (ships `0.0`)** is the exploitation half of the same insight: the
+published mix was the *unexploitable* one, which leaves value on the table against an opponent the
+same solve has just priced as not playing it. Confidence is now
+`(1 - b) * equilibriumFrequency + b * softmax(rowValues)`; at `0` the blend is skipped entirely (no
+copy, no rescale), at `1` it is the softmax at `laplace.temperature`, and in between it is the exact
+convex combination. `nashFrequency` still publishes the EQUILIBRIUM frequency beside it. Not adopted:
+its own mirror reading is flat (Δwin +0.0, Δturns −1.1), which is what a blend with nothing to
+exploit should cost. Pinned in `tests/tuning_check.js` §10, priced by the row `nash-exploitblend`.
+
+**`laplace.endgame.promoteMate` (ON) makes the endgame tier rankable.** §M1's finding was that the
+solver's report went to `lastReadout.endgame` and NOTHING in the ranking path read it, so enabling the
+tier could not change a decision at +31 % wall clock. A report that says `solved && isMate` — a proof,
+which the search refuses through a Speed chance node and which `solveAcrossWorlds` requires from every
+surviving world with the same root — now splices that root to the top of `ranked` at confidence 100
+with every other line at 0, stamped `mateProven`/`mateIn`/`mateReason`. It is SKIPPED, never
+approximated, when the report is not a mate or the root is not one of our non-vetoed lines. Inert in
+the shipped build (the tier itself still ships off); pinned in `tests/endgame_check.js` §7 and paired
+against the new `endgame-promote` control row, which runs the same tier with the promotion off.
+
+**The sweep (mirror, 60 paired battles per row, seed 1337, 0 errors).** Baseline 41.7 % (25-34-1).
+`nash-prior` on: **63.3 % (38-17-5), Δwin +21.7 [+5.0, +36.7], Δscore +25.0 [+8.3, +40.0]** →
+**ADOPTED**. `surprise-mask` on: 38.3 % (23-37-0), Δwin −3.3 [−15.0, +8.3], ZERO cap ties (the §M2
+`stall` cluster does not reproduce once the mask can reach a ranking). `nash-exploitblend`,
+`endgame-3v3` and the new `endgame-promote` control: Δwin +0.0, with `endgame-promote` reproducing the
+baseline in EVERY battle and `endgame-3v3` moving one battle by one turn — the null instrument
+becoming a live one, measured. `nash-qre` is still `identical` because the mirror declares no rating
+for the persona seat and an unknown opponent resolves to the hard response (pinned engaged on a rated
+board in §7b). `ATTEMPTS.md` §N carries the tables and the "not established" list.
+
+**The adoption, and its price.** Seed 1337 Δwin +21.7 [+5.0, +36.7]; seed 20261016, baseline 43.3 %
+against 68.3 % (41-15-4), Δwin +25.0 [+8.3, +41.7], Δscore +23.3 [+8.3, +38.3], turns −9.6 and cap
+ties 7/60 → 5/60. Both scales exclude zero on both seeds with no stall flag, which is the two-seed bar
+§L3 set for a mirror row. Not established: the opponent in that instrument is a frozen copy of this
+engine, so it is a SELF-PLAY result and not a measured ladder gain, and `priorWeight` 0.25 is the
+untuned midpoint rather than a fitted value. Four suite pins moved with it — §9's flag pin, §9b's
+"off == the shipped build" identity pin (now retired: the shipped build IS the anchored solve), the
+lure fixture's 47.6 % → 46.4 %, and §5/§7's fixtures now pin `priorAnchored` off so those sections keep
+measuring THEIR tier — and §5d gained an explicit pin for the interaction it used to attribute to the
+beam.
+
+**`tools/run_ablation.js --baseline <file>`** resumes a sweep that died half-way: it reuses a finished
+arena report as the reference arm, refusing any report that is not the same experiment or that was
+itself run with `--set`. Pinned in `tests/ablation_check.js` §4b.
+
 ### Added — the endgame hardening pass, two opponent-model tiers, and the dims that were not zero
 
 A five-phase pass (2026-10-15). **Nothing here moves the shipped ranking**: every new tier ships

@@ -457,9 +457,12 @@ function checkFeatureTable() {
    *     beside it (endgame-3v3) can be read as the widening;
    *   - `quiescence.followUpWeight`, the damped-follow-up candidate (0.5 against the shipped 1.0),
    *     which is a weight rather than a switch by construction — the row exists to price a
-   *     magnitude, so it cannot be expressed as on/off. */
+   *     magnitude, so it cannot be expressed as on/off;
+   *   - `nash-exploitblend`, which turns a running-but-off leaf UP to 0.5, for the same reason: the
+   *     question is how much of the advantage to take, and 0 is the shipped answer. */
   eq('the only non-boolean leaves are the documented numbers', nonBoolean.sort(), [
     'endgame:laplace.endgame.maxAlive',
+    'nash-exploitblend:laplace.nash.exploitBlend',
     'quiescence-followup-damped:laplace.quiescence.followUpWeight',
     'scouting:laplace.scouting.maxBounty',
     'wincon:laplace.wincon.maxBounty'
@@ -497,6 +500,8 @@ function checkArgs() {
     '--seed', '5', '--max-turns', '40', '--agent', 'chaos', '--out', 'r.json', '--quiet']);
   eq('a full flag set parses', [custom.battles, custom.features, custom.parallel, custom.seed,
     custom.maxTurns, custom.agent, custom.out, custom.quiet], [12, 'nash,clock', 3, 5, 40, 'chaos', 'r.json', true]);
+  eq('no baseline report is reused by default (the reference arm is re-run)', opts.baseline, null);
+  eq('--baseline takes a path', ablation.parseArgs(['--baseline', 'base.json']).baseline, 'base.json');
 
   ['--battles 0', '--battles 2.5', '--battles x', '--parallel 0', '--max-turns 0', '--seed x',
     '--agent nobody', '--nope', '--battles'].forEach(function (spec) {
@@ -514,6 +519,52 @@ function checkArgs() {
     !!unknown && unknown.isSetup && /nope/.test(unknown.message), unknown && unknown.message);
   const empty = throwing(function () { ablation.resolveFeatureIds(' , '); });
   check('an empty --features is refused', !!empty && empty.isSetup, empty && empty.message);
+}
+
+/* ================================================= 4b. reusing a finished baseline report */
+
+/** The shape `tools/run_arena.js --json` writes, cut down to the fields the validator reads. */
+function mkArenaReport(over) {
+  const o = Object.assign({ battles: 60, mode: 'full', agent: 'mirror', seed: 1337, maxTurns: 100, sets: [] }, over || {});
+  return {
+    generatedBy: 'tools/run_arena.js', options: o, appliedSets: (o.sets || []).map(function (s) {
+      const parts = String(s).split('=');
+      return { path: parts[0], from: false, to: parts[1] };
+    }),
+    records: [{
+      index: 0, persona: 'mirror', seed: [1, 2, 3, 4], winner: 'p1', turnCount: 40,
+      error: null, aborted: false, timedOut: false
+    }]
+  };
+}
+
+function checkBaselineReuse() {
+  section('4b. --baseline reuses the reference arm, and refuses anything that is not this experiment');
+
+  const run60 = ablation.parseArgs(['--battles', '60', '--seed', '1337', '--mirror']);
+  eq('the matching report is accepted',
+    ablation.validateBaselineReport(mkArenaReport(), run60), null);
+  ['battles', 'mode', 'agent', 'seed', 'maxTurns'].forEach(function (k) {
+    const wrong = {};
+    wrong[k] = k === 'mode' ? 'spliced' : (k === 'agent' ? 'chaos' : (k === 'maxTurns' ? 50 : 30));
+    const why = ablation.validateBaselineReport(mkArenaReport(wrong), run60);
+    check('a different --' + k + ' is refused, by name',
+      typeof why === 'string' && why.indexOf('options.' + k) !== -1, why);
+  });
+  check('a report with no battles is refused',
+    typeof ablation.validateBaselineReport({ options: {}, records: [] }, run60) === 'string',
+    String(ablation.validateBaselineReport({ options: {}, records: [] }, run60)));
+  /* THE ONE THAT WOULD BE WORST TO MISS: a VARIANT's report reused as the baseline turns the row
+   * into variant-vs-variant, where a delta means nothing. Both the arena's own options.sets and the
+   * applied-set echo are checked, so either one alone is enough to refuse it. */
+  check('a report that was itself run with --set is refused (it is an arm, not a reference)',
+    /--set/.test(String(ablation.validateBaselineReport(mkArenaReport({ sets: ['laplace.nash.enabled=false'] }), run60))),
+    String(ablation.validateBaselineReport(mkArenaReport({ sets: ['laplace.nash.enabled=false'] }), run60)));
+  const echoOnly = mkArenaReport();
+  echoOnly.appliedSets = [{ path: 'laplace.nash.enabled', from: true, to: false }];
+  check('...including when only the applied-set echo says so',
+    /--set/.test(String(ablation.validateBaselineReport(echoOnly, run60))),
+    String(ablation.validateBaselineReport(echoOnly, run60)));
 }
 
 /* ================================================================ 5. the aggregation maths */
@@ -1036,6 +1087,19 @@ async function checkEndToEnd() {
   }
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'st-ablation-test-'));
+
+  /* The CLI refusal, end to end: a report that is itself a variant arm must not become the
+   * reference. This runs BEFORE any batch, so it costs a spawn and no battles. */
+  const notABaseline = path.join(tmpDir, 'variant-report.json');
+  fs.writeFileSync(notABaseline, JSON.stringify(mkArenaReport({
+    battles: 1, agent: 'anchor', seed: 3, sets: ['laplace.nash.enabled=false']
+  })));
+  const badBase = spawnSync(process.execPath, [path.join(ROOT, 'tools', 'run_ablation.js'),
+    '--features', 'nash', '--battles', '1', '--seed', '3', '--agent', 'anchor',
+    '--baseline', notABaseline], { cwd: ROOT, encoding: 'utf8' });
+  eq('a --baseline that is really a variant arm exits 2', badBase.status, 2);
+  check('...saying why', /--set/.test(badBase.stderr + badBase.stdout), (badBase.stderr || '').trim().slice(0, 140));
+
   const outPath = path.join(tmpDir, 'summary.json');
   const run = spawnSync(process.execPath, [path.join(ROOT, 'tools', 'run_ablation.js'),
     '--features', 'nash', '--battles', '1', '--seed', '3', '--agent', 'anchor',
@@ -1101,6 +1165,7 @@ async function checkEndToEnd() {
   checkLoadTimePatchReachesEngine();
   checkFeatureTable();
   checkArgs();
+  checkBaselineReuse();
   checkAggregation();
   checkClientFrames();
   await checkEndToEnd();

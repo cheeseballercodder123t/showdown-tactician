@@ -38,10 +38,12 @@
    * softmax at temperature `tau` over their cumulative payoffs instead of an argmax, so their mix
    * spreads the way a noisy player's replies do — and, because the responses are mixtures, the
    * empirical counts they leave behind are accumulated as mixtures too (the average response is the
-   * expected count, which keeps both strategies summing to 1). OUR side keeps the hard best
-   * response, so the mix we publish is still bounded by the same matrix: QRE here changes what we
-   * expect THEM to do, never the worst case we are willing to accept. `tau <= 0`, or no `qre` at
-   * all, runs the shipped hard-argmax loop step for step.
+   * expected count, which keeps both strategies summing to 1). OUR side then best-responds to that
+   * MIXTURE (see the accumulation below), so the frequencies we publish are the best response to a
+   * noisy opponent rather than to a perfectly rational one: against a softened opponent they are no
+   * longer the minimax-safe mix for the true matrix, which is precisely the trade the tier exists to
+   * price (ATTEMPTS.md E5, and L2/M3 for what the one-way version measured). `tau <= 0`, or no
+   * `qre` at all, runs the shipped hard-argmax loop step for step.
    *
    * `opts` carries the two OPPONENT-MODEL tiers, and both are strict additions:
    *   - `opts.perceived` (laplace.surpriseMask) is a second matrix of the same shape holding what
@@ -51,14 +53,18 @@
    *     the floor our own frequencies are computed against.
    *   - `opts.prior` + `opts.priorWeight` (laplace.nash.priorAnchored) anchor the opponent's
    *     response to a behavioral prior instead of the uniform-zero start of an unanchored solve.
-   * Neither argument present (or both inert) runs the shipped loop step for step.
+   *   - `opts.exploitBlend` + `opts.exploitTemperature` (laplace.nash.exploitBlend) mix the
+   *     published frequencies toward a softmax over the row VALUES — the exploitation term that
+   *     takes value back from an opponent that is NOT playing the equilibrium the first term
+   *     assumes. 0 is the identity and returns the equilibrium array itself.
+   * None of the arguments present (or all inert) runs the shipped loop step for step.
    *
    * -> { myStrategy, oppStrategy, rowValues } with probabilities in [0, 1].
    */
   function solveNashFictitiousPlay(payoffMatrix, iterations, qre, opts) {
     const rows = Array.isArray(payoffMatrix) ? payoffMatrix.length : 0;
     const cols = rows && Array.isArray(payoffMatrix[0]) ? payoffMatrix[0].length : 0;
-    if (!rows || !cols) return { myStrategy: [], oppStrategy: [], rowValues: [] };
+    if (!rows || !cols) return { myStrategy: [], equilibriumStrategy: [], oppStrategy: [], rowValues: [], exploitBlend: 0 };
     /* The opponent's belief, accepted only when it has the SHAPE of the true matrix. A mismatched
      * copy is a caller bug, and silently reading a ragged row would misprice the turn. */
     let perceived = (opts && Array.isArray(opts.perceived)) ? opts.perceived : null;
@@ -81,6 +87,12 @@
     const priorWeight = (opts && typeof opts.priorWeight === 'number' && isFinite(opts.priorWeight))
       ? Math.max(0, Math.min(1, opts.priorWeight)) : 0;
     const priorOn = !!(prior && priorWeight > 0);
+    /* Exploit blend (laplace.nash.exploitBlend). `exploitT` is the legacy confidence temperature
+     * (`laplace.temperature`), passed in by the caller so this stays a pure function. */
+    const exploitBlend = (opts && typeof opts.exploitBlend === 'number' && isFinite(opts.exploitBlend))
+      ? Math.max(0, Math.min(1, opts.exploitBlend)) : 0;
+    const exploitT = (opts && typeof opts.exploitTemperature === 'number' &&
+      isFinite(opts.exploitTemperature) && opts.exploitTemperature > 0) ? opts.exploitTemperature : 35;
     let myAction = 0;
     let oppAction = 0;
     let oppMix = null;            // the last SOFT / SMEARED column response; null on the hard path
@@ -92,7 +104,24 @@
       myCount[myAction]++;
       if (oppMix) for (let j = 0; j < cols; j++) oppCount[j] += oppMix[j];
       else oppCount[oppAction]++;
-      for (let i = 0; i < rows; i++) myCum[i] += payoffMatrix[i][oppAction];
+      /* OUR OWN STEP READS THE MIX, NOT THE INDEX. This line used to be the unconditional
+       * `myCum[i] += payoffMatrix[i][oppAction]` — the opponent's hard argmax INDEX — while their
+       * published strategy accumulated the soft/anchored MIXTURE. Every opponent-model tier was
+       * therefore one-way: a temperature or a prior could re-price `rowValues` and could not touch
+       * our own frequency counts, which is the ceiling ATTEMPTS.md L2 named and M3 measured
+       * (`nash-prior` came back `identical` over 60 paired battles). Against a mixture our expected
+       * payoff is that mixture's expectation, so that is what accumulates now. With `oppMix` null —
+       * no temperature, no prior, i.e. the whole shipped build — the else branch below is the
+       * historical line, character for character. */
+      if (oppMix) {
+        for (let i = 0; i < rows; i++) {
+          let ev = 0;
+          for (let j = 0; j < cols; j++) ev += oppMix[j] * payoffMatrix[i][j];
+          myCum[i] += ev;
+        }
+      } else {
+        for (let i = 0; i < rows; i++) myCum[i] += payoffMatrix[i][oppAction];
+      }
       /* THEIR payoff is accumulated from what they BELIEVE (the perceived matrix when one was
        * supplied), OUR payoff from what is true. That asymmetry is the whole mechanism: the
        * opponent solves the game it thinks it is in. */
@@ -162,7 +191,7 @@
         }
       }
     }
-    const myStrategy = myCount.map(function (c) { return c / iters; });
+    const equilibrium = myCount.map(function (c) { return c / iters; });
     const oppStrategy = oppCount.map(function (c) { return c / iters; });
     // Expected payoff of each of our actions against THEIR equilibrium mix — the number that
     // says what a line is worth when the opponent also plays unexploitably.
@@ -172,7 +201,30 @@
       for (let j = 0; j < cols; j++) ev += oppStrategy[j] * payoffMatrix[i][j];
       rowValues.push(ev);
     }
-    return { myStrategy: myStrategy, oppStrategy: oppStrategy, rowValues: rowValues };
+    /* THE EXPLOIT BLEND (laplace.nash.exploitBlend). `rowValues` is what each of our rows is worth
+     * against the mix we just published FOR THEM; when that mix is not an equilibrium one (a
+     * softened, anchored or surprised opponent) the unexploitable frequency leaves value on the
+     * table, and this weight is how much of it to take back. The second term is a softmax over
+     * `rowValues` in the same stabilised form `_softmaxConfidence` uses, so both terms are
+     * distributions and the mix still sums to 1. b = 0 returns the equilibrium array ITSELF rather
+     * than a copy scaled by 1, which is what keeps every downstream number bit-identical. */
+    let myStrategy = equilibrium;
+    if (exploitBlend > 0) {
+      let best = -Infinity;
+      for (let i = 0; i < rows; i++) if (rowValues[i] > best) best = rowValues[i];
+      const exp = new Array(rows);
+      let denom = 0;
+      for (let i = 0; i < rows; i++) { exp[i] = Math.exp((rowValues[i] - best) / exploitT); denom += exp[i]; }
+      myStrategy = new Array(rows);
+      for (let i = 0; i < rows; i++) {
+        const greedy = denom > 0 ? exp[i] / denom : (1 / rows);
+        myStrategy[i] = (1 - exploitBlend) * equilibrium[i] + exploitBlend * greedy;
+      }
+    }
+    return {
+      myStrategy: myStrategy, equilibriumStrategy: equilibrium, oppStrategy: oppStrategy,
+      rowValues: rowValues, exploitBlend: exploitBlend
+    };
   }
 
   class LaplaceEngine {
@@ -220,6 +272,12 @@
         switchBase: cfgGet('laplace.nash.priorAnchored.switchBase', 8),
         switchEscape: cfgGet('laplace.nash.priorAnchored.switchEscape', 70)
       }, (options.nash && options.nash.priorAnchored) || {});
+      /* The exploit blend. Re-read here for the same reason as `priorAnchored`: `Object.assign`
+       * above replaces the whole `nash` sub-object when a caller supplies one, so a caller who
+       * names only `{ enabled: false }` must still get the config's value. 0 (the shipped value)
+       * makes the solver skip the blend entirely. */
+      this.nash.exploitBlend = (options.nash && typeof options.nash.exploitBlend === 'number' &&
+        isFinite(options.nash.exploitBlend)) ? options.nash.exploitBlend : cfgGet('laplace.nash.exploitBlend', 0);
       // Risk-adjusted volatility (ARCHITECTURE §6.5). `enabled: false` restores the raw payoff.
       this.volatility = Object.assign({
         enabled: cfgGet('laplace.volatility.enabled', true),
@@ -2885,11 +2943,20 @@
           typeof priorCfg.priorWeight === 'number' && isFinite(priorCfg.priorWeight))
           ? Math.max(0, Math.min(1, priorCfg.priorWeight)) : 0;
         if (!(priorPlan && priorWeight > 0)) priorPlan = null;
+        /* The exploit blend's weight for this turn, clamped like every other config read. It is
+         * passed through with `laplace.temperature`, the engine's own confidence temperature, so
+         * the exploitation term is priced on the same scale as the legacy softmax path. */
+        const exploitWeight = (this.nash && typeof this.nash.exploitBlend === 'number' &&
+          isFinite(this.nash.exploitBlend)) ? Math.max(0, Math.min(1, this.nash.exploitBlend)) : 0;
+        const solveOpts = (surprise || priorPlan || exploitWeight > 0)
+          ? {
+              perceived: surprise ? surprise.perceived : null,
+              prior: priorPlan, priorWeight: priorWeight,
+              exploitBlend: exploitWeight, exploitTemperature: this.temperature
+            }
+          : null;
         nash = solveNashFictitiousPlay(sub, (this.nash && this.nash.iterations) || NASH_ITERATIONS,
-          qreTau > 0 ? { tau: qreTau } : null,
-          (surprise || priorPlan)
-            ? { perceived: surprise ? surprise.perceived : null, prior: priorPlan, priorWeight: priorWeight }
-            : null);
+          qreTau > 0 ? { tau: qreTau } : null, solveOpts);
         if (!nash || nash.myStrategy.length !== live.length) {
           nash = null;
           surprise = null;
@@ -2900,7 +2967,12 @@
       if (nash) {
         for (let k = 0; k < live.length; k++) {
           live[k].confidence = 100 * nash.myStrategy[k];
-          live[k].nashFrequency = nash.myStrategy[k];
+          /* `nashFrequency` stays the EQUILIBRIUM frequency. With `exploitBlend` above 0 the two
+           * differ by construction — confidence carries the exploitation term — and a caller
+           * asking what the *unexploitable* mix said has to be able to read it; at the shipped 0
+           * they are the same number, so the historical contract holds exactly. */
+          live[k].nashFrequency = nash.equilibriumStrategy ? nash.equilibriumStrategy[k] : nash.myStrategy[k];
+          if (nash.exploitBlend > 0) live[k].exploitFrequency = nash.myStrategy[k];
           live[k].score = nash.rowValues[k];
         }
         for (let i = 0; i < ranked.length; i++) {
@@ -2937,6 +3009,18 @@
         if ((b.score || 0) !== (a.score || 0)) return (b.score || 0) - (a.score || 0);
         return String(a.name) < String(b.name) ? -1 : 1;
       });
+      /* A PROVEN MATE OUTRANKS A FREQUENCY (laplace.endgame.promoteMate). Until this existed the
+       * endgame tier was a pure readout — `_tiers` published it and nothing in the ranking path
+       * read it — so enabling the solver could not change the line the engine plays (ATTEMPTS.md
+       * M1: `identical`, at +31 % wall clock). A report that says `solved && isMate` is a PROOF
+       * (the search refuses mates through a Speed chance node, and `solveAcrossWorlds` requires
+       * every surviving world to prove the same root), so its root takes the top line. */
+      let matePromotion = null;
+      const mateReport = tiers.endgame;
+      if (mateReport && mateReport.solved === true && mateReport.isMate === true &&
+        cfgGet('laplace.endgame.promoteMate', true)) {
+        matePromotion = this._promoteMate(ranked, mateReport);
+      }
       if (ranked.length && !ranked[0].isVetoed) {
         ranked[0].isOptimal = true;
         ranked[0].damageHint = this._damageHint(ranked[0], state);
@@ -2969,6 +3053,12 @@
               }) }
           : null,
         oppStrategy: oppMix,
+        /* Both new overrides publish themselves so a measurement can tell a turn that USED them
+         * from one that merely had them enabled. */
+        exploitBlend: (nash && nash.exploitBlend > 0)
+          ? { weight: U.round1(nash.exploitBlend * 100) / 100, temperature: this.temperature }
+          : null,
+        matePromotion: matePromotion,
         ranked: ranked,
         myActions: myActions,
         elapsedMs: U.round1(elapsed),
@@ -3007,6 +3097,51 @@
       for (let i = 0; i < ranked.length; i++) {
         if (ranked[i].isVetoed) ranked[i].confidence = 0;
       }
+    }
+
+    /**
+     * _promoteMate(ranked, report) -> { name, mateIn, worlds } | null
+     *
+     * Put the line the solver PROVED at the top of the ranking, and zero every other row.
+     *
+     * The gate is deliberately narrow, because this is the one place the engine lets a search
+     * override the equilibrium instead of re-pricing it: the report must already say `solved &&
+     * isMate` (a proof — the solver never claims a mate through a Speed chance node, and with
+     * `laplace.endgame.multiWorld` on, `solveAcrossWorlds` needs EVERY surviving sampled world to
+     * prove one with the SAME root), the root action must still be one of our ranked, NOT-vetoed
+     * actions, and `laplace.endgame.promoteMate` must be on. A forced win is not a 62 %-of-the-time
+     * suggestion: the promoted row takes confidence 100, the rest drop to 0 (so the published mix
+     * still sums to 100 and no HUD or LLM reader has to know the override happened), and the row is
+     * stamped `mateProven` / `mateIn` / `mateReason` so it is visible rather than silent.
+     *
+     * Returns null — promotion is SKIPPED, never approximated — when any condition fails, which
+     * includes the ordinary case of a root the veto layer has already removed.
+     */
+    _promoteMate(ranked, report) {
+      if (!Array.isArray(ranked) || !ranked.length) return null;
+      if (!report || !report.line || !report.line.length) return null;
+      const root = report.line[0] || {};
+      const wanted = U.toID(root.moveId || root.name || '');
+      if (!wanted) return null;
+      let at = -1;
+      for (let i = 0; i < ranked.length; i++) {
+        const row = ranked[i];
+        if (!row || row.isVetoed) continue;
+        const ids = [U.toID(row.moveId || ''), U.toID(row.name || '')];
+        if (row.targetId) ids.push(U.toID(row.targetId));
+        if (ids.indexOf(wanted) !== -1) { at = i; break; }
+      }
+      if (at < 0) return null;
+      const row = ranked.splice(at, 1)[0];
+      for (let i = 0; i < ranked.length; i++) ranked[i].confidence = 0;
+      row.confidence = 100;
+      row.isOptimal = true;
+      row.mateProven = true;
+      row.mateIn = report.mateIn;
+      row.mateReason = 'a forced win in ' + report.mateIn + ' turn' + (report.mateIn === 1 ? '' : 's') +
+        (report.worlds ? ', proved in every one of the ' + report.worlds + ' sampled worlds' : '');
+      ranked.unshift(row);
+      return { name: row.name, mateIn: report.mateIn, worlds: report.worlds || null };
     }
 
     _actionKey(action) {

@@ -1078,7 +1078,8 @@ EVERY non-refusing world proves one with the SAME root action, and otherwise the
 root offering the best worst-case score across worlds. Each leaf is independently switchable and each
 is pinned in `tests/endgame_check.js` §7.
 
-**Two opponent-model tiers** joined it in the same pass, both `enabled: false`.
+**Two opponent-model tiers** joined it in the same pass. `priorAnchored` is ON since the 2026-10-15
+adoption (`ATTEMPTS.md` §N4); `surpriseMask` still ships `false`.
 `laplace.surpriseMask` builds an OPPONENT-PERCEIVED copy of the payoff matrix in which a row for an
 UNREVEALED, NON-STAB move of ours is blended toward our best revealed-or-STAB row at
 `unrevealedWeight`, and solves only THEIR half against it: our rows are still scored on the true
@@ -1093,11 +1094,19 @@ argmax and leaves the prior doing all the work), and `P_prior` is normalized fro
 each damaging move's average percentage into our active, a setup weight gated on whether our active
 can 2HKO them, and a switch baseline that jumps to `switchEscape` when their active faces a
 guaranteed OHKO from a REVEALED/STAB move of ours and the incoming body resists it. `priorWeight: 0`
-and an absent or ragged prior both resolve to the shipped hard loop step for step. Pinned by
-`tests/tuning_check.js` §8 and §9. Both rows were measured on 2026-10-15 (`ATTEMPTS.md` §M2/§M3): the
-mask changed decisions and turned six decided games into 100-turn standoffs (Δscore exactly 0.0,
-flagged `stall`), and the anchored mix engaged and changed no decision — the ceiling §L2 names, since
-our own frequencies best-respond to the opponent's hard argmax index.
+and an absent or ragged prior both resolve to the historical hard loop step for step. Pinned by
+`tests/tuning_check.js` §8 and §9.
+**The one-way loop those tiers were stuck behind was fixed on 2026-10-15** (`ATTEMPTS.md` §N1): our
+step used to accumulate the opponent's hard argmax INDEX while their published strategy accumulated
+the mixture, so a temperature, a prior or a mask could re-price `rowValues` and could not reach our
+own frequency counts on any matrix. It now accumulates the mixture's expectation, so an opponent
+model can move a ranking, and the no-mixture path is character-for-character the old line (§7b pins
+both halves). The first sweep after the fix re-measured both tiers: `priorAnchored` WON on two seeds
+(Δwin +21.7 [+5.0, +36.7] and +25.0 [+8.3, +41.7]) and is ADOPTED, while `surprise-mask` is −3.3
+[−15.0, +8.3] with zero cap ties — the §M2 `stall` cluster does not reproduce now that the mask can
+actually reach our ranking, which is itself evidence the loop fix landed. `tests/tuning_check.js` §5d
+and §7 pin the other tiers' fixtures with `priorAnchored` explicitly off, so each section keeps
+measuring its own tier rather than inheriting the new default.
 
 **The training corpus now drives the pruner.** `tools/extract_training_data.js` builds the
 `ST.ArchetypePruner` the way `src/content.js` does and calls it on the same events (a `move` under

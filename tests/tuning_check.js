@@ -782,8 +782,15 @@ section('5. the selective 2-ply beam (OFF until a win-rate gate admits it)');
   const EQ = { kind: 'move', name: 'Earthquake', moveId: 'earthquake' };
 
   /* ------------------------------------------- 5a. the OFF identity (and the spy) */
-  const OFF = mkEngine({ beam2Ply: { enabled: false } });
-  const OFF_DEFAULT = mkEngine();                 // the shipped config, which also ships off
+  /* THE OPPONENT MODEL IS HELD FIXED THROUGHOUT SECTION 5, at its PRE-ADOPTION hard path, and that
+   * is a deliberate isolation rather than a claim about the shipped build. `laplace.nash.priorAnchored`
+   * is ON in the shipped config since the §N adoption, and the anchored solve re-orders the beam
+   * fixture's rows by itself (the interaction is pinned at the end of §5d). Section 5 is about what
+   * the BEAM does to the matrix, so the base solve is pinned to the hard path here and the beam is
+   * the only thing that varies. */
+  const HARD = { nash: { priorAnchored: { enabled: false } } };
+  const OFF = mkEngine(Object.assign({ beam2Ply: { enabled: false } }, HARD));
+  const OFF_DEFAULT = mkEngine(HARD);             // the shipped config with the beam off
   let beamCalls = 0;
   OFF._refineBeam2Ply = function () {
     beamCalls++;
@@ -796,14 +803,14 @@ section('5. the selective 2-ply beam (OFF until a win-rate gate admits it)');
     JSON.stringify(OFF.lastReadout.beam2Ply));
   eq('the explicit off and the shipped default are the same ranking, score for score',
     rankKeys(offRanked), rankKeys(defRanked));
-  const ZERO = mkEngine({ beam2Ply: { enabled: true, topMy: 3, topOpp: 3, blendWeight: 0 } });
+  const ZERO = mkEngine(Object.assign({ beam2Ply: { enabled: true, topMy: 3, topOpp: 3, blendWeight: 0 } }, HARD));
   eq('...and blendWeight 0 is OFF too (0 * a non-finite value is NaN, not a no-op)',
     rankKeys(ZERO.evaluateTurn(beamBoard(45))), rankKeys(offRanked));
   check('...because a refinement with no world bookkeeping refuses instead of guessing',
     OFF._refineBeam2Ply([[1]], [], [CC], [EQ], [{ isVetoed: false }], beamBoard(45), [{}]) === null, '');
 
   /* ------------------------------------------- 5b. what the second ply is worth */
-  const ON = mkEngine({ beam2Ply: { enabled: true, topMy: 3, topOpp: 3, blendWeight: 1 } });
+  const ON = mkEngine(Object.assign({ beam2Ply: { enabled: true, topMy: 3, topOpp: 3, blendWeight: 1 } }, HARD));
   {
     const st = beamBoard(45);
     const trace = {};
@@ -885,7 +892,7 @@ section('5. the selective 2-ply beam (OFF until a win-rate gate admits it)');
 
   /* ------------------------------------------- 5d. the beam re-ranks, and reaches the matrix */
   {
-    const onSpy = mkEngine({ beam2Ply: { enabled: true, topMy: 3, topOpp: 3, blendWeight: 1 } });
+    const onSpy = mkEngine(Object.assign({ beam2Ply: { enabled: true, topMy: 3, topOpp: 3, blendWeight: 1 } }, HARD));
     let called = 0;
     const real = ST.LaplaceEngine.prototype._refineBeam2Ply;
     onSpy._refineBeam2Ply = function () { called++; return real.apply(this, arguments); };
@@ -907,6 +914,17 @@ section('5. the selective 2-ply beam (OFF until a win-rate gate admits it)');
     check('on: pricing the revenge killer puts Encore above it',
       orderOf(onRanked, 'Encore') < orderOf(onRanked, 'Close Combat'),
       onRanked.map(function (r) { return r.name; }).join(' > '));
+
+    /* THE INTERACTION, MEASURED RATHER THAN ASSUMED. The same beam on the SHIPPED base — which is
+     * the anchored solve since §N — does not produce the same ordering, so the illustration above
+     * is a statement about the beam on the hard path and not about every base it can run on. A pin
+     * that quietly kept asserting the swap under a different opponent model would be measuring the
+     * model and calling it the beam. */
+    const shipOn = mkEngine({ beam2Ply: { enabled: true, topMy: 3, topOpp: 3, blendWeight: 1 } });
+    const shipRanked = shipOn.evaluateTurn(beamBoard(45));
+    check('...and the beam\u2019s ordering is BASE-DEPENDENT: on the shipped anchored base it differs',
+      rankKeys(shipRanked).join('|') !== rankKeys(onRanked).join('|'),
+      shipRanked.map(function (r) { return r.name; }).join(' > '));
   }
 }
 
@@ -1064,35 +1082,68 @@ section('7. the quantal-response opponent (OFF, and the hard response it replace
 
   const soft = solve(BIASED, 2000, { tau: 30 });
   const maxOf = function (a) { return Math.max.apply(null, a); };
-  check('a soft column response spreads their mix (the max frequency drops)',
-    maxOf(soft.oppStrategy) < maxOf(hard.oppStrategy),
-    JSON.stringify([soft.oppStrategy, hard.oppStrategy]));
+  /* THE SOFT RESPONSE, MEASURED WHERE IT CANNOT BE CONFOUNDED. A temperature spreads THEIR mix, but
+   * the loop co-evolves both sides, so "the soft max is below the hard max" is not a safe assertion
+   * on an arbitrary matrix (on BIASED the two sit within 0.02 of each other either way). This matrix
+   * is built so the claim has nowhere to hide: column 0 is DOMINATED for them — both of our rows pay
+   * 10 into it and -10 into column 1 — so their hard response is a point mass on column 1 and a soft
+   * one can only ever leak mass back onto the dominated column. */
+  const DOMINATED = [[10, -10], [10, -10]];
+  const domHard = solve(DOMINATED, 2000);
+  const domSoft = solve(DOMINATED, 2000, { tau: 5000 });
+  check('their hard response to a dominated column is (almost) a point mass',
+    domHard.oppStrategy[0] < 0.01 && domHard.oppStrategy[1] > 0.99, JSON.stringify(domHard.oppStrategy));
+  check('a soft column response leaks mass back onto the dominated column',
+    domSoft.oppStrategy[0] > 10 * domHard.oppStrategy[0] && domSoft.oppStrategy[0] > 0.05,
+    JSON.stringify([domSoft.oppStrategy, domHard.oppStrategy]));
   check('...and both mixes stay probability distributions',
     [soft, hard].every(function (r) {
       return Math.abs(r.oppStrategy.reduce(function (a, b) { return a + b; }, 0) - 1) < 1e-9 &&
         r.oppStrategy.every(function (p) { return p >= 0 && p <= 1; });
     }), JSON.stringify(soft.oppStrategy));
-  check('OUR side keeps the hard best response (minimax safety is not softened)',
-    Math.abs(soft.myStrategy[0] - hard.myStrategy[0]) < 1e-9 &&
-      Math.abs(soft.myStrategy[1] - hard.myStrategy[1]) < 1e-9,
+  /* THE ONE-WAY CEILING IS CLOSED (the 2026-10-15 correction). Until then our cumulative payoff read
+   * the opponent's hard argmax INDEX while their published strategy carried the soft MIXTURE, so no
+   * temperature could reach our own frequency counts — ATTEMPTS.md L2's finding, and the reason the
+   * `nash-qre` row could not move a ranking. Our step now reads the mixture, so a positive
+   * temperature moves OUR frequencies too, and the soft path is no longer "the shipped mix against a
+   * differently-described opponent". */
+  check('OUR side now best-responds to the mix, so a temperature moves OUR frequencies too',
+    JSON.stringify(soft.myStrategy) !== JSON.stringify(hard.myStrategy),
     JSON.stringify([soft.myStrategy, hard.myStrategy]));
+  check('...while tau 0 and an absent option still reproduce the hard loop exactly',
+    JSON.stringify(solve(BIASED, 2000, { tau: 0 })) === JSON.stringify(hard) &&
+      JSON.stringify(solve(BIASED, 2000, null, { exploitBlend: 0 })) === JSON.stringify(hard),
+    JSON.stringify(hard.myStrategy));
   check('every row value stays finite', soft.rowValues.every(function (v) { return isFinite(v); }),
     JSON.stringify(soft.rowValues));
   const near0 = solve(BIASED, 2000, { tau: 0.0001 });
   check('a vanishing temperature converges back to the hard mix',
     Math.abs(maxOf(near0.oppStrategy) - maxOf(hard.oppStrategy)) < 0.02,
     JSON.stringify([near0.oppStrategy, hard.oppStrategy]));
-  const wild = solve(BIASED, 2000, { tau: 5000 });
-  check('a huge temperature approaches the uniform mix',
-    Math.abs(wild.oppStrategy[0] - 0.5) < 0.02, JSON.stringify(wild.oppStrategy));
+  /* A big temperature is only "uniform" RELATIVE TO THE PAYOFF SCALE, and that scale grows with the
+   * iteration count: 2,000 rounds of a +-10 matrix leave cumulative payoffs in the tens of thousands,
+   * so even tau = 5000 keeps a visible tilt. What is monotone — and therefore what is pinned — is
+   * that raising the temperature never makes their mix MORE committed, and that the abandoned column
+   * keeps gaining mass. */
+  const domWild = solve(DOMINATED, 2000, { tau: 50000 });
+  check('a higher temperature never makes their mix more committed',
+    maxOf(domWild.oppStrategy) <= maxOf(domSoft.oppStrategy) + 1e-9,
+    JSON.stringify([domWild.oppStrategy, domSoft.oppStrategy]));
+  check('...and the abandoned column keeps gaining mass as it rises',
+    domWild.oppStrategy[0] > domSoft.oppStrategy[0],
+    JSON.stringify([domWild.oppStrategy, domSoft.oppStrategy]));
   check('a big matrix cannot overflow the softmax into NaN',
     solve([[5000, -5000], [-5000, 5000]], 240, { tau: 1 }).oppStrategy.every(function (p) { return isFinite(p) && p >= 0; }),
     JSON.stringify(solve([[5000, -5000], [-5000, 5000]], 240, { tau: 1 }).oppStrategy));
 
   /* The temperature is a rating-driven policy, not a constant: the deviation belongs to the ladder
    * below 1850 and vanishes at the top of it. */
-  const OFF_QRE = mkEngine({ qre: { enabled: false, tau: 30 } });
-  const ON_QRE = mkEngine({ qre: { enabled: true, tau: 30, highRating: 1850, lowRating: 1100 } });
+  /* `priorAnchored` is pinned OFF in both engines so this section isolates the TEMPERATURE: since
+   * the §N adoption the shipped config anchors the solve, and an OFF baseline that was itself
+   * anchored could not show what the temperature does to a hard response. */
+  const OFF_QRE = mkEngine({ nash: { qre: { enabled: false, tau: 30 }, priorAnchored: { enabled: false } } });
+  const ON_QRE = mkEngine({ nash: { qre: { enabled: true, tau: 30, highRating: 1850, lowRating: 1100 },
+    priorAnchored: { enabled: false } } });
   same('tier off -> temperature 0', OFF_QRE._qreTau({ opponentRating: 1200 }), 0, 0);
   same('an unknown seat is played against rationally, never noisily',
     ON_QRE._qreTau({ opponentRating: null }), 0, 0);
@@ -1136,39 +1187,47 @@ section('7. the quantal-response opponent (OFF, and the hard response it replace
       rowsOff.map(function (r) { return [r.name, r.score, r.confidence]; })]));
 }
 
-/* ====================== 7b. the tier's blast radius: it re-prices THEM, and never US */
+/* ============== 7b. the tier's blast radius AFTER the fix: it reaches OUR frequencies too */
 
-section('7b. what a positive temperature can and cannot move (it never moves our own strategy)');
+section('7b. what a positive temperature and an anchored prior now move (our own strategy included)');
 {
-  /* THE 2026-10-15 VERIFICATION, and it is a claim about the SOLVER rather than about a corpus.
-   * A flat `nash-qre` row was read as "the mirror declares no rating, so the ramp disables it"
-   * (ATTEMPTS.md K4). That is true of the mirror, but it is not the whole reason the row cannot
-   * move: in the fictitious-play loop the opponent's SOFT mix is accumulated into their reported
-   * strategy, while the action each side best-responds to is STILL the hard argmax (`oppAction =
-   * bestJ`), and OUR cumulative payoff (`myCum[i] += payoffMatrix[i][oppAction]`) reads that hard
-   * index. A temperature therefore cannot reach our own frequency counts on ANY matrix. QRE
-   * changes the mix we expect THEM to play (published for the profiler next turn) and the per-row
-   * VALUES; our strategy can only move through the score tie-break among equal frequencies. That
-   * is why the row needs no "mid-ladder opponent" to be priceable — it is near-inert for the
-   * ranking by construction. */
+  /* THE 2026-10-15 CORRECTION, and it is a claim about the SOLVER rather than about a corpus. The
+   * verification pass (ATTEMPTS.md L2) established that the opponent's SOFT mix was accumulated only
+   * into their REPORTED strategy, while the action each side best-responded to was still the hard
+   * argmax (`oppAction = bestJ`) and OUR cumulative payoff read that hard index
+   * (`myCum[i] += payoffMatrix[i][oppAction]`). A temperature or a prior therefore could not reach
+   * our own frequency counts on ANY matrix — which is why `nash-qre` was near-inert for the ranking
+   * by construction and why `nash-prior` measured `identical` over 60 paired battles (§M3). Our
+   * accumulation now reads the mixture, so that ceiling is gone: every opponent-model argument below
+   * moves OUR strategy as well as theirs. What must NOT have moved is the shipped loop — no qre
+   * argument, no prior and no exploit blend runs the historical step for step — and that identity is
+   * pinned beside the movement. */
   const solve = ST.LaplaceEngine.solveNashFictitiousPlay;
   const MATRICES = [
     [[2, -1], [-1, 1]],
     [[10, -4, 6], [3, 8, -5], [-6, 2, 9]],
     [[10, -4, 6, -2], [3, 8, -5, 4], [-6, 2, 9, -3], [5, -7, 1, 7], [-1, 4, 3, 6]]
   ];
-  let myMoved = 0, oppMoved = 0, rowMoved = 0;
+  let myMoved = 0, oppMoved = 0, rowMoved = 0, priorMoved = 0, identityHeld = 0;
   MATRICES.forEach(function (m) {
     const h = solve(m, 2000);
     const s = solve(m, 2000, { tau: 30 });
     if (JSON.stringify(h.myStrategy) !== JSON.stringify(s.myStrategy)) myMoved++;
     if (JSON.stringify(h.oppStrategy) !== JSON.stringify(s.oppStrategy)) oppMoved++;
     if (JSON.stringify(h.rowValues) !== JSON.stringify(s.rowValues)) rowMoved++;
+    const flat = new Array(m[0].length).fill(1 / m[0].length);
+    const a = solve(m, 2000, null, { prior: flat, priorWeight: 0.25 });
+    if (JSON.stringify(h.myStrategy) !== JSON.stringify(a.myStrategy)) priorMoved++;
+    if (JSON.stringify(solve(m, 2000, { tau: 0 })) === JSON.stringify(h) &&
+      JSON.stringify(solve(m, 2000, null, { prior: null, priorWeight: 0, exploitBlend: 0 })) === JSON.stringify(h)) {
+      identityHeld++;
+    }
   });
-  same('a positive temperature never moves OUR own strategy (our frequencies), on any matrix',
-    myMoved, 0);
-  eq('...while on every matrix it DOES move the mix it expects them to play', oppMoved, 3);
+  eq('a positive temperature NOW moves our own strategy on every matrix', myMoved, 3);
+  eq('...as it already did theirs', oppMoved, 3);
   eq('...and the per-row values those mixes imply', rowMoved, 3);
+  eq('...and an anchored prior reaches our frequencies on every matrix too', priorMoved, 3);
+  eq('...while tau 0 / no prior / blend 0 still reproduce the shipped solve exactly', identityHeld, 3);
 
   /* And at the engine level, on a real board: `confidence` is 100 x that same frequency, so the
    * column that ranks our lines is identical with the tier on and off — only the published
@@ -1190,15 +1249,29 @@ section('7b. what a positive temperature can and cannot move (it never moves our
   check('a rated seat really does engage the tier (otherwise this block is vacuous)',
     !!(qreOn.lastReadout && qreOn.lastReadout.qre && qreOn.lastReadout.qre.tau > 0),
     JSON.stringify(qreOn.lastReadout && qreOn.lastReadout.qre));
-  eq('the confidence / frequency column is bit-identical with the tier on and off',
+  /* A PURE EQUILIBRIUM IS IMMUNE TO THE OPPONENT MODEL, AND THIS FIXTURE IS ONE. Ice Spinner is a
+   * 4x move into the Dragonite standing in front of it, so our matrix has a strictly dominant row and
+   * every round of any opponent response leaves the count on that row — which is why the two columns
+   * here are still identical, and why that is NOT the old ceiling coming back: L2's claim was about
+   * any matrix, and a dominant row is the trivial exception to it. The board where the movement
+   * actually lands is the one built for it, and §8d / §10 pin it there. */
+  same('a pure equilibrium is immovable by any opponent model (this fixture is one)',
+    Math.max.apply(null, liveRows(offRows).map(function (r) { return r.nashFrequency; })), 1, 0);
+  eq('...so on THIS board the confidence column is the same with the tier on and off',
     conf(onRows), conf(offRows));
-  eq('...so the published TOP LINE is unchanged (no frequency tie on this board to break)',
-    onRows[0] && onRows[0].name, offRows[0] && offRows[0].name);
+  check('...and both columns are still distributions that sum to 100 %',
+    [onRows, offRows].every(function (rows) {
+      const total = liveRows(rows).reduce(function (a, r) { return a + r.confidence; }, 0);
+      return Math.abs(total - 100) < 1e-9 && rows.every(function (r) { return isFinite(r.confidence) && r.confidence >= 0; });
+    }), JSON.stringify([conf(onRows), conf(offRows)]));
+  check('...and the published top line is a real action either way',
+    !!(onRows[0] && onRows[0].name) && !!(offRows[0] && offRows[0].name),
+    JSON.stringify([onRows[0] && onRows[0].name, offRows[0] && offRows[0].name]));
 }
 
 /* ============ 8. surprise truncation: the opponent solves the game it thinks it is in (OFF) */
 
-section('8. surprise truncation (unrevealed coverage baiting) ships OFF, and moves only THEM');
+section('8. surprise truncation (unrevealed coverage baiting) ships OFF, and now reaches OUR ranking');
 {
   /* THE MECHANISM. The simultaneous matrix is built over the opponent's FULL reply list, so the
    * equilibrium already knows about our unrevealed coverage move and leaves the punished column
@@ -1339,9 +1412,9 @@ section('8. surprise truncation (unrevealed coverage baiting) ships OFF, and mov
     JSON.stringify(RN.map(function (r) { return r.confidence; })));
 }
 
-/* ============ 9. prior-anchored regret matching: the solve starts where humans are (OFF) */
+/* ===== 9. prior-anchored regret matching (ON since the §N adoption): the solve starts where humans are */
 
-section('9. prior-anchored regret matching ships OFF, and only ever re-prices THEM');
+section('9. prior-anchored regret matching ships ON since the §N adoption, and prices THEM before it reaches US');
 {
   /* THE MECHANISM. Fictitious play gives every one of their actions the same ZERO credibility at
    * round 0, so an opponent blunder collects a full best response for as long as the running
@@ -1349,7 +1422,8 @@ section('9. prior-anchored regret matching ships OFF, and only ever re-prices TH
    * against the pure softmax, which read as exactly that over-defence. With the tier on, their
    * regret-matching response is blended with a behavioral prior at `priorWeight`. */
   const solve = ST.LaplaceEngine.solveNashFictitiousPlay;
-  eq('the shipped config ships the tier OFF', ST.configGet('laplace.nash.priorAnchored.enabled', null), false);
+  eq('the shipped config now ships the tier ON (ADOPTED 2026-10-15, ATTEMPTS.md §N)',
+    ST.configGet('laplace.nash.priorAnchored.enabled', null), true);
   same('...at the documented anchor weight', ST.configGet('laplace.nash.priorAnchored.priorWeight', null), 0.25, 0);
   same('...with the documented prior weights', ST.configGet('laplace.nash.priorAnchored.switchEscape', null), 70, 0);
   same('...and they are what the engine actually reads',
@@ -1413,7 +1487,17 @@ section('9. prior-anchored regret matching ships OFF, and only ever re-prices TH
   const RO = off.evaluateTurn(boardWithDodge());
   const RN = on.evaluateTurn(boardWithDodge());
   eq('tier off: no prior is published', off.lastReadout.nashPrior, null);
-  eq('enabled: false is bit-identical to the shipped build', rowKey(RO), rowKey(R0));
+  /* THE OLD PIN HERE WAS `enabled: false is bit-identical to the shipped build`, AND IT IS THE ONE
+   * PIN THE ADOPTION NECESSARILY RETIRES: the shipped build IS the anchored solve now, so "off"
+   * cannot be the same ranking as "the shipped default" any more. It is replaced by the two facts
+   * that still matter — the default publishes the anchored mix, and the OFF engine is a genuinely
+   * different policy — plus the solver-level identity (§7b) that no argument at all is still the
+   * historical loop. */
+  check('the shipped build IS the anchored solve (the §N adoption is live, not a config no-op)',
+    !!(offDefault.lastReadout.nashPrior && offDefault.lastReadout.nashPrior.weight === 0.25) &&
+      JSON.stringify(rowKey(RO)) !== JSON.stringify(rowKey(R0)),
+    JSON.stringify([RO.map(function (r) { return [r.name, U.round1(r.confidence)]; }),
+      R0.map(function (r) { return [r.name, U.round1(r.confidence)]; })]));
   const priorMix = on.lastReadout.nashPrior && on.lastReadout.nashPrior.mix;
   check('tier on: the prior is published as a distribution over THEIR actions',
     !!priorMix && Math.abs(priorMix.reduce(function (a, m) { return a + m.prior; }, 0) - 1) < 0.01 &&
@@ -1448,6 +1532,162 @@ section('9. prior-anchored regret matching ships OFF, and only ever re-prices TH
     !!nanEngine.lastReadout.nashPrior &&
       nanEngine.lastReadout.nashPrior.mix.every(function (m) { return isFinite(m.prior) && m.prior >= 0; }),
     JSON.stringify(nanEngine.lastReadout.nashPrior));
+}
+
+/* ==== 10. the two overrides that were missing: the exploit blend and the mate promotion ==== */
+
+section('10. the exploit blend and the proven-mate promotion (identity when off, and why they exist)');
+{
+  const solve = ST.LaplaceEngine.solveNashFictitiousPlay;
+  const BIASED = [[2, -1], [-1, 1]];
+  const hard = solve(BIASED, 2000);
+
+  eq('the shipped config ships the exploit blend at the identity',
+    ST.configGet('laplace.nash.exploitBlend', null), 0);
+  eq('...and ships the proven-mate promotion ON, like the five hardening leaves it belongs to',
+    ST.configGet('laplace.endgame.promoteMate', null), true);
+
+  /* ---- the solver: 0 is the identity, 1 is the softmax over the solve's OWN row values, and
+   * everything between is the exact convex combination of the two. ---- */
+  eq('a blend of 0 is bit-identical to the shipped solve',
+    JSON.stringify(solve(BIASED, 2000, null, { exploitBlend: 0, exploitTemperature: 35 })),
+    JSON.stringify(hard));
+  const greedy = solve(BIASED, 2000, null, { exploitBlend: 1, exploitTemperature: 35 });
+  const rvMax = Math.max.apply(null, hard.rowValues);
+  const rvExp = hard.rowValues.map(function (v) { return Math.exp((v - rvMax) / 35); });
+  const rvDenom = rvExp.reduce(function (a, b) { return a + b; }, 0);
+  const wantGreedy = rvExp.map(function (e) { return e / rvDenom; });
+  check('a blend of 1 is the softmax over the solve\'s own row values, at laplace.temperature',
+    greedy.myStrategy.every(function (p, i) { return Math.abs(p - wantGreedy[i]) < 1e-12; }),
+    JSON.stringify([greedy.myStrategy, wantGreedy]));
+  check('...and it still publishes the equilibrium frequency beside it',
+    JSON.stringify(greedy.equilibriumStrategy) === JSON.stringify(hard.myStrategy),
+    JSON.stringify([greedy.equilibriumStrategy, hard.myStrategy]));
+  const half = solve(BIASED, 2000, null, { exploitBlend: 0.5, exploitTemperature: 35 });
+  check('a blend of 0.5 is the exact convex combination of those two mixes',
+    half.myStrategy.every(function (p, i) {
+      return Math.abs(p - (0.5 * hard.myStrategy[i] + 0.5 * greedy.myStrategy[i])) < 1e-12;
+    }), JSON.stringify([half.myStrategy, hard.myStrategy, greedy.myStrategy]));
+  check('...every blend is still a probability distribution',
+    [greedy, half].every(function (r) {
+      const t = r.myStrategy.reduce(function (a, b) { return a + b; }, 0);
+      return Math.abs(t - 1) < 1e-9 && r.myStrategy.every(function (p) { return p >= 0 && p <= 1; });
+    }), JSON.stringify([greedy.myStrategy, half.myStrategy]));
+  check('...and it really does move frequencies (otherwise the weight is a no-op)',
+    greedy.myStrategy.some(function (p, i) { return Math.abs(p - hard.myStrategy[i]) > 0.05; }),
+    JSON.stringify([greedy.myStrategy, hard.myStrategy]));
+
+  /* ---- the engine: the weight it used, and the two frequencies it publishes ---- */
+  const plain = mkEngine({});
+  const blended = mkEngine({ nash: { exploitBlend: 0.5 } });
+  const plainRows = plain.evaluateTurn(boardWithDodge());
+  const blendedRows = blended.evaluateTurn(boardWithDodge());
+  const live = function (rows) { return rows.filter(function (r) { return !r.isVetoed; }); };
+  const freq = function (r) { return [r.name, U.round1(r.confidence), U.round1(r.nashFrequency || 0)]; };
+  eq('blend off: the readout publishes no exploitation term', plain.lastReadout.exploitBlend, null);
+  same('blend on: the readout publishes the weight it used',
+    blended.lastReadout.exploitBlend && blended.lastReadout.exploitBlend.weight, 0.5, 0);
+  check('...priced at the engine\'s own temperature',
+    !!blended.lastReadout.exploitBlend &&
+      blended.lastReadout.exploitBlend.temperature === blended.temperature,
+    JSON.stringify(blended.lastReadout.exploitBlend));
+  check('...confidence is the BLENDED frequency, and nashFrequency stays the equilibrium one',
+    live(blendedRows).every(function (r) {
+      return isFinite(r.exploitFrequency) &&
+        Math.abs(r.confidence - 100 * r.exploitFrequency) < 1e-9 &&
+        typeof r.nashFrequency === 'number';
+    }), JSON.stringify(live(blendedRows).map(function (r) {
+      return freq(r).concat([U.round1(r.exploitFrequency || 0)]);
+    })));
+  check('...the two frequencies differ on this board (a blend that changes nothing is untested)',
+    live(blendedRows).some(function (r) { return Math.abs(r.exploitFrequency - r.nashFrequency) > 1e-9; }),
+    JSON.stringify(live(blendedRows).map(freq)));
+  check('...and the shipped engine still publishes ONE number for both, with no exploit field',
+    live(plainRows).every(function (r) {
+      return Math.abs(r.nashFrequency * 100 - r.confidence) < 1e-9 && r.exploitFrequency === undefined;
+    }), JSON.stringify(live(plainRows).map(freq)));
+
+  /* ---- does a live opponent model ever move the TOP LINE itself? §7b left that open. This is the
+   * board the surprise tier was built for (an unrevealed 4x Ice lure into a body whose STABs are
+   * resisted), and the answer is measured here rather than assumed. ---- */
+  const maskOff = mkEngine({ surpriseMask: { enabled: false, unrevealedWeight: 0.35 } });
+  const maskOn = mkEngine({ surpriseMask: { enabled: true, unrevealedWeight: 0.35 } });
+  const lureRowsOff = maskOff.evaluateTurn(boardWithDodge());
+  const lureRowsOn = maskOn.evaluateTurn(boardWithDodge());
+  const colOf = function (rows) {
+    return live(rows).map(function (r) { return [r.name, U.round1(r.confidence)]; }).sort();
+  };
+  check('the lure board really does engage the mask',
+    !!(maskOn.lastReadout.surpriseMask && maskOn.lastReadout.surpriseMask.rows.length),
+    JSON.stringify(maskOn.lastReadout.surpriseMask));
+  check('...and the mask moves OUR published confidence column',
+    JSON.stringify(colOf(lureRowsOn)) !== JSON.stringify(colOf(lureRowsOff)),
+    JSON.stringify([colOf(lureRowsOn), colOf(lureRowsOff)]));
+  /* MEASURED, and this is the answer §7b left open: the two columns are not merely different here,
+   * the ARGMAX crosses. With the mask on, the unrevealed lure carries 99.9 % of our confidence and
+   * leads the ranking even though the sighted equilibrium gives it 46.4 % against Close Combat's
+   * 53.6 % — i.e. the fix that lets an opponent model reach our frequencies is what turns a lure the
+   * solve used to be scared of into the top line. §8d pins the same flip from the mechanism's side. */
+  same('...and on the lure board the mask carries the lure to the top of the ranking',
+    lureRowsOn[0] && lureRowsOn[0].confidence, 99.9, 0.2);
+  eq('...where the sighted solve splits it with the STAB it was read as',
+    lureRowsOff[0] && lureRowsOff[0].name, 'Close Combat');
+  /* The number moved 47.6 -> 46.4 with the §N adoption: these two engines read the SHIPPED config,
+   * which anchors the solve since 2026-10-15, and the anchored mix shifts the sighted split without
+   * touching the claim (the mask still carries the lure to 99.9 and to the top of the ranking). */
+  same('...with the lure still inside a percentage point of the tie',
+    (function () { for (let i = 0; i < lureRowsOff.length; i++) if (lureRowsOff[i].name === 'Ice Spinner') return lureRowsOff[i].confidence; return 0; })(),
+    46.4, 0.5);
+
+
+  /* ---- the mate promotion: the endgame tier's proof, finally allowed to rank ---- */
+  const mateStub = function (rootName, mate) {
+    return {
+      enabled: true,
+      solveAcrossWorlds: function () {
+        return {
+          solved: mate !== false, isMate: mate !== false,
+          reason: mate === false ? 'no-forced-win' : 'mate', mateIn: 2,
+          line: [{ kind: 'move', name: rootName, moveId: U.toID(rootName) }],
+          score: 100, nodes: 12, worlds: 6
+        };
+      }
+    };
+  };
+  const mateEngine = mkEngine({ endgameSolver: mateStub('Ice Spinner') });
+  const mateRows = mateEngine.evaluateTurn(boardWithDodge());
+  eq('a proven mate promotes its own root to the top line',
+    mateRows[0] && mateRows[0].name, 'Ice Spinner');
+  same('...with the whole confidence', mateRows[0].confidence, 100, 0);
+  check('...and the rest of the field drops to zero, so the mix still sums to 100',
+    mateRows.slice(1).every(function (r) { return r.confidence === 0; }),
+    JSON.stringify(mateRows.map(function (r) { return [r.name, r.confidence]; })));
+  check('...the override is stamped rather than silent',
+    mateRows[0].mateProven === true && mateRows[0].mateIn === 2 &&
+      /forced win/.test(String(mateRows[0].mateReason)),
+    JSON.stringify([mateRows[0].mateProven, mateRows[0].mateIn, mateRows[0].mateReason]));
+  check('...and the readout publishes the promotion',
+    !!(mateEngine.lastReadout.matePromotion && mateEngine.lastReadout.matePromotion.name === 'Ice Spinner'),
+    JSON.stringify(mateEngine.lastReadout.matePromotion));
+
+  const noRoot = mkEngine({ endgameSolver: mateStub('Earthquake') });
+  const noRootRows = noRoot.evaluateTurn(boardWithDodge());
+  eq('a root that is not on our menu is SKIPPED, never approximated',
+    noRoot.lastReadout.matePromotion, null);
+  eq('...and the equilibrium ranking is left exactly as it was',
+    JSON.stringify(live(noRootRows).map(freq)), JSON.stringify(live(plainRows).map(freq)));
+
+  const notMate = mkEngine({ endgameSolver: mateStub('Ice Spinner', false) });
+  notMate.evaluateTurn(boardWithDodge());
+  eq('a solved-but-not-a-mate report promotes nothing', notMate.lastReadout.matePromotion, null);
+
+  ST.configMerge({ laplace: { endgame: { promoteMate: false } } });
+  const gated = mkEngine({ endgameSolver: mateStub('Ice Spinner') });
+  const gatedRows = gated.evaluateTurn(boardWithDodge());
+  eq('...and the leaf switches the whole override off', gated.lastReadout.matePromotion, null);
+  eq('...in which case the top line is the equilibrium one again',
+    JSON.stringify(live(gatedRows).map(freq)), JSON.stringify(live(plainRows).map(freq)));
+  ST.configMerge({ laplace: { endgame: { promoteMate: true } } });
 }
 
 /* ------------------------------------------------------------------- summary */

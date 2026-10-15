@@ -268,9 +268,26 @@
         // tier anchors the solve to a BEHAVIORAL prior instead of a uniform one: the regret term
         // is blended with a normalized prior over the opponent's own actions (`priorWeight`), so
         // a line has to earn credibility before it can move the mix. `enabled: false` runs the
-        // shipped fictitious play step for step.
+        // pre-adoption fictitious play step for step.
+        //
+        // SHIPS ON SINCE 2026-10-15 (ATTEMPTS.md §N), and it is the first tier in this project to
+        // be adopted on a TWO-SEED replicate. The first reading was `identical`; that was not the
+        // tier being worthless but the solve being ONE-WAY — our own step best-responded to the
+        // opponent's hard argmax index while their published strategy accumulated the mixture, so
+        // no opponent model could reach our frequency counts (§L2). With that fixed, mirror, 60
+        // paired battles each: seed 1337 Δwin +21.7 [+5.0, +36.7] / Δscore +25.0 [+8.3, +40.0];
+        // seed 20261016 Δwin +25.0 [+8.3, +41.7] / Δscore +23.3 [+8.3, +38.3], cap ties 7/60 ->
+        // 5/60 on the second seed and no stall flag on either. Both scales exclude zero on both
+        // seeds, which is what §L3 asks a mirror row for before it can be quoted.
+        //
+        // WHAT THIS IS NOT: the opponent in that instrument is a FROZEN COPY OF THIS ENGINE, so
+        // the win is a self-play result and not a measured ladder improvement; the personas arena
+        // cannot check the direction (its baseline sits at 98.3 % with no headroom, §H); and
+        // `priorWeight` is the untuned midpoint of [0, 1] — the quantity that would set it (a
+        // usage corpus of the opponent's own action frequencies) is exactly what this repository
+        // does not have offline. Turning it back off is the `nash-prior` ablation row.
         priorAnchored: {
-          enabled: false,
+          enabled: true,
           priorWeight: 0.25,             // prior share of the opponent's first response
           // The prior's own shape. All three groups are in PERCENT-OF-MAX-HP units, because that
           // is what the damage engine reports and the prior is only ever compared with itself.
@@ -280,7 +297,23 @@
           switchBase: 8,                 // a pivot that is not obviously correct
           switchEscape: 70               // ...and one that is (their active faces a revealed OHKO
                                          // from us and the incoming body resists it)
-        }
+        },
+        // EXPLOIT BLEND. The solve above publishes the UNSETTABLE mix: every supported line gets
+        // the same EV, so against a NON-equilibrium opponent (a softened one from `qre`, an
+        // anchored one from `priorAnchored`, or one that cannot see a lure thanks to
+        // `surpriseMask`) the unexploitable mix leaves value on the table when one of our rows
+        // strictly dominates against the mix we now EXPECT. This weight is the classic
+        // exploration/exploitation blend that gives it back:
+        //     myConfidence = (1 - b) * equilibriumFrequency + b * softmax(rowValues)
+        // `rowValues` is what each of our rows is worth against the opponent mix the solve
+        // published, so the second term is a best-response-shaped read of the SAME solve. It is
+        // normalized separately (the two terms are each a distribution) and vetoed rows are still
+        // forced to 0 afterwards.
+        // Ships at 0.0, which is the exact identity: the blend is skipped entirely rather than
+        // multiplied, so `nashFrequency` and `confidence` stay in lockstep and the shipped ranking
+        // is bit-identical. A nonzero value is a MEASURE-BEFORE-ADOPT candidate — the ablation row
+        // `nash-exploitblend` is what prices it.
+        exploitBlend: 0.0
       },
       // SURPRISE TRUNCATION. The matrix is solved over the opponent's FULL action list, which
       // means the equilibrium already knows about our unrevealed coverage lure and switches out of
@@ -385,7 +418,21 @@
         // Regret-matching rounds for a turn matrix with no strictly dominant pure action. The
         // matrix is at most maxBranchingMoves^2 and this runs at every ply, so it is deliberately
         // small; the running average settles well inside the mate band at this count.
-        regretIters: 200
+        regretIters: 200,
+        /* 6. A PROVEN MATE OUTRANKS A FREQUENCY. Until this leaf existed the tier was a pure
+         * readout: `_tiers` published `lastReadout.endgame` and NOTHING in the ranking path read
+         * it, so enabling the solver could not change the line the engine plays (ATTEMPTS.md M1
+         * measured exactly that: 60 paired battles, `identical`, at +31 % wall clock). With this
+         * on, a report that says `solved && isMate` — which requires the transposition-checked
+         * search to prove the win AND (under `multiWorld`) every surviving sampled world to prove
+         * ONE with the same root action — promotes that root to the top of `ranked` with
+         * confidence 100 and the other lines to 0, because a line that wins by force is not a
+         * 62 %-of-the-time suggestion. The override is deliberately NOT silent: the promoted row
+         * carries `mateProven`/`mateIn` and the readout carries `matePromotion`.
+         * ON like the five corrections above (it is the same kind of fix: without it the tier's
+         * work is thrown away), and equally inert in the shipped build, because the tier it
+         * belongs to still ships `enabled: false`. */
+        promoteMate: true
       },
       // Selective 2-ply beam (the multi-ply horizon upgrade, see laplace_core._refineBeam2Ply).
       // A full second ply is `|myActions| x |theirReplies| x K` evaluations and does not fit a

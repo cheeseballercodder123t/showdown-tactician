@@ -118,6 +118,8 @@ const INVENTORY = [
   // quantal-response opponent (ships off; the temperature decays to 0 at the top of the ladder)
   'laplace.nash.qre.enabled', 'laplace.nash.qre.tau',
   'laplace.nash.qre.highRating', 'laplace.nash.qre.lowRating',
+  // the exploit blend (the weight on a softmax over the row values; 0 is the identity)
+  'laplace.nash.exploitBlend',
   // prior-anchored regret matching (ships off; the behavioral prior in front of the solve)
   'laplace.nash.priorAnchored.enabled', 'laplace.nash.priorAnchored.priorWeight',
   'laplace.nash.priorAnchored.attackFloor', 'laplace.nash.priorAnchored.setupSafe',
@@ -148,6 +150,8 @@ const INVENTORY = [
   'laplace.endgame.simultaneousPly', 'laplace.endgame.includeRecoveryAndProtect',
   'laplace.endgame.modelPhysics', 'laplace.endgame.transposition', 'laplace.endgame.multiWorld',
   'laplace.endgame.regretIters',
+  // the proven-mate promotion (the override that lets the tier's proof rank)
+  'laplace.endgame.promoteMate',
   // the selective 2-ply beam (a measure-before-adopt tier, ships off)
   'laplace.beam2Ply.enabled', 'laplace.beam2Ply.topMy', 'laplace.beam2Ply.topOpp',
   'laplace.beam2Ply.blendWeight', 'laplace.beam2Ply.threatWeight',

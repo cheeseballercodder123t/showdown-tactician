@@ -652,21 +652,34 @@ exploited by a fixed counter-strategy.
   it is readable off the species, so faking ignorance of it would be the telepathy backwards.
   `tests/tuning_check.js` §8 pins the classification, the cell-by-cell blend, and a fixture board where
   the unrevealed lure lifts their pivot frequency and the lure's true value with it.
-* `laplace.nash.priorAnchored` (default `false`) anchors their response to a behavioral prior,
+* `laplace.nash.priorAnchored` (default `true` since the 2026-10-15 adoption, `ATTEMPTS.md` §N)
+  anchors their response to a behavioral prior,
   `(1 - c) * regretMatch + c * P_prior` at `c = priorWeight` (0.25), with `P_prior` normalized from
   measurements only: each damaging move's average percentage into our active, a setup weight that
   depends on whether our active can 2HKO them, and a switch baseline that jumps to `switchEscape` when
   their active faces a guaranteed OHKO from a **revealed or STAB** move of ours and the incoming body
-  resists it. It softens the opponent and leaves our own frequencies alone — `priorWeight: 0` and an
-  absent prior both resolve to the shipped loop step for step — which is the direction `ATTEMPTS.md`
-  E5 asked about, at one point rather than instead of the hard solve. `tests/tuning_check.js` §9 pins
-  the identity and a fixture where the hard solve zeroes three of their replies and the anchored one
-  weights all of them.
-  Both of these ship `false`, and the first paired sweep left them there (`ATTEMPTS.md` §M): the mask
-  bought 6 extra 100-turn standoffs for 3 wins and 3 losses and a match score that did not move at all,
-  and the anchored mix engaged and changed no decision, which is the ceiling §L2 names — our own
-  frequencies best-respond to their hard argmax index, so a softer opponent can only reach the score
-  tie-break.
+  resists it. It softens the opponent, and since 2026-10-15 it also moves **our own** frequencies:
+  `solveNashFictitiousPlay` used to best-respond to their hard argmax INDEX while their published
+  strategy accumulated the mixture, so no opponent model could reach a ranking (the ceiling
+  `ATTEMPTS.md` §L2 named, and why the first reading here was `identical`). Our step now reads the
+  mixture, and the pre-adoption path is untouched — `priorWeight: 0` and an absent prior both resolve
+  to the historical loop step for step, which `tests/tuning_check.js` §7b pins on three matrices, and
+  §9 pins the flags and a fixture where the hard solve zeroes three of their replies and the anchored
+  one weights all of them.
+  **It is ADOPTED** on the strength of a two-seed mirror replicate (`ATTEMPTS.md` §N4): seed 1337
+  Δwin +21.7 [+5.0, +36.7] / Δscore +25.0 [+8.3, +40.0], seed 20261016 Δwin +25.0 [+8.3, +41.7] /
+  Δscore +23.3 [+8.3, +38.3], with the second seed 9.6 turns SHORTER and cap ties 7/60 → 5/60. What
+  that does NOT establish: the opponent in the instrument is a frozen copy of this engine, so it is a
+  self-play reading and not a measured ladder gain, and `priorWeight` 0.25 is the untuned midpoint.
+  The ablation row `nash-prior` is now `direction: 'off'`, i.e. the price of switching it back off.
+  `laplace.surpriseMask` still ships `false`: re-measured after the loop fix it is Δwin −3.3
+  [−15.0, +8.3] with ZERO cap ties (the §M2 `stall` cluster does not reproduce), and the mirror's own
+  lead sets are fully revealed from turn 1, which is the one board where masking is inert by
+  construction. `laplace.nash.exploitBlend` (default `0.0`) is the matching exploitation knob — the
+  published mix becomes `(1 - b) * equilibriumFrequency + b * softmax(rowValues)`, the identity at 0 —
+  and its own row is flat, which is what a blend with nothing to exploit should cost. The endgame
+  tier's report can now rank a PROVEN mate (`laplace.endgame.promoteMate`, ON), so that row finally
+  prices the tier rather than only its expense (`ATTEMPTS.md` §N3).
 
 The blunder layer grew from four hard vetoes to twelve. Alongside protect-rhythm, ability
 immunity, lone-TR-setter and speed-suicide, `src/veto_guard.js` now refuses:
