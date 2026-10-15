@@ -229,16 +229,30 @@ section('1. every refusal the module documents');
     [mon('Kingambit', { hpPercent: 12, setMoves: ['Kowtow Cleave'] })]), null) === null);
   check('...with reason no-bodies', s.lastReport && s.lastReport.reason === 'no-bodies');
 
+  /* The refusal is for a body with NO PRICED action at all — hazards, setup, phazing — not for
+   * one whose moves are recovery or Protect: the 2026-10-15 hardening pass made those into
+   * modelled actions (phase 1.2), so their refusal moved to the genuinely unmodelled set below. */
   const statusOnly = board([mon('Iron Valiant', { side: 'p1', isActive: true, setMoves: ['Close Combat'] })],
-    [mon('Kingambit', { isActive: true, hpPercent: 12, setMoves: ['Protect', 'Recover'] })]);
-  check('an opponent with no modelled (damaging) move refuses', s.solve(statusOnly, null) === null);
+    [mon('Kingambit', { isActive: true, hpPercent: 12, setMoves: ['Stealth Rock', 'Swords Dance'] })]);
+  check('an opponent with no modelled action refuses', s.solve(statusOnly, null) === null);
   check('...with reason no-modelled-move-theirs', s.lastReport && s.lastReport.reason === 'no-modelled-move-theirs',
     JSON.stringify(s.lastReport));
 
-  const noneMine = board([mon('Iron Valiant', { side: 'p1', isActive: true, setMoves: ['Protect', 'Recover'] })],
+  const noneMine = board([mon('Iron Valiant', { side: 'p1', isActive: true, setMoves: ['Stealth Rock', 'Swords Dance'] })],
     [mon('Kingambit', { isActive: true, hpPercent: 12, setMoves: ['Kowtow Cleave'] })]);
   check('the same refusal fires for OUR side', s.solve(noneMine, null) === null &&
     s.lastReport.reason === 'no-modelled-move-mine');
+
+  /* ...and the other half of that change: a recovery/Protect-only opponent is now SEARCHED. The
+   * old tier called Recover/Roost "no move" and read their Protect as a free turn, which is the
+   * single most dangerous way to be wrong about an endgame; both are actions now. */
+  const modelledStatus = board([mon('Iron Valiant', { side: 'p1', isActive: true, setMoves: ['Close Combat'] })],
+    [mon('Kingambit', { isActive: true, hpPercent: 12, setMoves: ['Protect', 'Recover'] })]);
+  const healed = s.solve(modelledStatus, null);
+  check('a recovery/Protect opponent is MODELLED rather than refused', healed !== null,
+    JSON.stringify(s.lastReport));
+  check('...and the heal is a real action in the tree (a 12 % body that can Roost is not a free KO)',
+    !!healed && s._classifyMove('Recover') === 'recover' && s._classifyMove('Protect') === 'protect');
 
   const three = [mon('Kingambit', { isActive: true, hpPercent: 12, setMoves: ['Kowtow Cleave'] }),
     mon('Great Tusk', { hpPercent: 90, setMoves: ['Earthquake'] }),
@@ -566,6 +580,194 @@ section('6. the wider board: 3v3 activation, and the Speed coin flip priced inst
     scrolling.solve(board([ourTwelve()], [theirStraddle(50, 50)]), null) === null);
   check('...with reason speed-undecided', scrolling.lastReport && scrolling.lastReport.reason === 'speed-undecided',
     JSON.stringify(scrolling.lastReport));
+}
+
+/* ===================== 7. the hardening pass: five structural fixes, each behind its own leaf */
+
+section('7. the hardening pass (simultaneous ply, recovery/protect, physics, cache, multi-world)');
+{
+  const LEAVES = ['simultaneousPly', 'includeRecoveryAndProtect', 'modelPhysics', 'transposition', 'multiWorld'];
+  check('all five hardening leaves are registered in config', LEAVES.every(function (k) {
+    return ST.configGet('laplace.endgame.' + k, null) === true;
+  }), LEAVES.map(function (k) { return k + '=' + ST.configGet('laplace.endgame.' + k, null); }).join(', '));
+  check('...and the regret-matching round count', ST.configGet('laplace.endgame.regretIters', null) === 200);
+  const dflt = mkSolver();
+  check('a solver built from config reads every leaf ON',
+    dflt.simultaneousPly === true && dflt.includeRecoveryAndProtect === true &&
+    dflt.modelPhysics === true && dflt.transposition === true && dflt.multiWorld === true,
+    JSON.stringify([dflt.simultaneousPly, dflt.includeRecoveryAndProtect, dflt.modelPhysics,
+      dflt.transposition, dflt.multiWorld]));
+
+  /* ---- 7a. simultaneous ply: the opponent may not read our secret turn-t action ---- */
+
+  const game = dflt._matrixGameValue([[1, -1], [-1, 1]], 2, 2);
+  check('a matching-pennies matrix solves to its GAME VALUE (0), not the -1 pure maximin',
+    Math.abs(game) < 0.02, String(game));
+  const dominant = dflt._matrixGameValue([[5, 5], [0, 9]], 2, 2);
+  check('a matrix with a dominant row keeps that row\u2019s value (5, the maximin)',
+    Math.abs(dominant - 5) < 0.05, String(dominant));
+
+  /* A real board, both sides branching. The game value is never BELOW the pure maximin (it is a
+   * relaxation), so turning the fix off can only lower or hold the number. */
+  const branchy = board([mon('Garchomp', {
+    side: 'p1', isActive: true, hpPercent: 60,
+    liveSet: liveSet('Garchomp', ['Earthquake', 'Dragon Claw'], { nature: 'Jolly', evs: spread({ atk: 252, spe: 252 }) })
+  })], [mon('Kingambit', {
+    isActive: true, hpPercent: 60,
+    liveSet: liveSet('Kingambit', ['Kowtow Cleave', 'Sucker Punch'], { nature: 'Adamant', evs: spread({ hp: 252, atk: 252 }) })
+  })]);
+  const simOn = mkSolver({ maxDepth: 3 }).solve(branchy, null);
+  const simOff = mkSolver({ maxDepth: 3, simultaneousPly: false }).solve(branchy, null);
+  check('the simultaneous solve is at least the pure maximin (the fix can never lower a floor)',
+    !!simOn && !!simOff && simOn.score >= simOff.score,
+    JSON.stringify([simOn && simOn.score, simOff && simOff.score]));
+  check('...and the leaf really is switchable on one board',
+    mkSolver({ simultaneousPly: false }).simultaneousPly === false && dflt.simultaneousPly === true);
+
+  /* ---- 7b. recovery and Protect are actions ---- */
+
+  check('a damaging move classifies as an attack', dflt._classifyMove('Close Combat') === 'attack');
+  check('a heal classifies as recovery', dflt._classifyMove('Recover') === 'recover');
+  check('a shield classifies as protect', dflt._classifyMove('Protect') === 'protect');
+  check('a hazard stays out of the tree', dflt._classifyMove('Stealth Rock') === null,
+    String(dflt._classifyMove('Stealth Rock')));
+  check('...and with the leaf off, ALL THREE of those collapse to unmodelled',
+    mkSolver({ includeRecoveryAndProtect: false })._classifyMove('Recover') === null &&
+    mkSolver({ includeRecoveryAndProtect: false })._classifyMove('Protect') === null);
+
+  const hurtState = board([mon('Iron Valiant', {
+    side: 'p1', isActive: true, hpPercent: 40, liveSet: valiantSet()
+  })], [mon('Kingambit', { isActive: true, hpPercent: 100, liveSet: slowSet() })]);
+  const hurtNode = dflt._nodeFrom(hurtState, null);
+  const healedNode = dflt._applyAction(hurtNode, 'my', { kind: 'recover', name: 'Recover' }, { my: false, opp: false });
+  check('a heal restores 50 % of max HP, clamped to 100', healedNode.my.bodies[0].hp === 90,
+    String(healedNode.my.bodies[0].hp));
+
+  const shieldState = board([mon('Iron Valiant', {
+    side: 'p1', isActive: true, hpPercent: 100, liveSet: valiantSet()
+  })], [mon('Kingambit', { isActive: true, hpPercent: 100, liveSet: slowSet() })]);
+  const shieldNode = dflt._nodeFrom(shieldState, null);
+  const shielded = dflt._applyPair(shieldNode, { kind: 'attack', name: 'Close Combat' },
+    { kind: 'protect', name: 'Protect' }, 'my');
+  const unshielded = dflt._applyPair(shieldNode, { kind: 'attack', name: 'Close Combat' },
+    { kind: 'attack', name: 'Kowtow Cleave' }, 'my');
+  check('a shield blocks our hit for the turn (their HP is untouched)',
+    shielded.opp.bodies[0].hp === 100, String(shielded.opp.bodies[0].hp));
+  check('...while the same turn without it lands the damage', unshielded.opp.bodies[0].hp < 100,
+    String(unshielded.opp.bodies[0].hp));
+
+  const chained = dflt._nodeFrom(shieldState, null);
+  chained.protect.opp = 1;                       // they shielded LAST turn
+  const chainedActs = dflt._actionsFor(chained, 'opp');
+  check('a second Protect in a row is NOT offered (it fails in the game)',
+    chainedActs.every(function (a) { return a.kind !== 'protect'; }),
+    JSON.stringify(chainedActs));
+  check('...but it is offered once the chain is broken',
+    dflt._actionsFor(shieldNode, 'opp').some(function (a) { return a.kind === 'protect'; }) ||
+      dflt._classifyMove('Protect') === 'protect');
+
+  /* ---- 7c. endgame physics: hazards, the Trick Room timer, chip ---- */
+
+  const hazState = board([
+    mon('Iron Valiant', { side: 'p1', isActive: true, liveSet: valiantSet() }),
+    mon('Great Tusk', {
+      side: 'p1', hpPercent: 80,
+      liveSet: liveSet('Great Tusk', ['Earthquake'], { nature: 'Jolly', evs: spread({ atk: 252, spe: 252 }) })
+    })
+  ], [mon('Kingambit', { isActive: true, hpPercent: 100, liveSet: slowSet() })]);
+  hazState.field.hazards.p1.rocks = true;
+  const hazNode = dflt._nodeFrom(hazState, null);
+  hazNode.my.bodies[0].hp = 0;
+  dflt._replaceFainted(hazNode, 'my');
+  /* Node HP is a PERCENT, so the charge is `hp - hazardPercent` directly. Great Tusk is
+   * Ground/Fighting, where Rock is 0.5 x 0.5 = 0.25, so Stealth Rock bills 3.125 % -> rounded to
+   * a tenth by the utility, i.e. 80 -> 76.9. */
+  const rockCharge = U.hazardPercent('Great Tusk', '', '', hazState.field.hazards.p1);
+  check('a replacement PAYS its entry hazards (Stealth Rock on Ground/Fighting: 80 -> 76.9)',
+    hazNode.my.bodies[1].hp === 76.9, String(hazNode.my.bodies[1].hp));
+  check('...and the charge is exactly U.hazardPercent\u2019s number, not a re-derived one',
+    Math.abs(rockCharge - 3.1) < 1e-9 && hazNode.my.bodies[1].hp === 80 - rockCharge,
+    JSON.stringify([rockCharge, hazNode.my.bodies[1].hp]));
+  const noPhys = mkSolver({ modelPhysics: false })._nodeFrom(hazState, null);
+  noPhys.my.bodies[0].hp = 0;
+  mkSolver({ modelPhysics: false })._replaceFainted(noPhys, 'my');
+  check('...and with the leaf off the replacement arrives untouched', noPhys.my.bodies[1].hp === 80,
+    String(noPhys.my.bodies[1].hp));
+
+  const trState = board([mon('Iron Valiant', { side: 'p1', isActive: true, liveSet: valiantSet() })],
+    [mon('Kingambit', { isActive: true, hpPercent: 100, liveSet: slowSet() })]);
+  trState.field.trickRoom = true;
+  trState.field.trickRoomTurnsLeft = 2;
+  const trNode = dflt._nodeFrom(trState, null);
+  const trAfter = dflt._endOfTurn(trNode);
+  check('the Trick Room timer ticks down (2 -> 1, still up)',
+    trAfter.field.trickRoomTurnsLeft === 1 && trAfter.field.trickRoom === true,
+    JSON.stringify([trAfter.field.trickRoomTurnsLeft, trAfter.field.trickRoom]));
+  check('...and the source board is untouched by the tick', trState.field.trickRoomTurnsLeft === 2,
+    String(trState.field.trickRoomTurnsLeft));
+  trState.field.trickRoomTurnsLeft = 1;
+  const trAfter2 = dflt._endOfTurn(dflt._nodeFrom(trState, null));
+  check('...at 0 it expires and clears the flag',
+    trAfter2.field.trickRoomTurnsLeft === 0 && trAfter2.field.trickRoom === false,
+    JSON.stringify([trAfter2.field.trickRoomTurnsLeft, trAfter2.field.trickRoom]));
+
+  const chipState = board([mon('Iron Valiant', {
+    side: 'p1', isActive: true, hpPercent: 80, liveSet: valiantSet()
+  })], [mon('Kingambit', {
+    isActive: true, hpPercent: 80, liveSet: liveSet('Kingambit', ['Kowtow Cleave'], {
+      nature: 'Adamant', evs: spread({ hp: 252, atk: 252 }), item: 'Leftovers'
+    })
+  })]);
+  chipState.myTeam[0].status = 'brn';
+  const chipNode = dflt._nodeFrom(chipState, null);
+  const chipAfter = dflt._endOfTurn(chipNode);
+  check('burn chips 1/16 off us at end of turn', Math.abs(chipAfter.my.bodies[0].hp - 73.75) < 1e-9,
+    String(chipAfter.my.bodies[0].hp));
+  check('...and Leftovers heals 1/16 on them', Math.abs(chipAfter.opp.bodies[0].hp - 86.25) < 1e-9,
+    String(chipAfter.opp.bodies[0].hp));
+
+  /* ---- 7d. the transposition cache is a memo, never a reproof ---- */
+
+  const withTt = mkSolver().solve(boardWideMate(), null);
+  const withoutTt = mkSolver({ transposition: false }).solve(boardWideMate(), null);
+  check('the cache records hits on a board that transposes', !!withTt && withTt.transpositions > 0,
+    withTt && String(withTt.transpositions));
+  check('...and OFF it records none', !!withoutTt && withoutTt.transpositions === 0,
+    withoutTt && String(withoutTt.transpositions));
+  check('...and the ANSWER is identical either way (same value, mate and line)',
+    !!withTt && !!withoutTt && withTt.score === withoutTt.score &&
+      withTt.mateIn === withoutTt.mateIn &&
+      JSON.stringify(withTt.line) === JSON.stringify(withoutTt.line),
+    JSON.stringify([withTt && withTt.score, withoutTt && withoutTt.score]));
+
+  /* ---- 7e. solveAcrossWorlds: one world is not evidence ---- */
+
+  const meHealthy = mon('Iron Valiant', {
+    side: 'p1', isActive: true, hpPercent: 100, liveSet: valiantSet()
+  });
+  const baseState = board([meHealthy], [mon('Kingambit', { isActive: true, hpPercent: 12, liveSet: slowSet() })]);
+  const weakWorld = { team: [mon('Kingambit', { isActive: true, hpPercent: 12, liveSet: slowSet() })] };
+  const tankWorld = { team: [mon('Corviknight', {
+    isActive: true, hpPercent: 100,
+    liveSet: liveSet('Corviknight', ['Iron Head', 'Roost'], { nature: 'Impish', evs: spread({ hp: 252, def: 252 }) })
+  })] };
+  const mw = mkSolver({ maxDepth: 3 });
+  const agreed = mw.solveAcrossWorlds(baseState, [weakWorld, weakWorld]);
+  check('a mate proven in every world is reported, with the world count',
+    !!agreed && agreed.solved === true && agreed.worlds === 2, JSON.stringify(agreed));
+  const split = mw.solveAcrossWorlds(baseState, [weakWorld, tankWorld]);
+  check('a mate that ONE surviving world refutes is NOT reported', !!split && split.solved === false,
+    JSON.stringify(split));
+  check('...and the reported score is the WORST case over the worlds',
+    !!split && split.score === Math.min.apply(null, split.worldScores),
+    JSON.stringify(split && split.worldScores));
+  check('...with every world\u2019s number carried on the report',
+    !!split && Array.isArray(split.worldScores) && split.worldScores.length === 2,
+    JSON.stringify(split && split.worldScores));
+  const offMulti = mkSolver({ maxDepth: 3, multiWorld: false });
+  const single = offMulti.solveAcrossWorlds(baseState, [weakWorld, tankWorld]);
+  check('multiWorld:false is the shipped single-world contract again',
+    !!single && single.solved === true && single.worlds === undefined, JSON.stringify(single));
 }
 
 /* --------------------------------------------------------------------- summary */

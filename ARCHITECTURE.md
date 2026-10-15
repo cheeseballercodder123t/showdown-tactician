@@ -726,7 +726,15 @@ document.dispatchEvent(new CustomEvent('ShowdownTactician_ProtocolEvent', {
    `background.js` is the only place that performs the LLM fetch, because MV3 content
    scripts are subject to page CORS and cannot use the extension's host permissions.
 4. **Terastallization** is tracked but never simulated: `terastallizationBanned` is true and
-   `|terastallize|` lines raise a console warning only.
+   `|terastallize|` lines raise a console warning only. Because the flag is set on EVERY board,
+   the two dims that exist to price Tera (`_teraThreat`, dims 120/121) would read a hard 0 in
+   every row of the training corpus — a fitted weight for a fact this format cannot produce.
+   While the ban is set they therefore carry the **cleaner advantage** instead
+   (`_cleanerAdvantage`): the share of the opponent's LIVING bodies that our fastest living body
+   both outspeeds and removes in two hits, read from the damage engine and memoised on the full
+   matchup. A board whose state does not carry the flag keeps `_teraThreat` byte for byte, and
+   both dims' shipped coefficients are 0, so the SCORE is unchanged until the vector is
+   re-fitted on data that now moves them.
 5. **The tests live beside the code they guard**, including two files at the repository root:
    `test_engine.js` (RULE 2, the frozen ground-truth damage rolls) and `test_log.txt` (RULE 3,
    a real 30-turn battle as a raw protocol stream). `tests/blackbox_guard.js` (RULE 1) and
@@ -1045,6 +1053,61 @@ rate. The ceiling any pivot fix could reach is measured too, not guessed: on the
 preferred a pivot while the human attacked, its own best non-pivot line was that click 55.8% of the
 time, and never pivoting while holding an attack would score top-1 45.2% overall against the shipped
 31.7%. The ranking is not what is broken — the preference is.
+
+**The endgame solver's 2026-10-15 hardening pass** (`src/endgame_solver.js`, the `laplace.endgame`
+tier, five leaves). The tier itself still ships `enabled: false`, and its first 60-battle reading
+(`ATTEMPTS.md` §M1) says a win rate cannot price it at all: the tier publishes a readout and NOTHING in
+the ranking path reads it, so the row is `identical` by construction. The pass fixed five things that
+would otherwise have made the readout a claim about the wrong tree. (1) `simultaneousPly` — a turn is a SIMULTANEOUS game. The old shape was `max_i min_j`, a valid
+floor but the price of a Stackelberg game where the opponent reads our hidden action and answers it;
+the turn is now solved as a small zero-sum matrix by regret matching unless one side holds a strictly
+dominant pure action, and the game value can never sit below the maximin floor. (2)
+`includeRecoveryAndProtect` — `Recover`/`Roost`/`Slack Off`/`Soft-Boiled` used to read as "does
+nothing" (the single most dangerous way to be wrong about an endgame) and `Protect` as a free turn.
+Both are actions now: a heal restores 50 % only while its body still stands when the action resolves,
+and a shield blocks the incoming hit for the turn and is only OFFERED while that side's protect chain
+is broken, because the second one in a row fails in the real game. (3) `modelPhysics` — a replacement
+PAYS its side's entry hazards through `U.hazardPercent`, Trick Room's timer decrements and expires
+mid-tree, and end-of-turn burn/poison chip and Leftovers recovery land on both actives. (4)
+`transposition` — a per-`solve()` memo keyed on the board with HP bucketed into `ceil(hp / 5)` (0
+preserved exactly) plus the active slots, boosts, protect streaks, the Trick Room timer and the
+(depth, ply) pair. Only values computed with a FULL window are stored: a fail-high is a bound, not a
+value, and caching one under an exact key corrupts a sibling branch. (5) `solveAcrossWorlds(state,
+worlds)` — the multi-world entry point `LaplaceEngine` now calls: a forced win is reported only when
+EVERY non-refusing world proves one with the SAME root action, and otherwise the report carries the
+root offering the best worst-case score across worlds. Each leaf is independently switchable and each
+is pinned in `tests/endgame_check.js` §7.
+
+**Two opponent-model tiers** joined it in the same pass, both `enabled: false`.
+`laplace.surpriseMask` builds an OPPONENT-PERCEIVED copy of the payoff matrix in which a row for an
+UNREVEALED, NON-STAB move of ours is blended toward our best revealed-or-STAB row at
+`unrevealedWeight`, and solves only THEIR half against it: our rows are still scored on the true
+matrix against the mix that produces, and our own frequencies still best-respond to the real game, so
+the tier can change what we expect them to do and nothing else. A STAB move is excluded on purpose —
+its typing is readable off the species, so pricing it is not telepathy, and neither is a move already
+in `revealedMoves`. `laplace.nash.priorAnchored` replaces the opponent's hard response with regret
+matching anchored to a behavioral prior, `(1 - c) * regretMatch + c * P_prior` with `c =
+priorWeight`; the regret is measured against the value of the mixture they are CURRENTLY playing
+(against `max_j Q_j` no action can have positive regret, which makes that version of the formula the
+argmax and leaves the prior doing all the work), and `P_prior` is normalized from measurements only:
+each damaging move's average percentage into our active, a setup weight gated on whether our active
+can 2HKO them, and a switch baseline that jumps to `switchEscape` when their active faces a
+guaranteed OHKO from a REVEALED/STAB move of ours and the incoming body resists it. `priorWeight: 0`
+and an absent or ragged prior both resolve to the shipped hard loop step for step. Pinned by
+`tests/tuning_check.js` §8 and §9. Both rows were measured on 2026-10-15 (`ATTEMPTS.md` §M2/§M3): the
+mask changed decisions and turned six decided games into 100-turn standoffs (Δscore exactly 0.0,
+flagged `stall`), and the anchored mix engaged and changed no decision — the ceiling §L2 names, since
+our own frequencies best-respond to the opponent's hard argmax index.
+
+**The training corpus now drives the pruner.** `tools/extract_training_data.js` builds the
+`ST.ArchetypePruner` the way `src/content.js` does and calls it on the same events (a `move` under
+content.js's own two-move guard, `switch` / `item` / `enditem` / `activate`, the format-lock cascade
+and `speedfloor`), because `cannotBeChoice`, `itemless` and `liveSet` are written by that one module
+and read by dims 64..75. Without it those dims were constant 0 in every corpus row — a property of
+the extractor, not of the format. `drivePruner` reproduces the call sites rather than pruning
+everything every turn, so the extracted board is the board the engine sees. `tests/weights_check.js`
+§5b proves the wiring by A/B (the same corpus, the pruner absent from the sandbox) and pins dims
+120/121 on constructed boards.
 
 **The Turn-0 lead advisory** (`leadAdvisory` / `_matchupScore`). `|teampreview|` is inert to the
 parser by design (pinned by `tests/parser_fuzz.js`), so `src/content.js` hangs the read off the raw

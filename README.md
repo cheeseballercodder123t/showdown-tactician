@@ -5,7 +5,8 @@ engine for **[Gen 9] National Dex OU** and renders its verdict as a thumb-friend
 Built for Chromium-on-Android (Lemur Browser, Samsung Galaxy S24 FE, 1080×2340).
 
 * Format: `[Gen 9] National Dex OU` — Megas, Z-Moves and Gen 9 Paradox mons are live;
-  **Terastallization is tracked but never simulated** (banned in this format).
+  **Terastallization is tracked but never simulated** (banned in this format) — and the two 128D dims
+  that used to price it, 120/121, carry the cleaner advantage instead while the ban is set.
 * Architecture: determinized multi-world sampling (K=6), 2-ply simultaneous matrix solver
   solved for a mixed equilibrium (fictitious play), 128D dense-state leaf evaluator +
   10D momentum vector, twelve deterministic blunder vetoes, Trick Room lifecycle manager,
@@ -195,7 +196,7 @@ src/injected.js            MAIN-world WebSocket interceptor
 src/background.js          service worker: the only component that calls the LLM API
 src/content.js             pipeline orchestrator
 options/options.html|js    mobile settings page (provider, key, team, Elo scaler)
-tests/run_tests.js         end-to-end verification suite (232 checks)
+tests/run_tests.js         end-to-end verification suite (247 checks)
 tests/rule_checks.js       deduction-rule checks driven through real protocol lines (23 checks)
 tests/util_smoke.js        util.js in isolation: dex access, item naming, type math, Speed maths,
                            the move-lookup cache (55 checks)
@@ -220,7 +221,7 @@ tests/upgrades_check.js    the mixed-strategy solver against matrices with an an
                            the newer vetoes, the deliberation clock and the reverse damage rule (118 checks)
 tests/chaos_sync_check.js  the monthly chaos-sync tool + the usage overlay it writes (70 checks)
 tests/weights_check.js     the corpus downloader + the extractor + the IRLS fitter + the adopted config
-                           vector, against a planted model (233 checks)
+                           vector, against a planted model (264 checks)
 tests/discrete_check.js    the 16 discrete damage rolls, the exact KO count, EV pinning and the
                            residual-order Speed evidence (110 checks)
 tests/scout_check.js       the replay-scouting tool + the overlay it writes + the pruner's use of it (78 checks)
@@ -236,7 +237,8 @@ tests/tuning_check.js      the four tuning tiers — the Elo switch band, turn u
                            shipped default and the exact number it moves when toggled — plus the
                            selective 2-ply beam, the stratified worlds that flipped their own default,
                            and the quantal-response opponent, whose temperature cannot reach our own
-                           frequencies (200 checks)
+                           frequencies — plus the unrevealed-coverage mask the opponent's half of the
+                           solve reads and the prior-anchored response (252 checks)
 tests/preview_check.js     the Turn-0 lead advisory: the parser contract, the 6x6 evaluator scoring,
                            the broker wiring and the HUD card (31 checks)
 tests/quiescence_check.js  the setup punisher: the boost table, the one extra exchange, the three
@@ -327,7 +329,7 @@ ARCHITECTURE.md            frozen interface contract every module binds to
 
 ```
 node test_engine.js           #  57 checks: RULE 2 — five ground-truth damage rolls, frozen
-node tests/run_tests.js       # 232 checks: the whole pipeline in a DOM-less sandbox
+node tests/run_tests.js       # 247 checks: the whole pipeline in a DOM-less sandbox
 node tests/rule_checks.js     #  23 checks: the deductions, replayed from raw protocol lines
 node tests/util_smoke.js      #  55 checks: dex access, item naming, type math, Speed maths, the lookup caches
 node tests/injected_bridge.js #  23 checks: the MAIN-world WebSocket bridge (fake WebSocket/DOM)
@@ -337,7 +339,7 @@ node tests/parser_fuzz.js     #  44 checks: RULE 3 — the real log, all its pre
 node tests/hardening_audit.js #  64 checks: the bug-hunt regressions + a 40-battle invariant fuzz
 node tests/upgrades_check.js  # 118 checks: the mixed-strategy solve, the vetoes, the clock, damage evidence
 node tests/chaos_sync_check.js # 70 checks: the chaos sync + the usage overlay (fixtures only, no network)
-node tests/weights_check.js   # 233 checks: the downloader + the extractor + the fitter + the config adoption
+node tests/weights_check.js   # 264 checks: the downloader + the extractor + the fitter + the config adoption
 node tests/cross_check.js     #  79 checks: the cross screening, the --crosses refit, and the refusal to adopt
 node tests/hud_check.js       # 238 checks: the seven HUD extras (stub DOM), the bench-tap sandbox end to end,
                               #   their engine data, and the Cancel-window ponder's scheduling contract
@@ -349,14 +351,17 @@ node tests/quiescence_check.js # 108 checks: the setup punisher, the boost table
 node tests/profile_check.js   #  80 checks: the opponent profiler (deviation, labels, clamping)
 node tests/entropy_check.js   #  48 checks: the scouting entropy and its assumed-response model
 node tests/wincon_check.js    #  56 checks: the win-condition bounty (refusals, payout)
-node tests/endgame_check.js   #  83 checks: the 2-body mate, the 3v3 box, the Speed chance node, its rails
+node tests/endgame_check.js   # 118 checks: the 2-body mate, the 3v3 box, the Speed chance node, the five
+                              #   hardening leaves (simultaneous ply, recovery/Protect, physics, the
+                              #   transposition cache, multi-world mates) and the rails
 node tests/arena_check.js     # 157 checks: the arena — runner, splicer, agent legality, mutator, harvester
 node tests/invariants_check.js #  17 checks: the solver's invariants over perturbed boards
 node tests/ability_check.js   #  56 checks: the negative-space ability deduction (status, grounding, the gated absence rule,
                               #   and every observation that only LOOKS like proof)
-node tests/tuning_check.js    # 200 checks: the tuning tiers — the Elo band, turn urgency (adopted), comeback mode,
+node tests/tuning_check.js    # 252 checks: the tuning tiers — the Elo band, turn urgency (adopted), comeback mode,
                               #   the pivot tax (rejected), the 2-ply beam, the stratified active-set
-                              #   worlds (which flipped their own default) and the QRE opponent
+                              #   worlds (which flipped their own default), the QRE opponent, the
+                              #   surprise mask and the prior-anchored opponent response
 node tests/preview_check.js   #  31 checks: the Turn-0 lead advisory (parser contract, 6x6 scoring, HUD card)
 node tests/mlp_check.js       #  48 checks: the residual head's gate, fail-safe and clamp (it ships off)
 node tests/dom_check.js       #  99 checks: the HUD's DOM lifecycle, driven through a stub parser
@@ -639,6 +644,29 @@ exploited by a fixed counter-strategy.
 * **Known approximation.** The matrix is treated as zero-sum (our payoff is their loss), but the
   payoffs come from a heuristic evaluator, so the mixture is the equilibrium of the *model*, not
   of the real game. That is the honest limit of any engine without a learned value head.
+* `laplace.surpriseMask` (default `false`) prices what they cannot see. The matrix is built over their
+  FULL reply list, so the equilibrium already knows about our unrevealed coverage move; with the tier
+  on, the OPPONENT's half of the solve reads a copy in which a row for an **unrevealed non-STAB** move
+  of ours is blended toward our best revealed-or-STAB row at `unrevealedWeight` (0.35), while our own
+  rows are still scored on the true matrix against the mix that produces. A STAB move is never masked:
+  it is readable off the species, so faking ignorance of it would be the telepathy backwards.
+  `tests/tuning_check.js` §8 pins the classification, the cell-by-cell blend, and a fixture board where
+  the unrevealed lure lifts their pivot frequency and the lure's true value with it.
+* `laplace.nash.priorAnchored` (default `false`) anchors their response to a behavioral prior,
+  `(1 - c) * regretMatch + c * P_prior` at `c = priorWeight` (0.25), with `P_prior` normalized from
+  measurements only: each damaging move's average percentage into our active, a setup weight that
+  depends on whether our active can 2HKO them, and a switch baseline that jumps to `switchEscape` when
+  their active faces a guaranteed OHKO from a **revealed or STAB** move of ours and the incoming body
+  resists it. It softens the opponent and leaves our own frequencies alone — `priorWeight: 0` and an
+  absent prior both resolve to the shipped loop step for step — which is the direction `ATTEMPTS.md`
+  E5 asked about, at one point rather than instead of the hard solve. `tests/tuning_check.js` §9 pins
+  the identity and a fixture where the hard solve zeroes three of their replies and the anchored one
+  weights all of them.
+  Both of these ship `false`, and the first paired sweep left them there (`ATTEMPTS.md` §M): the mask
+  bought 6 extra 100-turn standoffs for 3 wins and 3 losses and a match score that did not move at all,
+  and the anchored mix engaged and changed no decision, which is the ceiling §L2 names — our own
+  frequencies best-respond to their hard argmax index, so a softer opponent can only reach the score
+  tie-break.
 
 The blunder layer grew from four hard vetoes to twelve. Alongside protect-rhythm, ability
 immunity, lone-TR-setter and speed-suicide, `src/veto_guard.js` now refuses:
@@ -785,8 +813,22 @@ would mean:
   do not have. `chanceNodes` (default `true`) prices that pair as the expectation over the two orders,
   weighted by their own surviving candidate sets, instead of refusing the solve — but **a mate is never
   claimed through one**, because a proof cannot rest on a coin flip.
+  Five further leaves, all defaulting ON because they are corrections rather than preferences, are the
+  2026-10-15 hardening pass: `simultaneousPly` solves the turn as the small zero-sum matrix a turn of
+  Pokemon actually is (the body it replaced was `max_i min_j` — the price of an opponent who reads our
+  hidden turn-t action), `includeRecoveryAndProtect` makes `Recover`/`Roost`/`Slack Off`/`Soft-Boiled`
+  and `Protect` ACTIONS instead of a free turn (a heal only while its body still stands when the action
+  resolves, a shield only while that side's chain is broken), `modelPhysics` charges entry hazards on a
+  replacement and ticks Trick Room's timer and the end-of-turn burn/poison and Leftovers chip,
+  `transposition` memoises a board (HP bucketed into `ceil(hp / 5)`, exact `0` preserved, full-window
+  values only, so a fail-high bound cannot be cached under an exact key) so move orders that meet in
+  the same position stop paying twice, and `solveAcrossWorlds` reports a mate only when **every**
+  surviving world proves one with the same root action, carrying the best worst case otherwise.
   `tests/endgame_check.js` §6 pins the 3v3 mate (found in 64 nodes) and lands the blended row
-  between two certain-order references.
+  between two certain-order references; §7 switches each of the five leaves and pins what it changes —
+  including the chip helper that was handed the side OBJECT rather than its name, so every end-of-turn
+  chip had been a silent no-op until §7c ran it. `LaplaceEngine` calls `solveAcrossWorlds` (pinned in
+  `tests/run_tests.js`), so a published mate has to hold across every sampled world.
 
 All four publish on `lastReadout` (`profile`, `scouting`, `wincon`, `endgame`), which is what the HUD
 and the LLM bridge already read; `src/ui_overlay.js` does not render them yet.

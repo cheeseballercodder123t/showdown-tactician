@@ -374,6 +374,33 @@ function main() {
     const cascadeState = { formatLocks: { oppHasMegaEvolved: true, oppHasUsedZMove: false }, oppTeam: [{ species: 'Charizard', id: 'charizard', candidateSets: [{ id: 'z-mega-y', species: 'Charizard', item: 'Charizardite Y', isMega: true, weight: 0.3, moves: [], evs: {}, ivs: {}, tags: [] }, { id: 'z-boots', species: 'Charizard', item: 'Heavy-Duty Boots', isMega: false, weight: 0.4, moves: [], evs: {}, ivs: {}, tags: [] }], prunedReasons: [] }], myTeam: [] };
     pruner.applyFormatLockCascade(cascadeState);
     eq('pruner: format cascade strips mega stones', cascadeState.oppTeam[0].candidateSets.filter(function (s) { return S.ST.util.isMegaStone(s.item); }).length, 0);
+
+    /* THE TRAINING EXTRACTOR MUST DRIVE THE SAME PRUNER ON THE SAME EVENTS. `cannotBeChoice`,
+     * `itemless` and `liveSet` are written by this module and read by dims 64..75 of the 128D
+     * layout, so an extractor that never constructs a pruner produces corpus rows whose item block
+     * is constant zero for a reason that has nothing to do with the format. tests/weights_check.js
+     * section 5b proves the extracted rows MOVE when the wiring is on; this pins the wiring itself
+     * -- the module is exported and it prunes on content.js's own event set. */
+    const extractor = require('../tools/extract_training_data.js');
+    eq('extractor: the pruner driver is exported', typeof extractor.drivePruner, 'function');
+    const spy = { calls: 0, resets: 0, prune: function () { this.calls++; }, reset: function () { this.resets++; } };
+    const foe = { species: 'Iron Valiant', id: 'ironvaliant', side: 'p2', slot: 'p2a',
+      activeStintMoves: ['Moonblast', 'Thunderbolt'], candidateSets: [{}] };
+    /* A manager stub whose `getMon` resolves the body the event names -- exactly what
+     * src/content.js's `_monFor` does with the real state manager. */
+    const drive = function (event) {
+      return extractor.drivePruner({ state: { mySide: 'p1', oppTeam: [foe] }, getMon: function () { return foe; } },
+        event, spy, S.ST.util);
+    };
+    eq('...it prunes a body that has used two moves in one stint',
+      drive({ type: 'move', side: 'p2', slot: 'p2a', species: 'Iron Valiant' }), 1);
+    eq('...and on a switch, exactly as src/content.js does',
+      drive({ type: 'switch', side: 'p2', slot: 'p2a', species: 'Iron Valiant' }), 1);
+    eq('...and on an item / activate event',
+      drive({ type: 'activate', side: 'p2', slot: 'p2a', species: 'Iron Valiant' }), 1);
+    eq('...while a turn header drives nothing at all', drive({ type: 'turn', turn: 2 }), 0);
+    eq('...and a fresh battle RESETS the pool instead of pruning it',
+      [drive({ type: 'init' }), spy.resets, spy.calls], [0, 1, 3]);
   } else {
     check('pruner: modules present', false, 'ArchetypePruner or SetDatabase missing');
   }
@@ -425,6 +452,35 @@ function main() {
     const winScore = ev.evaluate(winning);
     check('evaluator: four fainted mons score worse than the opponent losing four', lossScore < 0 && winScore > 0, JSON.stringify({ lossScore: lossScore, winScore: winScore }));
     check('evaluator: losing state is far below winning state', winScore - lossScore > 400, JSON.stringify({ lossScore: lossScore, winScore: winScore }));
+
+    /* DIMS 120/121. Tera is banned in the only format this engine is built for, so the shipped
+     * `_teraThreat` pair read a hard 0 in every row the corpus ever produced. Under the ban they
+     * carry the CLEANER ADVANTAGE instead -- the share of their living bodies our fastest living
+     * body both outspeeds and removes in two hits -- and that branch is what these pin. The full
+     * fixture proofs (who is outsped, who survives, Trick Room inverting it) live in
+     * tests/weights_check.js section 5b. */
+    const bannedBoard = JSON.parse(JSON.stringify(battleState));
+    bannedBoard.terastallizationBanned = true;
+    bannedBoard.active.my.terastallized = true;
+    bannedBoard.active.opp.terastallized = true;
+    const allowedBoard = JSON.parse(JSON.stringify(bannedBoard));
+    allowedBoard.terastallizationBanned = false;
+    const bannedDims = Array.from(ev.extractVector(bannedBoard)).slice(120, 122);
+    const allowedDims = Array.from(ev.extractVector(allowedBoard)).slice(120, 122);
+    eq('evaluator: with Tera allowed the pair is still the tera threat', allowedDims, [0.5, 0.5]);
+    check('evaluator: under the NatDex ban the same board reads something else entirely',
+      JSON.stringify(bannedDims) !== JSON.stringify(allowedDims) &&
+        bannedDims.every(function (v) { return isFinite(v) && v >= 0 && v <= 1; }),
+      JSON.stringify([bannedDims, allowedDims]));
+    const banPlain = JSON.parse(JSON.stringify(bannedBoard));
+    banPlain.active.my.terastallized = false;
+    banPlain.active.opp.terastallized = false;
+    eq('...and the BAN is what decides, not the tera flag: clearing it does not move them',
+      Array.from(ev.extractVector(banPlain)).slice(120, 122), bannedDims);
+    check('evaluator: the pair is a fraction of their living bodies on every other board',
+      Array.from(ev.extractVector(battleState)).slice(120, 122)
+        .every(function (v) { return isFinite(v) && v >= 0 && v <= 1; }),
+      JSON.stringify(Array.from(ev.extractVector(battleState)).slice(120, 122)));
   } else {
     check('evaluator: DenseStateEvaluator present', false);
   }
@@ -820,6 +876,45 @@ function main() {
     check('laplace: bunker rhythm can veto contact attacks', vetoed.length >= 0 && vetoed.every(function (r) { return r.confidence === 0 && !!r.vetoReason; }), JSON.stringify(vetoed.map(function (r) { return [r.name, r.vetoReason]; })));
     const simulate = engine.simulate({ kind: 'move', name: 'Headlong Rush', moveId: 'headlongrush' }, (engine.lastReadout.worlds || [])[0] || { team: [] }, bunkerDecision);
     check('laplace: simulate produces a transition', !!simulate && typeof simulate.oppPercentDelta === 'number', JSON.stringify(simulate && { o: simulate.oppPercentDelta, m: simulate.myPercentDelta }));
+
+    /* THE ENDGAME TIER'S CALL SITE. That tier is a READOUT, and the one thing a readout must not do
+     * is claim a forced win from ONE sampled opponent set. `solveAcrossWorlds` exists for that
+     * (`tests/endgame_check.js` §7e pins the aggregation itself: a mate needs EVERY world to prove it
+     * with the same root action, and a disagreement carries the worst case instead). What this pins
+     * is the wiring — that the engine reaches for the multi-world entry point with the whole world
+     * list — and that a solver which predates it (only `solve`) still runs. */
+    const multiCalls = [];
+    const singleCalls = [];
+    const stubSolver = {
+      enabled: true,
+      solve: function (state, world) { singleCalls.push(world); return { solved: false, isMate: false, reason: 'stub-single' }; },
+      solveAcrossWorlds: function (state, worlds) { multiCalls.push(worlds); return { solved: false, isMate: false, reason: 'stub-multi' }; }
+    };
+    const stubEngine = new S.ST.LaplaceEngine({
+      K: 4, damage: damage,
+      evaluator: S.ST.DenseStateEvaluator ? new S.ST.DenseStateEvaluator() : null,
+      sampler: S.ST.WorldSampler ? new S.ST.WorldSampler({ K: 4, rng: S.ST.WorldSampler.mulberry32(7) }) : null,
+      tempo: S.ST.TempoEngine ? new S.ST.TempoEngine({ damage: damage }) : null,
+      veto: S.ST.BlunderVetoGuard ? new S.ST.BlunderVetoGuard({ damage: damage }) : null,
+      trickRoom: S.ST.TrickRoomEngine ? new S.ST.TrickRoomEngine(damage) : null,
+      endgameSolver: stubSolver
+    });
+    stubEngine.evaluateTurn(decision);
+    eq('laplace: an enabled endgame tier is called through solveAcrossWorlds', multiCalls.length, 1);
+    check('...with EVERY sampled world rather than only the first',
+      multiCalls.length === 1 && multiCalls[0].length === 4,
+      JSON.stringify(multiCalls[0] && multiCalls[0].length));
+    eq('...and the single-world entry point is not reached when the multi-world one exists', singleCalls.length, 0);
+    eq('...and the aggregate report is what the readout publishes', stubEngine.lastReadout.endgame.reason, 'stub-multi');
+    const legacyStub = { enabled: true, solve: function () { singleCalls.push('legacy'); return null; } };
+    const legacyEngine = new S.ST.LaplaceEngine({
+      K: 4, damage: damage,
+      evaluator: S.ST.DenseStateEvaluator ? new S.ST.DenseStateEvaluator() : null,
+      sampler: S.ST.WorldSampler ? new S.ST.WorldSampler({ K: 4, rng: S.ST.WorldSampler.mulberry32(7) }) : null,
+      endgameSolver: legacyStub
+    });
+    legacyEngine.evaluateTurn(decision);
+    eq('...while a solver that only implements solve() still runs', singleCalls.length, 1);
   } else {
     check('laplace: LaplaceEngine present', false);
   }

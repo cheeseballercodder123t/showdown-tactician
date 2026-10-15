@@ -57,6 +57,77 @@ function replaysOf(corpus) {
 }
 
 /**
+ * THE PRUNER IS PART OF THE OBSERVATION, NOT A DECORATION.
+ *
+ * `cannotBeChoice`, `itemless`, `liveSet` and the speed bounds are written by ONE module,
+ * src/set_pruner.js, and read by dims 64..75 of the frozen 128D layout. The browser builds that
+ * pruner in src/content.js and calls it on events; this tool did not build one at all, so those
+ * dims were constant 0 in every extracted row -- the fitter was handed columns that no corpus
+ * could move, and the "structurally zero" weights it produced were an artifact of the extractor,
+ * not a fact about the format.
+ *
+ * `drivePruner` reproduces src/content.js's own call sites -- the same event kinds, the same
+ * guards, the same order -- instead of "prune every body every turn", because the point is to
+ * extract the board the ENGINE actually sees. A deduction the browser makes on a `|move|` line
+ * and this tool made somewhere else would put a different vector in the corpus.
+ *
+ * Returns how many times it pruned, so tests/weights_check.js can prove the wiring is live rather
+ * than merely present.
+ */
+function monForEvent(manager, event, U) {
+  if (!manager || !manager.state || !event) return null;
+  const state = manager.state;
+  const side = event.side || null;
+  if (side && event.slot && typeof manager.getMon === 'function') {
+    const mon = manager.getMon(side, event.slot);
+    if (mon) return mon;
+  }
+  const team = side === state.mySide ? state.myTeam : state.oppTeam;
+  if (!team) return null;
+  const wanted = U.toID(event.species);
+  for (let i = 0; i < team.length; i++) {
+    if (team[i] && U.toID(team[i].species || team[i].id) === wanted) return team[i];
+  }
+  return null;
+}
+
+function drivePruner(manager, event, pruner, U) {
+  if (!event || !pruner) return 0;
+  const state = manager.state;
+  let calls = 0;
+  const prune = function (mon) {
+    if (!mon || !state) return;
+    pruner.prune(mon, state);
+    calls++;
+  };
+  if (event.type === 'init') {
+    // A fresh battle must not inherit the previous game's pool (content.js does the same).
+    if (typeof pruner.reset === 'function') pruner.reset();
+    return 0;
+  }
+  if (event.type === 'speedfloor') {
+    if (typeof pruner.handleSpeedFloorEvent === 'function') pruner.handleSpeedFloorEvent(event, state);
+    return 0;
+  }
+  if (event.type === 'move') {
+    const mon = monForEvent(manager, event, U);
+    if (mon) {
+      const twoMoves = (mon.activeStintMoves || []).length >= 2 && !mon.isEncored;
+      if (twoMoves || (mon.candidateSets || []).length > 1) prune(mon);
+    }
+    return calls;
+  }
+  if (event.type === 'item' || event.type === 'enditem' || event.type === 'activate' || event.type === 'switch') {
+    prune(monForEvent(manager, event, U));
+    if (state && state.formatLocks && state.formatLocks.oppHasMegaEvolved &&
+      typeof pruner.applyFormatLockCascade === 'function') {
+      pruner.applyFormatLockCascade(state);
+    }
+  }
+  return calls;
+}
+
+/**
  * extractDataset(corpus, api) -> { dimensions, samples, replays, rows }
  * `api` is { ST } (the harness sandbox); omit it and the harness is loaded here.
  */
@@ -77,7 +148,13 @@ function extractDataset(corpus, api) {
     const parser = new ST.ProtocolParser();
     const manager = new ST.BattleStateManager({ debug: false });
     manager.attachParser(parser);
-    const evaluator = new ST.DenseStateEvaluator();
+    // The damage engine is built first because the pruner's reverse-damage rule runs an observed
+    // hit back through each candidate spread to disprove it, and the evaluator shares the same
+    // instance so the cleaner dims (120/121) read ITS memo rather than rebuilding one per row.
+    const damage = ST.DamageEngine ? new ST.DamageEngine({ gen: 9 }) : null;
+    const pruner = (ST.ArchetypePruner && damage) ? new ST.ArchetypePruner({ damage: damage }) : null;
+    const evaluator = new ST.DenseStateEvaluator({ damage: damage });
+    let prunes = 0;
 
     const lines = linesOf(replay.log);
     const local = [];
@@ -90,7 +167,9 @@ function extractDataset(corpus, api) {
       } catch (e) {
         continue;                                   // a malformed line is not a reason to abort
       }
-      if (!evt || evt.type !== 'turn') continue;
+      if (!evt) continue;
+      if (pruner) prunes += drivePruner(manager, evt, pruner, ST.util);
+      if (evt.type !== 'turn') continue;
       const state = manager.state;
       if (!state) continue;
       const mine = state.active && state.active.my;
@@ -109,7 +188,11 @@ function extractDataset(corpus, api) {
     }
     provenance.push({
       index: r, winner: winner, mySide: mySide, label: won ? 1 : 0,
-      lines: lines.length, turns: turns, skippedTurns: skipped, rows: local.length
+      lines: lines.length, turns: turns, skippedTurns: skipped, rows: local.length,
+      // Published so a reader can tell a corpus that exercised the pruner from one that did not:
+      // a run with `prunes: 0` carries the four item dims at constant zero for a reason that has
+      // nothing to do with the format.
+      prunes: prunes, pruner: !!pruner
     });
   }
 
@@ -156,7 +239,8 @@ function main(argv) {
   return 0;
 }
 
-module.exports = { DIM: DIM, extractDataset: extractDataset, linesOf: linesOf, replaysOf: replaysOf, parseArgs: parseArgs, main: main, loadApi: loadApi };
+module.exports = { DIM: DIM, extractDataset: extractDataset, linesOf: linesOf, replaysOf: replaysOf,
+  parseArgs: parseArgs, main: main, loadApi: loadApi, drivePruner: drivePruner, monForEvent: monForEvent };
 
 if (require.main === module) {
   try {

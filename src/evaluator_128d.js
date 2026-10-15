@@ -59,6 +59,12 @@
       // one entry, and which body wins depends on iteration order). Enriching that key changes
       // scores, so it is left exactly as-is.
       this._offMemo = new Map();
+      // The damage engine behind dims 120/121's cleaner advantage (see `_damageEngine`), and the
+      // memo for its KO verdicts (`_takesOutInTwo`). Both are lazy: a build that never sets
+      // `terastallizationBanned` never constructs either.
+      this.damage = options.damage || null;
+      this._dmg = undefined;
+      this._koMemo = new Map();
       // The optional residual head (src/mlp_residual.js). Resolved lazily and cached, because
       // `evaluate()` is the hot path (`_payoff` calls it up to 432 times per turn) and the head
       // must stay OFF — bit-identically off, not "plus zero" — unless the config enables it. A
@@ -207,8 +213,33 @@
       const boostScale = cfg('evaluator.boostSumScale', 18);
       v[118] = U.clamp(this._boostSum(myActive) / boostScale, -1, 1);
       v[119] = U.clamp(this._boostSum(oppActive) / boostScale, -1, 1);
-      v[120] = this._teraThreat(myActive, oppActive, state);
-      v[121] = this._teraThreat(oppActive, myActive, state);
+      /* 120/121 — TERA THREAT, or the CLEANER ADVANTAGE when Terastallization is banned.
+       *
+       * `_teraThreat` is a hard 0 in this format: `[Gen 9] National Dex OU` bans Tera, the state
+       * manager sets `terastallizationBanned` on every board (state_manager.js), and so two of the
+       * 128 weights in lib/trained-weights.json fitted to `nonzero: 0` — the model was handed a
+       * dim whose value this format never produces. Deleting them would be a layout change
+       * (ARCHITECTURE.md §3 freezes it), so when the flag is set they carry the CLEANER ADVANTAGE
+       * instead: the share of the opposing team's LIVING bodies that our fastest living body both
+       * OUTSPEEDS and takes out in two hits. That is the quantity a cleaner is actually looking
+       * at, it is measurable from the board alone, and it is 0 against a team that cannot be
+       * finished off. A board whose state does not carry the flag (a hand-built fixture, a format
+       * that allows Tera) keeps the shipped `_teraThreat` reading EXACTLY, so nothing that used to
+       * score one way scores differently. */
+      if (state && state.terastallizationBanned) {
+        const env = String(field.weather || '') + '|' + String(field.terrain || '') + '|' +
+          (field.gravity ? 1 : 0);
+        const screenSig = function (side) {
+          const s = field.screens && field.screens[side];
+          if (!s) return '0';
+          return (s.reflect ? 'r' : '') + (s.lightscreen ? 'l' : '') + (s.auroraveil ? 'a' : '');
+        };
+        v[120] = this._cleanerAdvantage(myTeam, oppTeam, state, env, screenSig(oppSide));
+        v[121] = this._cleanerAdvantage(oppTeam, myTeam, state, env, screenSig(mySide));
+      } else {
+        v[120] = this._teraThreat(myActive, oppActive, state);
+        v[121] = this._teraThreat(oppActive, myActive, state);
+      }
       v[122] = this._recoveryPressure(state, oppSide);
       v[123] = this._recoveryPressure(state, mySide);
       v[124] = this._speedEdge(myActive, oppActive, state, true);
@@ -376,6 +407,101 @@
     _teraThreat(attacker, defender, state) {
       if (state && state.terastallizationBanned) return 0;
       return attacker && attacker.terastallized ? 0.5 : 0;
+    }
+
+    /* ------------------------------------------- dims 120/121 when Tera is banned (see above) */
+
+    /**
+     * The damage engine behind the cleaner dims, built ONCE and lazily. `options.damage` wins so
+     * a caller that already owns one (src/content.js, tools/extract_training_data.js) shares its
+     * memo; otherwise the class is constructed here. Returns null in a build without the engine,
+     * which makes the dims read 0 rather than throw — the same graceful degradation the rest of
+     * this file keeps.
+     */
+    _damageEngine() {
+      if (this._dmg === undefined) {
+        if (this.damage) this._dmg = this.damage;
+        else this._dmg = (typeof ST.DamageEngine === 'function') ? new ST.DamageEngine({ gen: 9 }) : null;
+      }
+      return this._dmg;
+    }
+
+    /**
+     * The share of `defenders`' LIVING bodies that the FASTEST living body of `attackers` both
+     * outspeeds and removes in two hits (or one).
+     *
+     * "Outspeeds" is `_speedOf`'s own rank, so Trick Room is honoured by construction (the rank
+     * is inverted under it). "Removes in two" is the damage engine's own reading of that body's
+     * known moves: an OHKO flag, a 2HKO flag, or an average at or over half the bar. `env` and
+     * `screenSig` are precomputed strings for the DEFENDER's side; they enter the memo key so a
+     * verdict reached under rain or behind a Reflect cannot be reused under a different field.
+     */
+    _cleanerAdvantage(attackers, defenders, state, env, screenSig) {
+      const tr = !!(state && state.field && state.field.trickRoom);
+      let fastest = null, fastestRank = -1;
+      for (let i = 0; i < attackers.length && i < TEAM; i++) {
+        const mon = attackers[i];
+        if (!mon || mon.fainted) continue;
+        const rank = this._speedOf(mon, tr);
+        if (rank > fastestRank) { fastestRank = rank; fastest = mon; }
+      }
+      if (!fastest) return 0;
+      const field = (state && state.field) || {};
+      let living = 0, cleaner = 0;
+      for (let j = 0; j < defenders.length && j < TEAM; j++) {
+        const target = defenders[j];
+        if (!target || target.fainted) continue;
+        living++;
+        if (this._speedOf(target, tr) >= fastestRank) continue;      // they move first: not a cleaner
+        if (this._takesOutInTwo(fastest, target, field, env, screenSig)) cleaner++;
+      }
+      return living ? U.clamp(cleaner / living, 0, 1) : 0;
+    }
+
+    /**
+     * The believable card the damage engine will be handed for `mon` — its pruned live set, or the
+     * single surviving candidate, or (with nothing pinned) the bare card. Mirrors laplace_core's
+     * `_believedTargetOpts`, and exists here because a body's own card carries an all-zero EV
+     * placeholder, so pricing a KO off it would overstate every number in these dims.
+     */
+    _believedDefender(mon) {
+      const set = (mon && mon.liveSet && typeof mon.liveSet === 'object') ? mon.liveSet
+        : ((mon && mon.candidateSets && mon.candidateSets.length === 1) ? mon.candidateSets[0] : null);
+      if (!set) return null;
+      return set;
+    }
+
+    /**
+     * Does `attacker`'s known move list take `defender` out in two? Memoised on the full input the
+     * verdict depends on — both species, the attacker's whole move list, the defender's believed
+     * spread and the field — so the whole 6x6 costs at most one 4-move scan per unique matchup per
+     * battle instead of one per `extractVector` call (which runs up to 432 times a turn).
+     */
+    _takesOutInTwo(attacker, defender, field, env, screenSig) {
+      const damage = this._damageEngine();
+      if (!damage) return false;
+      const moves = (attacker.revealedMoves && attacker.revealedMoves.length ? attacker.revealedMoves
+        : ((attacker.liveSet && attacker.liveSet.moves) || attacker.setMoves || []));
+      const set = this._believedDefender(defender);
+      const spread = set ? [set.id || set.species || '', set.nature || '', set.item || '',
+        set.ability || '', JSON.stringify(set.evs || {})].join(',') : 'card';
+      const key = (attacker.species || attacker.id) + '|' + moves.join('+') + '>' +
+        (defender.species || defender.id) + '|' + spread + '|' + env + '|' + screenSig;
+      const hit = this._koMemo.get(key);
+      if (hit !== undefined) return hit;
+      const opts = set ? { defender: { evs: set.evs, ivs: set.ivs, nature: set.nature,
+        item: set.item, ability: set.ability, level: set.level } } : null;
+      let result = false;
+      for (let i = 0; i < moves.length; i++) {
+        const data = U.getMoveData(moves[i]);
+        if (!data || data.isStatus || !data.basePower) continue;
+        let res = null;
+        try { res = damage.calculateDamage(attacker, defender, moves[i], field, opts); } catch (e) { res = null; }
+        if (!res || res.failed) continue;
+        const pct = typeof res.avgPercent === 'number' ? res.avgPercent : 0;
+        if (res.isOHKO || res.is2HKO || pct >= 50) { result = true; break; }
+      }
+      return DenseStateEvaluator._memoPut(this._koMemo, key, result);
     }
 
     /** Fraction of the 8-PP recovery budget still available for that side. */

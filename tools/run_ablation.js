@@ -636,13 +636,31 @@ const FEATURES = [
       'exact Speed inside their [floor, ceiling] band — is priced as the weighted expectation over ' +
       'the two orders instead of refusing the whole solve. A MATE IS NEVER CLAIMED THROUGH ONE: a ' +
       'blend that lands inside the mate band is clamped to the top of the non-mate region, so ' +
-      '`solved` still means proven.',
+      '`solved` still means proven. THE 2026-10-15 HARDENING PASS IS IN THIS ROW TOO, so this enable ' +
+      'is what prices it: a turn is now solved as a SIMULTANEOUS matrix (the opponent no longer ' +
+      'reads our hidden turn-t action — the old `max_i min_j` was a Stackelberg floor), recovery ' +
+      'moves and Protect are ACTIONS rather than free turns (a shield only while the chain is ' +
+      'broken), replacements PAY entry hazards and Trick Room\'s timer ticks down mid-tree, ' +
+      'transposed boards are memoised, and `solveAcrossWorlds` refuses to call a mate a mate when ' +
+      'one surviving world refutes it. Five leaves, `laplace.endgame.*`, all pinned in ' +
+      'tests/endgame_check.js §7 — and all shipping ON, which is why this row still flips exactly ' +
+      'one leaf.',
     caveat: 'COMPARE AGAINST THE `endgame` ROW, which is the same tier at its pre-upgrade 2-body ' +
-      'bound and without the chance node. Either row beating the baseline says the TIER is worth ' +
-      'having; the PAIR says whether the widening earned its extra nodes. The widened box is the one ' +
-      'place here that can spend the node budget, which is what `maxBranchingMoves` and ' +
-      '`nodeBudget` bound — an exhausted budget reports `{solved:false, reason:\'budget\'}` and ' +
-      'never a partial line dressed as a solution.'
+      'bound, without the chance node AND with the five hardening leaves at their pre-pass values ' +
+      '(`tests/endgame_check.js` §7 switches each one); so the pair separates the WIDENING from the ' +
+      'CORRECTIONS. Either row beating the baseline says the TIER is worth having; the pair says ' +
+      'which half earned its nodes. The widened box is the one place here that can spend the node ' +
+      'budget, which is what `maxBranchingMoves` and `nodeBudget` bound — an exhausted budget reports ' +
+      '`{solved:false, reason:\'budget\'}` and never a partial line dressed as a solution. NOT YET ' +
+      'MEASURED 2026-10-15 (ATTEMPTS.md §M1) AND THE ROW IS A NULL INSTRUMENT BY CONSTRUCTION: the ' +
+      'tier publishes a readout (`lastReadout.endgame`) that nothing in the ranking path reads, so 60 ' +
+      'paired battles came back `identical` — the only result this instrument can produce — at a +31 % ' +
+      'wall-clock cost (707.4 s against the co-scheduled baseline\'s 540.9 s; after the ' +
+      '`solveAcrossWorlds` wiring the same pair is 969.6 s against 625.0 s, +55 %, and still ' +
+      '`identical`). It therefore cannot ' +
+      'price the corrections, and the §7 pins are the evidence that ' +
+      'which is a correctness argument and not a win-rate one, and a search that is more honest can ' +
+      'easily rank lower. Read the row before quoting it.'
   },
   {
     /* THE ROW THAT MOVED ITS OWN DEFAULT. This tier was built ON — the coverage argument in its
@@ -704,6 +722,72 @@ const FEATURES = [
       'exists to answer is still the one ATTEMPTS.md E5 left open (whether the ~8.3 % the hard ' +
       'solve gave up against the pure softmax is the equilibrium being wrong about PEOPLE); this ' +
       'row as written does not answer it, which is itself the finding.'
+  },
+  {
+    /* PHASE 2 OF THE 2026-10-15 PASS. The simultaneous matrix is built over the opponent\'s FULL
+     * reply list, which means the equilibrium already knows about our unrevealed coverage move and
+     * leaves the punished column alone — telepathically, because on the ladder they have not seen
+     * us click it. This row prices removing that knowledge. */
+    id: 'surprise-mask',
+    label: 'unrevealed coverage baiting (on)',
+    tier: 'laplace',
+    direction: 'on',
+    patch: { 'laplace.surpriseMask.enabled': true },
+    expect: 'helps',
+    note: 'On, the OPPONENT\'s half of the solve reads a COPY of the payoff matrix in which a row ' +
+      'for an unrevealed, non-STAB move of ours is blended toward our best revealed-or-STAB row at ' +
+      '`unrevealedWeight` (0.35), and it is that copy the opponent best-responds to. OUR rows are ' +
+      'still scored on the true matrix against the mix that produces, and our own frequencies still ' +
+      'best-respond to the real game — so the tier can only change what we expect THEM to do. ' +
+      'tests/tuning_check.js §8 pins the classification (unrevealed AND non-STAB — a STAB move is ' +
+      'readable off the species, so pricing it is not telepathy), the cell-by-cell blend, and a ' +
+      'fixture board where an unrevealed 4x Ice lure makes their pivot frequency RISE and the lure\'s ' +
+      'true value with it.',
+    caveat: 'MEASURED 2026-10-15 (ATTEMPTS.md §M2): 60 paired battles, seed 1337, all four seats — ' +
+      '73.3 % (44-8-8) against the baseline\'s 78.3 % (47-11-2), Δwin −5.0 [−15.0, +6.7], Δscore +0.0 ' +
+      '[−6.7, +8.3], cap ties 3/60 → 9/60, flagged `stall`. Three wins and three losses became 100-turn ' +
+      'standoffs, so it ships `enabled: false`. Two things to watch when it is next run. (1) ' +
+      'The tier\'s benefit is anti-correlated with how much of our set they have already seen: on a ' +
+      'board where every move we hold is revealed it is inert by CONSTRUCTION (there is no surprise ' +
+      'row to mask), which means a mirror reading understates it — the mirror\'s own lead sets are ' +
+      'fully revealed from turn 1. (2) The blend is a MODEL of what they believe and not a ' +
+      'measurement of it: 0.35 is a prior, and the honest instrument is a persona whose reply space ' +
+      'is narrow enough that dodging is the whole decision (the Kingambit-in-front-of-Landorus-T ' +
+      'fixture in §8 is built that way). A flat mirror row is therefore expected and is not evidence ' +
+      'against the mechanism; a NON-flat one is the surprise.'
+  },
+  {
+    /* PHASE 3 OF THE SAME PASS. ATTEMPTS.md E5 priced turning the hard solve OFF at +8.3 %, which ' +
+     * read as the equilibrium over-defending against bluffs nobody makes: fictitious play gives ' +
+     * every one of their actions the same ZERO credibility at round 0. */
+    id: 'nash-prior',
+    label: 'prior-anchored regret matching (on)',
+    tier: 'laplace',
+    direction: 'on',
+    patch: { 'laplace.nash.priorAnchored.enabled': true },
+    expect: 'helps',
+    note: 'On, the opponent\'s response inside the solve is regret matching ANCHORED to a behavioral ' +
+      'prior: their mix is `(1 - c) * regretMatch + c * P_prior` with c = `priorWeight` (0.25), where ' +
+      'the regret is measured against the value of the mixture they are currently playing and ' +
+      '`P_prior` is normalized from MEASUREMENTS only — each damaging move\'s average percentage ' +
+      'into our active, a setup weight that depends on whether our active can 2HKO them, and a ' +
+      'switch baseline that jumps to `switchEscape` when their active faces a guaranteed OHKO from ' +
+      'a REVEALED/STAB move of ours and the incoming body resists it. Our own frequencies are ' +
+      'untouched: `priorWeight: 0` and `prior` absent both resolve to the shipped hard loop step for ' +
+      'step, which tests/tuning_check.js §9 pins along with a fixture where the hard solve zeroes ' +
+      'three of their replies and the anchored one weights all of them.',
+    caveat: 'MEASURED 2026-10-15 (ATTEMPTS.md §M3): 60 paired battles, seed 1337 — 78.3 % (47-11-2), ' +
+      'Δ +0.0, `identical`. The tier ENGAGED (its mix is published on the readout at the pinned weight) ' +
+      'and changed no decision, which is the ceiling §L2 names: our own frequencies best-respond to the ' +
+      'opponent\'s hard argmax index, so a softer opponent can only reach the score tie-break. It ships ' +
+      '`enabled: false`, and it is still the row most likely to ' +
+      'CONTRADICT an earlier reading: E5\'s +8.3 % came from turning OFF a hard solve that this ' +
+      'tier keeps, softened at one point rather than removed. Read it as "is the equilibrium\'s ' +
+      'failure about PEOPLE" and not as a re-run of E5. It is also the row whose knob is least ' +
+      'validated: `priorWeight` 0.25 is a prior on how much of a ladder reply is habit, and the ' +
+      'measured quantity that would set it (a usage corpus of the opponent\'s own action ' +
+      'frequencies) is the thing this engine does not have offline. A positive row says the ' +
+      'direction is right; it does not say 0.25 is.'
   }
 ];
 

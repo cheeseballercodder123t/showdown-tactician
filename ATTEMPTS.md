@@ -719,3 +719,133 @@ non-self-play instrument, or `tools/benchmark_human_match.js` pricing the tactic
 capped and 10 % ties. So a single-seed mirror row here is a 60-game deal from a distribution with a
 visible wobble — which is precisely the case §K6b's “second seed” rule exists for. Any future mirror row
 that clears its interval on one seed should be read as a candidate for a second seed, not as a result.
+
+---
+
+## M. The hardening pass and its two opponent-model tiers (2026-10-15) — one sweep, three rows, no adoption
+
+The pass that hardened `src/endgame_solver.js` (five structural fixes), added `laplace.surpriseMask`
+and `laplace.nash.priorAnchored`, and reclaimed the six dims of the 128D vector that no corpus row
+could move. **Fifteen config leaves, five suites, and not one adoption**: the sweep below is the first
+win-rate reading any of these three rows has had, and none of them cleared its interval.
+
+**What was run, and the sample. Read this before any number below.**
+
+* `node tools/run_ablation.js --features endgame-3v3,surprise-mask,nash-prior --battles 60 --seed 1337
+  --parallel 2 --keep-tmp` — the sweep's standard: 4 variants × 60 battles over all four seats (anchor,
+  exploiter, chaos **and** the mirror), **0 errors**, 1,201.6 s wall. The report is kept under the
+  git-ignored name `ablation-phase5-n60.json` beside its `.log`, so the table re-reads without
+  re-running it.
+* The brief's command said `--parallel 6`. The tool's `--parallel` is a **variant** pool (up to that many
+  arena processes at once), not an intra-batch thread count, and this machine has TWO cores: at six, all
+  four batches ran concurrently and one of them died (`exit 1`, no report written). Two at a time is what
+  §K6b used here and it ran clean — so the sweep was re-run at two, not quoted from the failed attempt.
+  Each variant was also probed separately first (4 battles, the same `--set`, three probes, `exit 0`,
+  `pipeline errors 0`), which is what rules out a crash inside the new code as the cause of that failure.
+* n = 60 per row, so SE ≈ 6 win points: **only a large effect can clear its interval at this size**, and
+  it is one seed. That is the standard §H sets, and it is enough for what these three rows had to say —
+  none of them is a near miss.
+
+Baseline: 47-11-2 = **78.3 %** win, 80.0 % match score, 54.3 turns, 3/60 capped.
+
+| row (leaf the variant patches) | variant win% | Δwin | 95 % CI | Δscore | 95 % CI (score) | capped | verdict |
+|---|---|---|---|---|---|---|---|
+| `endgame-3v3` (on — the whole hardening pass at the widened bound) | 78.3 % (47-11-2) | +0.0 | `identical` | +0.0 | `identical` | 3/60 | **inert for the ranking by construction** — see M1 |
+| `surprise-mask` (on) | 73.3 % (44-8-8) | −5.0 | [−15.0, +6.7] | +0.0 | [−6.7, +8.3] | **9/60** | no measurable effect, flagged `stall` — see M2 |
+| `nash-prior` (on) | 78.3 % (47-11-2) | +0.0 | `identical` | +0.0 | `identical` | 3/60 | **inert here** — see M3 |
+
+### M1. The endgame row cannot price the tier: it is a READOUT, and nothing that ranks reads it
+
+`_tiers` writes the solver's report into `lastReadout.endgame`, and no module in `src/` reads that field
+to rank anything — the readers of `lastReadout` outside `laplace_core.js` are `src/content.js`'s HUD and
+LLM plumbing, which render `ranked` and the tempo vector. So enabling the tier cannot change which
+action the engine plays: not “did not on this sample” but *cannot*, in the deployed build. The row's
+`identical` result is the only result this instrument could have produced, and it must not be read as
+evidence about the five fixes.
+
+What the row DOES price is the cost, and the two batches that shared a wave make it a fair pair: the
+same 60 battles took **707.4 s with the tier on against 540.9 s with it off (+166.5 s, +31 %)**, for a
+report nothing ranks. (The other two rows of the sweep, which do not touch the solver, took 572.8 s and
+494.1 s, so the +31 % is the search and not the slot.)
+
+**The wiring was then changed and the row re-run** — `LaplaceEngine` had been calling
+`solveAcrossWorlds`' single-world predecessor, so the measured artifact was not the committed one. The
+re-run (`ablation-endgamewired-n60.json`, same flags, one feature) reproduced its own baseline
+**exactly** (47-11-2, 78.3 %, 54.3 turns, 3/60 capped) and the row was `identical` again:
+
+| run | variant | baseline (same wave) | cost of the tier | result |
+|---|---|---|---|---|
+| first (single-world call) | 707.4 s | 540.9 s | **+166.5 s (+31 %)** | `identical` |
+| re-run (`solveAcrossWorlds`) | 969.6 s | 625.0 s | **+344.6 s (+55 %)** | `identical` |
+
+So the multi-world contract roughly doubles the readout's cost — it prices every sampled world instead
+of the first — and still cannot move a ranking, which is the same fact twice: this instrument measures
+the tier's expense and nothing else. Both numbers are single-batch wall clocks on a 2-core box, where
+the co-scheduled baseline moved 540.9 s → 625.0 s between the two runs, so read the RATIO within a run
+and not the absolute seconds.
+
+**What this sweep consequently does NOT establish:** whether the five corrections make the solver
+*better*. It cannot — nothing measured here reads the solver's output. That question needs the readout
+to enter a ranking (a proven mate as a re-rank, or the `mateIn` shown to a human who then decides), and
+until then the evidence for the five fixes is §7 of `tests/endgame_check.js`: a correctness argument on
+fixtures (the mate is found where it should be, a heal prices as a heal, a replacement pays the hazards,
+a `ceil(hp / 5)` transposition cannot be reused across a window, and a mate one world refutes is not
+published as a mate).
+
+### M2. `surprise-mask` engages, and turns six decided games into 100-turn standoffs
+
+Not `identical`: the mask changed decisions in this corpus. The shape is the story — **wins 47 → 44,
+losses 11 → 8, ties 2 → 8, capped games 3/60 → 9/60, and match score exactly +0.0**
+(`[−6.7, +8.3]`). Three wins and three losses became six capped standoffs. A tier that converts a
+decided game into a standoff without moving the match score is the pathology §A1 adopted turn urgency to
+remove, and the tool flags it `stall`, so it stays OFF — and unlike the `identical` rows, this one is a
+real reading of the tier's effect.
+
+The direction is legible from the mechanism: with the mask on, the opponent is estimated against a
+matrix in which our unrevealed non-STAB row is blended toward our best revealed-or-STAB row, so we
+expect them to be less afraid of the lure. Expecting less fear lowers the lure's modelled urgency
+relative to the passive rows beside it in the same solve, which is a commitment tax — the same direction
+the `stall` flag reports. §8 of `tests/tuning_check.js` pins the intended half on the board built for it
+(the lure's TRUE value rises and their pivot frequency rises with it); this sweep says that off that
+board the same mechanism buys standoffs rather than wins.
+
+### M3. `nash-prior` engages and changes no decision — §L2 already said why it cannot
+
+The anchored mix is published on the readout whenever the tier is on and the turn has a live submatrix
+(`weight: 0.25`, pinned at the ENGINE level by §9), so the tier was engaged in these battles. It changed
+no decision in 60 of them. §L2 named the ceiling: our own frequencies best-respond to the opponent's
+**hard argmax index**, and only the score tie-break among equal frequencies can ever see a softer
+opponent, so a tier whose whole effect is the opponent's mix can move a ranking only when two of our
+rows are already tied in frequency. This row is the same shape as `nash-qre` and needs the same
+instrument (the soft response threaded into our own best-response step) to be priceable at all.
+
+Two consequences. (1) The row's `expect: 'helps'` is a pre-registration this reading does not confirm;
+it is kept rather than deleted, because the next attempt on this tier is the same code path with the mix
+threaded into our step. (2) `priorWeight: 0.25` stays a guess: the quantity that would set it (a usage
+corpus of the opponent's own action frequencies) is exactly what this repository does not have offline,
+and a flat row cannot validate a magnitude.
+
+### M4. The decision, and the six dims that DID move
+
+**No adoption.** All three rows keep `enabled: false`, and no row's `patch` is re-pointed: none of them
+ships, so each still measures what turning it ON costs, which is what §H.6 asks for. Every one of the
+five hardening leaves stays ON in config, because they are corrections and the tier they sharpen is a
+readout the shipped build does not rank either way — §M1's cost is only paid when the tier is enabled.
+
+The fourth phase of the pass is untouched by any of the above, and it is the one part with a measurement
+of a different kind. Dims 66/67/72/73 were constant 0 in every corpus row because the **extractor** never
+built `ST.ArchetypePruner`, and dims 120/121 were a hard 0 because Terastal Clause bans Tera in
+`[Gen 9] National Dex OU`. Both causes are fixed and pinned by construction —
+`tests/weights_check.js` §5b proves the pruner wiring by A/B on the same corpus (the pruner absent from
+the sandbox reproduces the six zeros), and `tests/run_tests.js` pins dims 120/121 on constructed boards.
+Their shipped coefficients are 0, so the SCORE is unchanged; the point is that the next fit is no longer
+fitting a column that cannot move.
+
+### M5. What this pass did NOT establish
+
+* **Nothing about the five endgame fixes as policy.** See M1: the instrument cannot see them.
+* **Nothing about `priorAnchored` as a magnitude.** See M3.
+* **Nothing on a second seed, and nothing at `--battles 500`.** Every row here is n = 60 on seed 1337.
+  That is deliberate: §L3's lesson is that a single-seed reading is a candidate for a second seed, not a
+  result — and no row here produced a reading worth one (two `identical`, one `stall`). A future change
+  that makes either of them rank-affecting should be measured on two seeds before it is quoted.

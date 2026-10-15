@@ -11,6 +11,91 @@ reaches a verdict.
 
 ## Unreleased
 
+### Added — the endgame hardening pass, two opponent-model tiers, and the dims that were not zero
+
+A five-phase pass (2026-10-15). **Nothing here moves the shipped ranking**: every new tier ships
+`enabled: false`, the two reclaimed evaluator dims carry shipped coefficients of `0`, and the
+endgame solver's own tier stays off.
+
+**Phase 1 — `src/endgame_solver.js`.** Five structural flaws, one `laplace.endgame.*` leaf each, and
+all five defaulting ON because they are corrections rather than preferences. (1) `simultaneousPly`:
+the turn was priced as `max_i min_j` — a valid floor, but the price of a Stackelberg game where the
+opponent reads our hidden turn-t action and answers it. A turn of Pokemon is simultaneous, so unless
+one side owns a strictly dominant pure action the turn is now solved as a small zero-sum matrix by
+regret matching, and the value is the game value (never below the maximin floor). (2)
+`includeRecoveryAndProtect`: `_movesOf` returned damaging moves only, so `Recover`/`Roost`/`Slack
+Off`/`Soft-Boiled` read as "does nothing" — the most dangerous way to be wrong about an endgame — and
+`Protect` read as a free turn. Both are actions now; a heal restores 50 % clamped at 100 and only
+while its body still stands when its action resolves, and a shield blocks the incoming hit for the
+turn and is only OFFERED while that side's protect chain is broken, because the second one in a row
+fails in the real game. (3) `modelPhysics`: `_replaceFainted` did not charge entry hazards (a
+replacement arrived at the HP it already had), `_afterTurn` never ticked `trickRoomTurnsLeft`, and
+end-of-turn burn/poison chip and Leftovers recovery did not exist. All three do now — the hazard
+charge is `U.hazardPercent`'s own number and nothing is re-derived. (4) `transposition`: a
+per-`solve()` memo keyed on the board with HP bucketed into `ceil(hp / 5)` (0 preserved exactly) plus
+active slots, boosts, protect streaks, the Trick Room timer and the (depth, ply) pair; only
+FULL-window values are stored, because a fail-high is a bound and caching one under an exact key
+corrupts a sibling branch. (5) `solveAcrossWorlds(state, worlds)`: a forced win is reported only when
+every non-refusing world proves one with the same root action, and otherwise the report carries the
+root with the best worst-case score across worlds; `LaplaceEngine` calls it in place of the
+single-world entry point. **A real defect was found by writing the tests, not by reading the code**:
+`_endOfTurn`'s chip helper was handed the side OBJECT and returned it as its `side` key, so
+`next[c.side]` was `undefined` — every end-of-turn chip was silently a no-op until one actually fired
+and the step threw. `tests/endgame_check.js` §7c caught it on the first run.
+
+**Phase 2 — `laplace.surpriseMask`** (Phase 2 of the pass, `src/laplace_core.js`). The simultaneous
+matrix is built over the opponent's FULL reply list, so the equilibrium already knows about our
+unrevealed coverage move and avoids the column it punishes — telepathically, because on the ladder
+they have not seen us click it. With the tier on, the OPPONENT's half of the solve reads a copy of
+the matrix in which a row for an unrevealed non-STAB move of ours is blended toward our best
+revealed-or-STAB row at `unrevealedWeight`, and only THEIR cumulative payoff is accumulated from that
+copy; our own step still reads the true matrix, `rowValues` is still the true matrix against the mix
+they produce, and our own frequencies still best-respond to the real game. Pinned in
+`tests/tuning_check.js` §8, including a board where an unrevealed 4x Ice lure makes their pivot
+frequency rise and the lure's true value rise with it.
+
+**Phase 3 — `laplace.nash.priorAnchored`** (same pass). ATTEMPTS.md E5 priced turning the hard solve
+OFF at +8.3 %, which read as the equilibrium over-defending against bluffs nobody makes: fictitious
+play gives every one of their actions the same ZERO credibility at round 0. The tier blends the
+opponent's response with a behavioral prior, `(1 - c) * regretMatch + c * P_prior`, `c =
+priorWeight`. Two things the implementation had to get right and the brief's formula, written
+naively, does not: regret has to be measured against the value of the mixture they are CURRENTLY
+playing — against `max_j Q_j` no action can ever have positive regret, which collapses the formula to
+the argmax and leaves the prior as the only thing doing any work (**the first draft had exactly that
+bug and the probe caught it: `priorWeight` 0.25 and 1.0 produced bit-identical mixes**) — and every
+prior weight has to be read through a numeric fallback, or one malformed leaf turns a reply into
+`NaN`. Pinned in `tests/tuning_check.js` §9.
+
+**Phase 4 — the six structurally-zero dims.** `tools/extract_training_data.js` never constructed
+`ST.ArchetypePruner`, and `cannotBeChoice`, `itemless` and `liveSet` are written by that one module
+and read by dims 64..75: dims 66/67/72/73 were constant 0 in every corpus row, so the zero
+coefficients fitted for them were an artifact of the EXTRACTOR. The tool now builds the pruner the way
+`src/content.js` does and calls it on the same events (a `move` under content.js's own two-move
+guard, `switch` / `item` / `enditem` / `activate`, the format-lock cascade and `speedfloor`) through a
+new `drivePruner`, and shares its damage engine with the evaluator. Dims 120/121 are the other half:
+`_teraThreat` is a hard 0 because Terastal Clause bans Tera in `[Gen 9] National Dex OU`, so while
+`state.terastallizationBanned` is set they carry the **cleaner advantage** (`_cleanerAdvantage`) —
+the share of the opponent's LIVING bodies that our fastest living body both outspeeds and removes in
+two hits, memoised on the full matchup (both species, the attacker's move list, the defender's
+believed spread and the field). A board without the flag keeps `_teraThreat` byte for byte.
+`tests/weights_check.js` §5b proves the wiring by A/B (the same corpus with the pruner absent from
+the sandbox) and pins the new dims on constructed boards; `tests/run_tests.js` pins the same two facts
+end to end.
+
+**Phase 5 — the feature table.** `tools/run_ablation.js` gains rows for `surprise-mask` and
+`nash-prior` and its `endgame-3v3` row now names the hardening pass, so one enable prices the whole
+correction set. The focused sweep (`--features endgame-3v3,surprise-mask,nash-prior --battles 60
+--seed 1337`, four seats, 240 battles, 0 errors) is the first win-rate reading any of the three rows
+has had, and **nothing was adopted**: `endgame-3v3` and `nash-prior` came back `identical` and
+`surprise-mask` bought 6 cap standoffs for 3 wins and 3 losses at Δscore exactly 0.0 (`stall`).
+Two findings worth more than the deltas: the endgame row is a NULL INSTRUMENT — the tier publishes a
+readout nothing in the ranking path reads, so the sweep cannot price the five corrections and §7 of
+`tests/endgame_check.js` is their evidence — and the anchored opponent mix cannot reach our own
+frequencies (`ATTEMPTS.md` §L2's ceiling), which is why its row is flat by construction. `LaplaceEngine`
+now calls `solveAcrossWorlds` instead of the single-world entry point (pinned in `tests/run_tests.js`),
+so the readout's mate has to hold across every sampled world. `ATTEMPTS.md` §M carries the table, the
+mechanism notes and the decision.
+
 ### Verified — the protect cell prices no decay, and QRE cannot move our own frequencies
 
 Two claims the block-ships-OFF decision rested on were re-checked against the code on 2026-10-15 and

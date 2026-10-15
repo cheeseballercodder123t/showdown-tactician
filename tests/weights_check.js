@@ -393,24 +393,89 @@ throwsWith('an unknown corpus shape is refused', function () {
   extractor.extractDataset({ notes: 'nope' }, api);
 }, /array of replays/);
 
-/* ============================================ 5b. the dims the corpus cannot move */
+/* ==================== 5b. the six dims the corpus could not move are LIVE again, and why */
 
-section('5b. six dims are structurally zero in the corpus, and here is exactly why');
+section('5b. the six structurally-zero dims: the two fixes, and the proof they are on');
 
-/* P4's second half. `tools/extract_training_data.js` builds a ProtocolParser, a BattleStateManager
- * and a DenseStateEvaluator -- and nothing else. It never constructs ST.ArchetypePruner and never
- * calls registerMyTeam, and `itemless`, `cannotBeChoice` and `liveSet` are written ONLY by
- * src/set_pruner.js. So dims 66/67 (our active's choice-lock / itemless flags) and 72/73 (the
- * opponent's) are constant 0 in every corpus row, and dims 120/121 are the Tera-threat pair, a hard
- * 0 because Terastal Clause bans Tera in [Gen 9] National Dex OU. The export clamp in 2c zeroes
- * them for the same reason it zeroes dim 41: a column no row can move is not a measurement. Each
- * claim is proven by CONSTRUCTION -- the dims are live code, not dead -- because "constant zero in
- * the artifact" and "the evaluator never writes it" are very different bugs. */
+/* P4's second half, REVISED 2026-10-15.
+ *
+ * WHAT WAS WRONG. `tools/extract_training_data.js` built a parser, a state manager and an
+ * evaluator -- and nothing else. It never constructed ST.ArchetypePruner, and `cannotBeChoice`,
+ * `itemless` and `liveSet` are written by exactly ONE module (src/set_pruner.js) and read by dims
+ * 64..75 of the frozen layout. So dims 66/67 (our active's choice-lock / itemless flags) and 72/73
+ * (the opponent's) were constant 0 in every corpus row, and the zero coefficients the fitter
+ * produced for them were an artifact of the EXTRACTOR, not a fact about the format. Dims 120/121
+ * were a second, unrelated zero: `_teraThreat` is a hard 0 because Terastal Clause bans Tera in
+ * `[Gen 9] National Dex OU`.
+ *
+ * THE TWO FIXES.
+ *   1. The extractor now builds the pruner the way src/content.js does -- same construction, same
+ *      shared damage engine -- and calls it on the SAME events: `move` under content.js's own
+ *      two-move guard, `switch` / `item` / `enditem` / `activate`, the format-lock cascade, and
+ *      `speedfloor`. `drivePruner` reproduces those call sites instead of "prune every body every
+ *      turn", because the entire point is to extract the board the ENGINE sees.
+ *   2. Dims 120/121 carry the CLEANER ADVANTAGE whenever `state.terastallizationBanned` is set:
+ *      the share of their LIVING bodies that our fastest living body both outspeeds and removes in
+ *      two hits. A board whose state does not carry the flag keeps the shipped `_teraThreat` read
+ *      byte for byte, so nothing that used to score one way scores differently.
+ *
+ * Every claim below is proven by CONSTRUCTION. "The artifact says zero" is a statement about the
+ * DATA, and the bug was in the code that produced the data -- so the checks build the rows. */
 (function () {
-  const ZERO_DIMS = [66, 67, 72, 73, 120, 121];
-  check('the extractor\'s own rows carry all six dims at exactly zero',
-    p1Won.rows.every(function (r) { return ZERO_DIMS.every(function (d) { return r.x[d] === 0; }); }),
-    JSON.stringify(p1Won.rows.map(function (r) { return ZERO_DIMS.map(function (d) { return r.x[d]; }); })));
+  /* ---- 5b-i. the extractor really is driving the pruner, and the rows really move ---- */
+
+  const CHOICE_LOG = [
+    '|player|p1|Ash|1|1500',
+    '|player|p2|Gary|2|1500',
+    '|switch|p1a: Pikachu|Pikachu, L50, M|100/100',
+    '|switch|p2a: Charizard|Charizard, L50, M|100/100',
+    '|turn|1',
+    '|move|p1a: Pikachu|Tackle|p2a: Charizard',
+    '|-damage|p2a: Charizard|80/100',
+    '|move|p2a: Charizard|Ember|p1a: Pikachu',
+    '|-damage|p1a: Pikachu|70/100',
+    '|turn|2',
+    '|move|p1a: Pikachu|Thunderbolt|p2a: Charizard',
+    '|-damage|p2a: Charizard|40/100',
+    '|move|p2a: Charizard|Flamethrower|p1a: Pikachu',
+    '|-damage|p1a: Pikachu|30/100',
+    '|turn|3',
+    '|move|p1a: Pikachu|Thunderbolt|p2a: Charizard',
+    '|-damage|p2a: Charizard|0 fnt',
+    '|faint|p2a: Charizard',
+    '|win|Ash'
+  ];
+  const corpus = [{ winner: 'p1', log: CHOICE_LOG }];
+  const wired = extractor.extractDataset(corpus, api);
+  /* The control: the SAME tool, the SAME corpus, with the pruner absent from the sandbox. It is
+   * the pre-fix extractor by construction, so any difference between the two runs is the wiring. */
+  const unwired = extractor.extractDataset(corpus,
+    { ST: Object.assign({}, ST, { ArchetypePruner: null }) });
+
+  check('the extractor builds a pruner for the replay and actually calls it',
+    wired.replays[0].pruner === true && wired.replays[0].prunes > 0,
+    JSON.stringify(wired.replays[0]));
+  eq('...and with the pruner removed from the sandbox it is not driven at all',
+    [unwired.replays[0].pruner, unwired.replays[0].prunes], [false, 0]);
+  check('the two passes agree everywhere outside the block the pruner writes',
+    wired.rows.every(function (row, i) {
+      return row.x.every(function (v, d) {
+        if (d >= 64 && d <= 75) return true;         // the item / knowledge block
+        if (d === 120 || d === 121) return true;     // the cleaner dims read liveSet too
+        return v === unwired.rows[i].x[d];
+      });
+    }),
+    JSON.stringify(wired.rows.map(function (r, i) {
+      return r.x.map(function (v, d) { return v === unwired.rows[i].x[d] ? null : d; })
+        .filter(function (d) { return d !== null; });
+    })));
+  check('...and DIFFER on the flags it does write: two different moves in one stint is a choice lock, and only the wired pass saw it',
+    wired.rows[2].x[66] === 1 && wired.rows[2].x[72] === 1 &&
+      unwired.rows[2].x[66] === 0 && unwired.rows[2].x[72] === 0,
+    JSON.stringify([wired.rows.map(function (r) { return [r.x[66], r.x[72]]; }),
+      unwired.rows.map(function (r) { return [r.x[66], r.x[72]]; })]));
+
+  /* ---- 5b-ii. each of the four item dims is a live read of a pruner-written flag ---- */
 
   const mk = function (extra) {
     return Object.assign({
@@ -421,11 +486,14 @@ section('5b. six dims are structurally zero in the corpus, and here is exactly w
   };
   const board = function (opts) {
     const o = opts || {};
+    const myBody = mk(o.my || {});
+    const oppList = Array.isArray(o.opp) ? o.opp : [mk(o.opp || {})];
+    const oppActive = o.oppActive ? (Array.isArray(o.oppActive) ? o.oppActive[0] : o.oppActive) : oppList[0];
     return {
       mySide: 'p1', terastallizationBanned: o.banned !== false,
-      field: { hazards: { p1: {}, p2: {} }, trickRoom: false },
-      myTeam: [mk(o.my || {})], oppTeam: [mk(o.opp || {})],
-      active: { my: mk(o.my || {}), opp: mk(o.opp || {}) }
+      field: { hazards: { p1: {}, p2: {} }, trickRoom: !!o.tr, screens: { p1: {}, p2: {} } },
+      myTeam: [myBody], oppTeam: oppList,
+      active: { my: myBody, opp: oppActive }
     };
   };
   /* extractVector REUSES one Float32Array, so every reading is copied before the next call. */
@@ -440,13 +508,57 @@ section('5b. six dims are structurally zero in the corpus, and here is exactly w
   eq('the pruner\'s choice-lock flag is what dim 66 reads (ours)', locked[66], 1);
   eq('...and its itemless flag is dim 67 (ours)', locked[67], 1);
   eq('...the opponent\'s are dims 72 and 73', [locked[72], locked[73]], [1, 1]);
+  /* `itemless` is set by the pruner's OWN classification ('itemless-acrobatics' -- the no-`enditem`
+   * Knock Off trigger plus both format locks), and the KNOCK OFF evidence path is pinned live in
+   * 5b-i by dim 66/72. This fixture does not contain that trigger, so the honest claim here is
+   * that the flag REACHES the vector when the pruner writes it, which is exactly what the dim is. */
 
+  /* ---- 5b-iii. dims 120/121: the cleaner advantage when Tera is banned ---- */
+
+  eq('the state manager bans Tera by default, so these dims are on the live path',
+    new ST.BattleStateManager().state.terastallizationBanned, true);
   const teraBanned = vec({ banned: true, my: { terastallized: true }, opp: { terastallized: true } });
   const teraAllowed = vec({ banned: false, my: { terastallized: true }, opp: { terastallized: true } });
   const notTera = vec({ banned: false });
-  eq('with Tera BANNED a terastallized body still scores a hard zero', [teraBanned[120], teraBanned[121]], [0, 0]);
-  eq('...and with the ban lifted the same board scores the tera threat', [teraAllowed[120], teraAllowed[121]], [0.5, 0.5]);
-  eq('...while a board nobody terastallized on stays zero either way', [notTera[120], notTera[121]], [0, 0]);
+  eq('with Tera BANNED a terastallized board no longer scores the (always-zero) tera threat',
+    [teraBanned[120], teraBanned[121]], [0, 0]);
+  eq('...and with the ban lifted the same board scores the tera threat, exactly as before',
+    [teraAllowed[120], teraAllowed[121]], [0.5, 0.5]);
+  eq('...while a board nobody terastallized on stays zero either way',
+    [notTera[120], notTera[121]], [0, 0]);
+
+  /* A real board: Iron Valiant outruns and 2HKOs Snorlax, and NOTHING on the other side does the
+   * same back. The two dims are a mirror pair, so the same board with the sides swapped has to
+   * swap them. */
+  const body = function (species, evs, nature, moves) {
+    const id = species.toLowerCase().replace(/[^a-z0-9]/g, '');
+    return {
+      species: species, id: id, fainted: false, hpPercent: 100, boosts: {}, status: '',
+      evs: {}, ivs: {}, nature: '', revealedMoves: moves.slice(),
+      liveSet: { id: id, species: species, moves: moves.slice(),
+        evs: Object.assign({ hp: 0, atk: 0, def: 0, spa: 0, spd: 0, spe: 0 }, evs || {}),
+        ivs: {}, nature: nature, item: '', ability: '' }
+    };
+  };
+  const valiant = body('Iron Valiant', { atk: 252, spe: 252 }, 'Jolly', ['Close Combat', 'Moonblast']);
+  const snorlax = body('Snorlax', { hp: 252 }, 'Careful', ['Body Slam']);
+  const corv = body('Corviknight', { hp: 252, def: 252 }, 'Impish', ['Iron Head']);
+  const winning = vec({ my: valiant, opp: [snorlax], oppActive: snorlax });
+  eq('a body we outrun and 2HKO counts toward the cleaner advantage',
+    [winning[120], winning[121]], [1, 0]);
+  const mirrored = vec({ my: snorlax, opp: [valiant], oppActive: valiant });
+  eq('...and the mirror pair swaps with the sides', [mirrored[120], mirrored[121]], [0, 1]);
+  const walled = vec({ my: valiant, opp: [corv], oppActive: corv });
+  eq('a body that survives the two hits does NOT count', walled[120], 0);
+  const partial = vec({ my: valiant, opp: [snorlax, corv], oppActive: snorlax });
+  eq('...so it is a FRACTION of their living bodies, not a flag', partial[120], 0.5);
+  const trickRoom = vec({ my: valiant, opp: [snorlax], oppActive: snorlax, tr: true });
+  eq('Trick Room inverts who the fast body is, so the advantage goes with it',
+    trickRoom[120], 0);
+  check('...and the dims stay inside their own range on every board',
+    [winning, mirrored, walled, partial, trickRoom, blank]
+      .every(function (v) { return v[120] >= 0 && v[120] <= 1 && v[121] >= 0 && v[121] <= 1; }),
+    JSON.stringify([winning[120], mirrored[121]]));
 })();
 
 /* ======================================================= 6. degenerate inputs */

@@ -43,34 +43,104 @@
    * expect THEM to do, never the worst case we are willing to accept. `tau <= 0`, or no `qre` at
    * all, runs the shipped hard-argmax loop step for step.
    *
+   * `opts` carries the two OPPONENT-MODEL tiers, and both are strict additions:
+   *   - `opts.perceived` (laplace.surpriseMask) is a second matrix of the same shape holding what
+   *     the opponent BELIEVES our rows pay. Only THEIR cumulative payoff is accumulated from it;
+   *     our own step still reads the true matrix, and `rowValues` is still the true matrix against
+   *     their mix. So a misperception can make them under-respect a line, and it can never relax
+   *     the floor our own frequencies are computed against.
+   *   - `opts.prior` + `opts.priorWeight` (laplace.nash.priorAnchored) anchor the opponent's
+   *     response to a behavioral prior instead of the uniform-zero start of an unanchored solve.
+   * Neither argument present (or both inert) runs the shipped loop step for step.
+   *
    * -> { myStrategy, oppStrategy, rowValues } with probabilities in [0, 1].
    */
-  function solveNashFictitiousPlay(payoffMatrix, iterations, qre) {
+  function solveNashFictitiousPlay(payoffMatrix, iterations, qre, opts) {
     const rows = Array.isArray(payoffMatrix) ? payoffMatrix.length : 0;
     const cols = rows && Array.isArray(payoffMatrix[0]) ? payoffMatrix[0].length : 0;
     if (!rows || !cols) return { myStrategy: [], oppStrategy: [], rowValues: [] };
+    /* The opponent's belief, accepted only when it has the SHAPE of the true matrix. A mismatched
+     * copy is a caller bug, and silently reading a ragged row would misprice the turn. */
+    let perceived = (opts && Array.isArray(opts.perceived)) ? opts.perceived : null;
+    if (perceived && (!Array.isArray(perceived[0]) || perceived.length !== rows ||
+      perceived[0].length !== cols)) perceived = null;
     const iters = Math.max(1, Math.floor(iterations) || 1);
     const myCount = new Array(rows).fill(0);
     const oppCount = new Array(cols).fill(0);
     const myCum = new Array(rows).fill(0);
     const oppCum = new Array(cols).fill(0);
     const tau = (qre && typeof qre.tau === 'number' && isFinite(qre.tau) && qre.tau > 0) ? qre.tau : 0;
+    /* Prior-anchored regret matching (laplace.nash.priorAnchored). `prior` is the opponent's
+     * behavioral prior over their OWN actions, normalized by the caller; it enters as the c_prior
+     * term of  pi(a) ~ max(Q(a) - V, 0) + c * P_prior(a).  With no prior — or a weight of 0 — the
+     * positive-regret term of a pure best response against the running payoff is 0, so the mix
+     * below collapses to `null` and the hard `oppAction` stands: this is the shipped loop. */
+    const prior = (opts && Array.isArray(opts.prior) && opts.prior.length === cols &&
+      opts.prior.every(function (p) { return typeof p === 'number' && isFinite(p) && p >= 0; }))
+      ? opts.prior : null;
+    const priorWeight = (opts && typeof opts.priorWeight === 'number' && isFinite(opts.priorWeight))
+      ? Math.max(0, Math.min(1, opts.priorWeight)) : 0;
+    const priorOn = !!(prior && priorWeight > 0);
     let myAction = 0;
     let oppAction = 0;
-    let oppMix = null;                       // the last SOFT column response; null on the hard path
+    let oppMix = null;            // the last SOFT / SMEARED column response; null on the hard path
+    /* The mixture the opponent is CURRENTLY playing, which is what regret is measured against. It
+     * starts as the prior itself (nothing has been observed yet) and is replaced by every response
+     * the loop computes. */
+    let oppCurrent = null;
     for (let t = 0; t < iters; t++) {
       myCount[myAction]++;
       if (oppMix) for (let j = 0; j < cols; j++) oppCount[j] += oppMix[j];
       else oppCount[oppAction]++;
       for (let i = 0; i < rows; i++) myCum[i] += payoffMatrix[i][oppAction];
-      for (let j = 0; j < cols; j++) oppCum[j] -= payoffMatrix[myAction][j];
+      /* THEIR payoff is accumulated from what they BELIEVE (the perceived matrix when one was
+       * supplied), OUR payoff from what is true. That asymmetry is the whole mechanism: the
+       * opponent solves the game it thinks it is in. */
+      const oppView = perceived || payoffMatrix;
+      for (let j = 0; j < cols; j++) oppCum[j] -= oppView[myAction][j];
       let bestI = 0;
       for (let i = 1; i < rows; i++) if (myCum[i] > myCum[bestI]) bestI = i;
       let bestJ = 0;
       for (let j = 1; j < cols; j++) if (oppCum[j] > oppCum[bestJ]) bestJ = j;
       myAction = bestI;
       oppAction = bestJ;
-      if (tau > 0) {
+      if (priorOn) {
+        /* Prior-anchored regret matching, in the two steps it is defined in.
+         *
+         * FIRST the regret-matching response: each action's INSTANTANEOUS REGRET is measured
+         * against the value of the mixture they are currently playing (`V`, the expectation of
+         * their own cumulative payoffs under `current`), and only the POSITIVE part is kept. The
+         * reference point has to be the current mixture and not the best action: against
+         * `max_j Q_j` no action can ever have positive regret, so that version of the formula is
+         * identically the argmax and the prior would be the only thing left doing any work. At
+         * round 0 nothing has been observed, every cumulant is 0, every regret is 0 — the
+         * degenerate case falls back to the prior, which is the honest answer to "what do we know
+         * before they have moved?".
+         *
+         * THEN the anchor: the regret-matching mix is blended with the behavioral prior at
+         * `priorWeight`, so their response is `(1 - c) * regretMix + c * P_prior`. This is what
+         * keeps an opponent blunder from collecting a full best response for the whole solve — the
+         * prior is where a human's reply mass actually lives — while a sustained deviation still
+         * earns its way into the mix. */
+        const current = oppCurrent || prior;
+        let value = 0;
+        for (let j = 0; j < cols; j++) value += current[j] * oppCum[j];
+        const mix = new Array(cols);
+        let total = 0;
+        for (let j = 0; j < cols; j++) {
+          const regret = oppCum[j] - value;
+          mix[j] = regret > 0 ? regret : 0;
+          total += mix[j];
+        }
+        if (total > 0) {
+          for (let j = 0; j < cols; j++) mix[j] = mix[j] / total;
+        } else {
+          for (let j = 0; j < cols; j++) mix[j] = prior[j];
+        }
+        for (let j = 0; j < cols; j++) mix[j] = (1 - priorWeight) * mix[j] + priorWeight * prior[j];
+        oppMix = mix;
+        oppCurrent = mix;
+      } else if (tau > 0) {
         /* The SOFT response. `oppCum` is THEIR cumulative payoff (it is accumulated as the
          * negation of ours), so the logit is a straight softmax over it; the max is subtracted
          * before the exponential (the standard stabiliser) so a matrix in the thousands cannot
@@ -136,6 +206,20 @@
         enabled: cfgGet('laplace.nash.enabled', true),
         iterations: cfgGet('laplace.nash.iterations', NASH_ITERATIONS)
       }, options.nash || {});
+      /* The prior-anchored tier is merged at BOTH levels on purpose. `Object.assign` above
+       * replaces `priorAnchored` wholesale when a caller supplies one, and a caller that names
+       * only `{ enabled, priorWeight }` would then leave every prior weight `undefined` — which is
+       * a silent all-zero prior, not a partial one. The sub-object is therefore rebuilt from the
+       * config leaves with the caller's own fields layered on top. */
+      this.nash.priorAnchored = Object.assign({
+        enabled: cfgGet('laplace.nash.priorAnchored.enabled', false),
+        priorWeight: cfgGet('laplace.nash.priorAnchored.priorWeight', 0.25),
+        attackFloor: cfgGet('laplace.nash.priorAnchored.attackFloor', 5),
+        setupSafe: cfgGet('laplace.nash.priorAnchored.setupSafe', 45),
+        setupUnsafe: cfgGet('laplace.nash.priorAnchored.setupUnsafe', 10),
+        switchBase: cfgGet('laplace.nash.priorAnchored.switchBase', 8),
+        switchEscape: cfgGet('laplace.nash.priorAnchored.switchEscape', 70)
+      }, (options.nash && options.nash.priorAnchored) || {});
       // Risk-adjusted volatility (ARCHITECTURE §6.5). `enabled: false` restores the raw payoff.
       this.volatility = Object.assign({
         enabled: cfgGet('laplace.volatility.enabled', true),
@@ -176,6 +260,15 @@
       }, (options.nash && options.nash.qre) || options.qre || {});
       // The three 1-ply leaf corrections, each with its own switch and each the EXACT identity when
       // off (see _payoff, _pivotPayoff, _setupFollowUp).
+      // Surprise truncation (laplace.surpriseMask): the opponent's half of the solve reads a COPY
+      // of the matrix in which our UNREVEALED, non-STAB rows are pulled toward our best
+      // revealed/STAB row, so the equilibrium stops telepathically dodging a coverage move it has
+      // not seen us click. Our own rows are still scored on the TRUE matrix against that mix, and
+      // our own frequencies still best-respond to the real game. Ships OFF.
+      this.surpriseMask = Object.assign({
+        enabled: cfgGet('laplace.surpriseMask.enabled', false),
+        unrevealedWeight: cfgGet('laplace.surpriseMask.unrevealedWeight', 0.35)
+      }, options.surpriseMask || {});
       this.realOppSwitch = Object.assign({
         enabled: cfgGet('laplace.realOppSwitch.enabled', true)
       }, options.realOppSwitch || {});
@@ -2001,7 +2094,15 @@
         this._winconPlan = out.wincon;
       }
       if (this.endgame && this.endgame.enabled) {
-        out.endgame = this.endgame.solve(state, (worlds && worlds[0]) || null);
+        /* ONE WORLD IS NOT EVIDENCE. `solveAcrossWorlds` drops the refusing worlds, reports a mate
+         * only when every surviving world proves one with the SAME root action, and carries the
+         * WORST case across worlds (`worldScores` alongside it) otherwise; it falls back to the
+         * single-world report when `laplace.endgame.multiWorld` is off or only one world is usable,
+         * which is the same call the tier made before the entry point existed. The `typeof` guard
+         * keeps an injected stub that only implements `solve` working. */
+        out.endgame = (typeof this.endgame.solveAcrossWorlds === 'function')
+          ? this.endgame.solveAcrossWorlds(state, worlds)
+          : this.endgame.solve(state, (worlds && worlds[0]) || null);
       }
       return out;
     }
@@ -2029,6 +2130,221 @@
       if (rating <= low) return base;
       const span = high - low;
       return span > 0 ? base * ((high - rating) / span) : base;
+    }
+
+    /* ------------------------------------------- the opponent model (two gated tiers) */
+
+    /**
+     * _isSurpriseCoverage(action, myActive) -> is this row an UNREVEALED COVERAGE move?
+     * (laplace.surpriseMask.)
+     *
+     * Three facts have to hold at once: it is a MOVE (not a pivot, not a shield), we have never
+     * clicked it this battle, and its type is not one of our active body's own types. The third is
+     * what makes it a SURPRISE rather than a secret: a STAB move's typing is readable straight off
+     * the species, so an opponent pricing it is not telepathy. Everything a real information source
+     * on the other side of the table could know is excluded on purpose — a move already in
+     * `revealedMoves` has been seen, and a STAB move is implied by the body.
+     */
+    _isSurpriseCoverage(action, myActive) {
+      const cfgMask = this.surpriseMask;
+      if (!cfgMask || cfgMask.enabled !== true) return false;
+      if (!action || action.kind !== 'move' || !myActive) return false;
+      const data = U.getMoveData(action.name || action.moveId);
+      if (!data || !data.type) return false;
+      const id = U.toID(action.name || action.moveId || '');
+      const revealed = myActive.revealedMoves || [];
+      for (let i = 0; i < revealed.length; i++) {
+        if (U.toID(revealed[i]) === id) return false;
+      }
+      return !(typeof U.hasType === 'function' && U.hasType(myActive.species || myActive.id, data.type));
+    }
+
+    /**
+     * The opponent-perceived copy of the live submatrix (laplace.surpriseMask).
+     *
+     * `sub[k][j]` is the TRUE payoff of our live row k against their column j. Every row that
+     * `_isSurpriseCoverage` claims is rebuilt as `w * true + (1 - w) * anchor`, where `anchor` is
+     * our best REVEALED/STAB live row (the one whose payoff they can actually read) and `w` is
+     * `unrevealedWeight`. At `w = 1` the copy would be the identity, so no copy is built at all.
+     *
+     * Returns null when the tier is off, when no live row is a surprise, or when there is no
+     * revealed/STAB row to blend toward (a body whose whole set is a surprise has no read at all,
+     * and inventing one would be the telepathy this tier exists to remove).
+     */
+    _surprisePerceived(sub, liveIdx, myActions, state) {
+      const cfgMask = this.surpriseMask;
+      if (!cfgMask || cfgMask.enabled !== true) return null;
+      const myActive = state && state.active ? state.active.my : null;
+      if (!myActive || !sub || !sub.length) return null;
+      const rows = [];
+      for (let k = 0; k < sub.length; k++) {
+        if (this._isSurpriseCoverage(myActions[liveIdx[k]], myActive)) rows.push(k);
+      }
+      if (!rows.length) return null;
+      let anchor = -1, anchorMean = -Infinity;
+      for (let k = 0; k < sub.length; k++) {
+        if (rows.indexOf(k) !== -1) continue;
+        const mean = this._rowMean(sub[k]);
+        if (mean > anchorMean) { anchorMean = mean; anchor = k; }
+      }
+      if (anchor < 0) return null;
+      const w = U.clamp(typeof cfgMask.unrevealedWeight === 'number' ? cfgMask.unrevealedWeight : 1, 0, 1);
+      if (w >= 1) return null;
+      const perceived = [];
+      for (let k = 0; k < sub.length; k++) perceived.push(sub[k].slice());
+      for (let s = 0; s < rows.length; s++) {
+        const k = rows[s];
+        for (let j = 0; j < sub[k].length; j++) {
+          perceived[k][j] = w * sub[k][j] + (1 - w) * sub[anchor][j];
+        }
+      }
+      return {
+        perceived: perceived,
+        rows: rows,
+        anchor: anchor,
+        weight: w,                                  // what each surprise row kept of itself
+        blend: U.round1((1 - w) * 100),             // ...and how much of the anchor it wears
+        names: rows.map(function (k) { return myActions[liveIdx[k]] && myActions[liveIdx[k]].name; }),
+        anchorName: myActions[liveIdx[anchor]] && myActions[liveIdx[anchor]].name
+      };
+    }
+
+    _rowMean(row) {
+      if (!Array.isArray(row) || !row.length) return 0;
+      let sum = 0, seen = 0;
+      for (let i = 0; i < row.length; i++) {
+        const v = row[i];
+        if (typeof v === 'number' && isFinite(v)) { sum += v; seen++; }
+      }
+      return seen ? sum / seen : 0;
+    }
+
+    /**
+     * _opponentPrior(oppActions, state, worlds) -> the behavioral prior P_prior over the
+     * opponent's OWN actions (laplace.nash.priorAnchored), normalized, or null when the tier is
+     * off (or nothing could be said about a single one of their actions).
+     *
+     * This is the information an unanchored fictitious play does not have. It gives every action
+     * the same ZERO credibility at round 0, so their first "best response" is an index tie-break
+     * and an opponent blunder collects a full best response for as long as the average takes to
+     * wash it out; `ATTEMPTS.md` E5 priced turning the hard solve off at +8.3 % against the pure
+     * softmax, which read as the equilibrium over-defending against bluffs nobody makes.
+     *
+     * Every number here is MEASURED — the damage engine's own average percentages and the utility
+     * module's own type chart, never a species rule:
+     *   - a damaging move weighs its average damage into our active, with `attackFloor` under it so
+     *     a weak-but-real option is not priced as nonexistent,
+     *   - a non-damaging move weighs `setupUnsafe`, or `setupSafe` when our active cannot 2HKO them
+     *     (a setup move is only an obvious reply when taking it is actually safe),
+     *   - a switch weighs `switchBase`, and `switchEscape` when their active is facing a GUARANTEED
+     *     OHKO from a REVEALED/STAB move of ours AND the body they would bring in resists that
+     *     move's type — the two facts that make a pivot the obviously correct reply.
+     * It is a PRIOR over their replies, not a policy: it is blended into the solve at
+     * `priorWeight` and cannot by itself move a payoff.
+     */
+    _opponentPrior(oppActions, state, worlds) {
+      const cfgPrior = this.nash && this.nash.priorAnchored;
+      const n = oppActions ? oppActions.length : 0;
+      if (!n || !cfgPrior || cfgPrior.enabled !== true) return null;
+      const myActive = state && state.active ? state.active.my : null;
+      const firstWorld = (worlds && worlds.length) ? worlds[0] : null;
+      const worldActive = (firstWorld && firstWorld.team)
+        ? firstWorld.team.filter(function (m) { return m && m.isActive; })[0] : null;
+      const oppActive = (state && state.active ? state.active.opp : null) || worldActive || null;
+      const field = (state && state.field) || {};
+      const ourHit = myActive ? this._revealedStabBest(myActive, oppActive, field) : null;
+      const safeToSetUp = !(ourHit && ourHit.damage && ourHit.damage.avgPercent >= 50);
+      /* A malformed leaf must not become `NaN` and take the whole prior with it: a NaN weight is
+       * neither `> 0` nor a number, so it would quietly drop one of their replies out of the
+       * prior. Each weight is therefore read through a numeric fallback. */
+      const weight = function (value, fallback) {
+        return (typeof value === 'number' && isFinite(value)) ? value : fallback;
+      };
+      const attackFloor = weight(cfgPrior.attackFloor, 5);
+      const setupSafe = weight(cfgPrior.setupSafe, 45);
+      const setupUnsafe = weight(cfgPrior.setupUnsafe, 10);
+      const switchBase = weight(cfgPrior.switchBase, 8);
+      const switchEscape = weight(cfgPrior.switchEscape, 70);
+      const raw = [];
+      let total = 0;
+      for (let j = 0; j < n; j++) {
+        const action = oppActions[j];
+        let w = 0;
+        if (action && action.kind === 'switch') {
+          w = switchBase;
+          if (ourHit && ourHit.damage && ourHit.damage.isOHKO) {
+            const body = this._oppBenchBody(action.targetId || action.name, worlds);
+            if (body && ourHit.type && this._resistsType(body, ourHit.type)) w = switchEscape;
+          }
+        } else if (action) {
+          const data = U.getMoveData(action.name || action.moveId);
+          if (data && !data.isStatus && data.basePower > 0) {
+            const dmg = this._damageOf(oppActive, myActive, action.name, field, true,
+              this._believedTargetOpts(myActive));
+            w = Math.max((dmg && dmg.avgPercent) || 0, attackFloor);
+          } else {
+            w = safeToSetUp ? setupSafe : setupUnsafe;
+          }
+        }
+        raw.push(w > 0 ? w : 0);
+        total += raw[j];
+      }
+      if (!(total > 0)) return null;
+      return raw.map(function (w) { return w / total; });
+    }
+
+    /**
+     * Our best REVEALED or STAB move into `oppActive`, with the damage it does and its type.
+     * "Revealed or STAB" is the same rule `_isSurpriseCoverage` applies from the other side: this
+     * is the part of our set the opponent could have read off the board.
+     */
+    _revealedStabBest(myActive, oppActive, field) {
+      if (!myActive || !oppActive || !this.damage || typeof U.getMoveData !== 'function') return null;
+      const moves = (myActive.setMoves && myActive.setMoves.length && myActive.setMoves) ||
+        (myActive.liveSet && myActive.liveSet.moves) || myActive.revealedMoves || [];
+      const revealed = myActive.revealedMoves || [];
+      const opts = this._believedTargetOpts(oppActive);
+      let best = null;
+      for (let i = 0; i < moves.length; i++) {
+        const name = moves[i];
+        if (!name) continue;
+        const data = U.getMoveData(name);
+        if (!data || data.isStatus || !(data.basePower > 0)) continue;
+        const id = U.toID(name);
+        let seen = false;
+        for (let r = 0; r < revealed.length; r++) {
+          if (U.toID(revealed[r]) === id) { seen = true; break; }
+        }
+        const stab = typeof U.hasType === 'function' && U.hasType(myActive.species || myActive.id, data.type);
+        if (!seen && !stab) continue;                       // the part of the set they have not seen
+        const damage = this._damageOf(myActive, oppActive, name, field, true, opts);
+        if (damage && (!best || damage.avgPercent > best.damage.avgPercent)) {
+          best = { move: name, type: data.type, damage: damage };
+        }
+      }
+      return best;
+    }
+
+    /** The bench body behind an opponent switch action, found across the sampled worlds. */
+    _oppBenchBody(name, worlds) {
+      const wanted = U.toID(name);
+      const list = worlds || [];
+      for (let w = 0; w < list.length; w++) {
+        const team = (list[w] && list[w].team) || [];
+        for (let i = 0; i < team.length; i++) {
+          const body = team[i];
+          if (!body || body.fainted || body.isActive) continue;
+          if (U.toID(body.species || body.id) === wanted) return body;
+        }
+      }
+      return null;
+    }
+
+    /** Does this body resist `type`? (The library's own chart, never a table of ours.) */
+    _resistsType(body, type) {
+      if (!body || !type || typeof U.typeEffectiveness !== 'function') return false;
+      const eff = U.typeEffectiveness(type, body.species || body.id);
+      return typeof eff === 'number' && eff < 1;
     }
 
     /**
@@ -2548,16 +2864,37 @@
       // rather than being given a zero payoff.
       let nash = null;
       let oppMix = null;
+      /* The two opponent-model tiers, each resolved ONCE for this turn: the perceived matrix the
+       * OPPONENT solves against (surpriseMask) and the behavioral prior their responses are
+       * anchored to (nash.priorAnchored). Both stay null on the shipped build, and a null on both
+       * passes no `opts` at all — so the shipped solve is the same call it always was. */
+      let surprise = null;
+      let priorPlan = null;
+      let priorWeight = 0;
       const nashOn = !this.nash || this.nash.enabled !== false;
       /* The QRE tier, resolved ONCE for this turn: 0 means "the shipped hard response", which is
        * what `nash.enabled: false` and every rating at or above `qre.highRating` resolve to. */
       const qreTau = this._qreTau(state);
+      const priorCfg = this.nash && this.nash.priorAnchored;
       if (nashOn && live.length > 1 && allOppActions.length > 0) {
         const sub = [];
         for (let k = 0; k < liveIdx.length; k++) sub.push(matrix[liveIdx[k]].slice());
+        surprise = this._surprisePerceived(sub, liveIdx, myActions, state);
+        priorPlan = this._opponentPrior(allOppActions, state, worlds);
+        priorWeight = (priorPlan && priorCfg && priorCfg.enabled === true &&
+          typeof priorCfg.priorWeight === 'number' && isFinite(priorCfg.priorWeight))
+          ? Math.max(0, Math.min(1, priorCfg.priorWeight)) : 0;
+        if (!(priorPlan && priorWeight > 0)) priorPlan = null;
         nash = solveNashFictitiousPlay(sub, (this.nash && this.nash.iterations) || NASH_ITERATIONS,
-          qreTau > 0 ? { tau: qreTau } : null);
-        if (!nash || nash.myStrategy.length !== live.length) nash = null;
+          qreTau > 0 ? { tau: qreTau } : null,
+          (surprise || priorPlan)
+            ? { perceived: surprise ? surprise.perceived : null, prior: priorPlan, priorWeight: priorWeight }
+            : null);
+        if (!nash || nash.myStrategy.length !== live.length) {
+          nash = null;
+          surprise = null;
+          priorPlan = null;
+        }
       }
 
       if (nash) {
@@ -2572,6 +2909,18 @@
         // Publish the solved opponent mix column by column. Nothing inside the engine reads it on
         // THIS turn; the observation feed does, next turn, to ask the question the profiler tier
         // exists to score — what did the matrix expect them to do, and what did they actually do.
+        /* Mark the rows the opponent's half of the solve could not see. `live[k]` is the row
+         * OBJECT for sub row k, so this survives the re-sort below; an index into `ranked` would
+         * not. */
+        if (surprise) {
+          for (let s = 0; s < surprise.rows.length; s++) {
+            const row = live[surprise.rows[s]];
+            if (row) {
+              row.surpriseMasked = true;
+              row.surpriseAnchor = surprise.anchorName;
+            }
+          }
+        }
         oppMix = [];
         for (let j = 0; j < allOppActions.length; j++) {
           oppMix.push({ name: allOppActions[j].name, kind: allOppActions[j].kind, freq: nash.oppStrategy[j] });
@@ -2607,6 +2956,18 @@
         // Published so a measurement can tell a QRE turn from a hard one without re-reading config
         // (and so the ablation row can be checked against what actually ran).
         qre: qreTau > 0 ? { tau: U.round1(qreTau) } : null,
+        /* Published so a measurement can tell which opponent model actually ran, without
+         * re-reading config — the ablation rows `surprise-mask` and `nash-prior` check these. */
+        surpriseMask: surprise
+          ? { weight: surprise.weight, blend: surprise.blend, rows: surprise.names.slice(),
+              anchor: surprise.anchorName }
+          : null,
+        nashPrior: priorPlan
+          ? { weight: priorWeight,
+              mix: allOppActions.map(function (action, j) {
+                return { name: action.name, kind: action.kind, prior: U.round1(priorPlan[j] * 1000) / 1000 };
+              }) }
+          : null,
         oppStrategy: oppMix,
         ranked: ranked,
         myActions: myActions,

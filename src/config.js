@@ -259,7 +259,40 @@
           tau: 30,                       // logit temperature on the opponent's column responses
           highRating: 1850,              // at or above this: tau -> 0 (the hard best response)
           lowRating: 1100                // at or below this: the full temperature
+        },
+        // PRIOR-ANCHORED REGRET MATCHING. Fictitious play starts every action with ZERO
+        // credibility, so an opponent blunder (a 2 % move, a switch into a bad matchup) collects
+        // the full weight of a best response for the whole solve before the average can wash it
+        // out; ATTEMPTS.md E5 priced turning the hard solve off at +8.3 % against the pure
+        // softmax, which read as "the equilibrium over-defends against bluffs nobody makes". This
+        // tier anchors the solve to a BEHAVIORAL prior instead of a uniform one: the regret term
+        // is blended with a normalized prior over the opponent's own actions (`priorWeight`), so
+        // a line has to earn credibility before it can move the mix. `enabled: false` runs the
+        // shipped fictitious play step for step.
+        priorAnchored: {
+          enabled: false,
+          priorWeight: 0.25,             // prior share of the opponent's first response
+          // The prior's own shape. All three groups are in PERCENT-OF-MAX-HP units, because that
+          // is what the damage engine reports and the prior is only ever compared with itself.
+          attackFloor: 5,                // a damaging move weighs at least this much
+          setupSafe: 45,                 // a setup move when our active CANNOT 2HKO them
+          setupUnsafe: 10,               // ...and when it can (taking the turn is a real risk)
+          switchBase: 8,                 // a pivot that is not obviously correct
+          switchEscape: 70               // ...and one that is (their active faces a revealed OHKO
+                                         // from us and the incoming body resists it)
         }
+      },
+      // SURPRISE TRUNCATION. The matrix is solved over the opponent's FULL action list, which
+      // means the equilibrium already knows about our unrevealed coverage lure and switches out of
+      // it — telepathically, because on the ladder they have not seen that move yet. This tier
+      // builds an OPPONENT-PERCEIVED copy of the matrix in which a row for an UNREVEALED NON-STAB
+      // move is blended toward the best REVEALED/STAB row by `unrevealedWeight` (1.0 = the true
+      // matrix, 0 = they read the lure as our plain STAB), solves THE OPPONENT's mix on that copy,
+      // and then scores OUR rows on the TRUE matrix against that mix. It changes what we expect
+      // THEM to do; our own frequencies are still bounded by the real matrix. Ships OFF.
+      surpriseMask: {
+        enabled: false,
+        unrevealedWeight: 0.35
       },
       // Scouting (information gain). The matrix scores HP, but early in a game INFORMATION is
       // worth more than HP, and the engine already holds the measurement it needs: the opponent's
@@ -329,7 +362,30 @@
         // read off their own surviving candidate sets (weights included) and the pair is priced as
         // the expected value over the two orders — but a mate is NEVER claimed through one of these
         // nodes (a proof cannot rest on a coin flip), so `solved` stays false.
-        chanceNodes: true
+        chanceNodes: true,
+        /* ---- the 2026-10-15 hardening pass. Each leaf fixes ONE named structural flaw; the
+         * header of src/endgame_solver.js says what each is for and tests/endgame_check.js §7 pins
+         * each one. They default ON because they are corrections, not preferences — but the tier
+         * they sharpen still ships `enabled: false`, so the shipped RANKING is unchanged either
+         * way; the only caller that runs the solver by default is the boot's background ponder,
+         * and only for a Cancel-window hint. */
+        // 1. a turn is SIMULTANEOUS: the opponent may not read our secret turn-t action. With this
+        // off the turn falls back to the historical Stackelberg worst case (`max_i min_j`).
+        simultaneousPly: true,
+        // 2. recovery moves and Protect are ACTIONS, not no-ops (Protect only while the side's
+        // chain is broken).
+        includeRecoveryAndProtect: true,
+        // 3. entry hazards on a replacement, Trick Room's timer, and end-of-turn burn/poison and
+        // Leftovers chip.
+        modelPhysics: true,
+        // 4. a per-solve transposition cache (only exact, full-window values are stored).
+        transposition: true,
+        // 5. solveAcrossWorlds: a forced win must hold across every sampled world, not just one.
+        multiWorld: true,
+        // Regret-matching rounds for a turn matrix with no strictly dominant pure action. The
+        // matrix is at most maxBranchingMoves^2 and this runs at every ply, so it is deliberately
+        // small; the running average settles well inside the mate band at this count.
+        regretIters: 200
       },
       // Selective 2-ply beam (the multi-ply horizon upgrade, see laplace_core._refineBeam2Ply).
       // A full second ply is `|myActions| x |theirReplies| x K` evaluations and does not fit a

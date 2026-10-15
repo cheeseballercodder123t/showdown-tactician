@@ -118,6 +118,13 @@ const INVENTORY = [
   // quantal-response opponent (ships off; the temperature decays to 0 at the top of the ladder)
   'laplace.nash.qre.enabled', 'laplace.nash.qre.tau',
   'laplace.nash.qre.highRating', 'laplace.nash.qre.lowRating',
+  // prior-anchored regret matching (ships off; the behavioral prior in front of the solve)
+  'laplace.nash.priorAnchored.enabled', 'laplace.nash.priorAnchored.priorWeight',
+  'laplace.nash.priorAnchored.attackFloor', 'laplace.nash.priorAnchored.setupSafe',
+  'laplace.nash.priorAnchored.setupUnsafe', 'laplace.nash.priorAnchored.switchBase',
+  'laplace.nash.priorAnchored.switchEscape',
+  // surprise truncation (ships off; the perceived matrix the OPPONENT solves against)
+  'laplace.surpriseMask.enabled', 'laplace.surpriseMask.unrevealedWeight',
   // quiescence (the setup punisher: the two replies the 1-ply matrix priced as no-ops)
   'laplace.quiescence.enabled', 'laplace.quiescence.extendSetup', 'laplace.quiescence.blockProtect',
   'laplace.quiescence.respectTurn2Speed', 'laplace.quiescence.followUpWeight',
@@ -137,6 +144,10 @@ const INVENTORY = [
   'laplace.endgame.nodeBudget',
   // the three-wide bound, the branch cap and the Speed chance node (see endgame_solver.js)
   'laplace.endgame.maxAlive', 'laplace.endgame.maxBranchingMoves', 'laplace.endgame.chanceNodes',
+  // the 2026-10-15 hardening pass: five structural fixes, one leaf each
+  'laplace.endgame.simultaneousPly', 'laplace.endgame.includeRecoveryAndProtect',
+  'laplace.endgame.modelPhysics', 'laplace.endgame.transposition', 'laplace.endgame.multiWorld',
+  'laplace.endgame.regretIters',
   // the selective 2-ply beam (a measure-before-adopt tier, ships off)
   'laplace.beam2Ply.enabled', 'laplace.beam2Ply.topMy', 'laplace.beam2Ply.topOpp',
   'laplace.beam2Ply.blendWeight', 'laplace.beam2Ply.threatWeight',

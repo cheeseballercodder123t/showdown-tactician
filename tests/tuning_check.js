@@ -46,6 +46,7 @@ function section(t) { console.log('\n=== ' + t + ' ==='); }
 const IVS = { hp: 31, atk: 31, def: 31, spa: 31, spd: 31, spe: 31 };
 const OFFENSE = { hp: 4, atk: 252, def: 0, spa: 0, spd: 0, spe: 252 };
 function zeroBoosts() { return { atk: 0, def: 0, spa: 0, spd: 0, spe: 0, accuracy: 0, evasion: 0 }; }
+function spread(over) { return Object.assign({ hp: 0, atk: 0, def: 0, spa: 0, spd: 0, spe: 0 }, over || {}); }
 function mon(species, extra) {
   return Object.assign({
     id: U.toID(species), species: species, side: 'p2', revealed: true, level: 100,
@@ -98,8 +99,39 @@ function mkEngine(opts) {
     priceRecovery: (opts && opts.priceRecovery) || null,
     beam2Ply: (opts && opts.beam2Ply) || null,
     endgameSolver: (opts && opts.endgameSolver) || null,
-    qre: (opts && opts.qre) || null
+    qre: (opts && opts.qre) || null,
+    surpriseMask: (opts && opts.surpriseMask) || null
   });
+}
+
+/**
+ * The SURPRISE-COVERAGE board: our Great Tusk holds an UNREVEALED, non-STAB Ice Spinner (4x into
+ * Dragonite-class Flying/Dragon bodies) while their Kingambit sits in front of a Landorus-Therian
+ * on the bench. Kingambit is 4x weak to our Fighting STAB and Landorus-Therian resists it while
+ * being immune to our Ground STAB — so their equilibrium reply is to PIVOT, and the only thing
+ * standing between them and a clean dodge is a coverage move they have not seen yet.
+ */
+function boardWithDodge() {
+  const me = mon('Great Tusk', {
+    side: 'p1', evs: OFFENSE, ivs: IVS, nature: 'Jolly', ability: 'Protosynthesis',
+    isActive: true, hpPercent: 100,
+    setMoves: ['Ice Spinner', 'Headlong Rush', 'Close Combat', 'Rapid Spin']
+  });
+  const them = mon('Kingambit', {
+    evs: spread({ hp: 252, atk: 252 }), ivs: IVS, nature: 'Adamant', ability: 'Supreme Overlord',
+    isActive: true, hpPercent: 100,
+    setMoves: ['Sucker Punch', 'Kowtow Cleave', 'Iron Head', 'Swords Dance']
+  });
+  const bench = mon('Landorus-Therian', {
+    evs: spread({ hp: 252, def: 252, spd: 4 }), ivs: IVS, nature: 'Impish', ability: 'Intimidate',
+    isActive: false, hpPercent: 100,
+    setMoves: ['Earthquake', 'U-turn', 'Stone Edge', 'Stealth Rock']
+  });
+  const b = board();
+  b.oppTeam = [them, bench];
+  b.active.opp = them;
+  b.bench.opp = [bench];
+  return b;
 }
 
 /** The board plus a legal bench switch, so a switch ROW actually exists to be priced. */
@@ -1162,6 +1194,260 @@ section('7b. what a positive temperature can and cannot move (it never moves our
     conf(onRows), conf(offRows));
   eq('...so the published TOP LINE is unchanged (no frequency tie on this board to break)',
     onRows[0] && onRows[0].name, offRows[0] && offRows[0].name);
+}
+
+/* ============ 8. surprise truncation: the opponent solves the game it thinks it is in (OFF) */
+
+section('8. surprise truncation (unrevealed coverage baiting) ships OFF, and moves only THEM');
+{
+  /* THE MECHANISM. The simultaneous matrix is built over the opponent's FULL reply list, so the
+   * equilibrium already knows about our unrevealed coverage move and leaves the punished column
+   * alone — telepathically, because on the ladder they have not seen us click it. With the tier on,
+   * THEIR half of the solve reads a copy of the matrix in which an unrevealed non-STAB row is
+   * blended toward our best revealed/STAB row, and it is that copy the opponent best-responds to.
+   * Our own rows are still scored on the TRUE matrix against the mix they produce, and our own
+   * frequencies still best-respond to the real game. */
+  const solve = ST.LaplaceEngine.solveNashFictitiousPlay;
+  eq('the shipped config ships the tier OFF', ST.configGet('laplace.surpriseMask.enabled', null), false);
+  same('...at the documented blend weight', ST.configGet('laplace.surpriseMask.unrevealedWeight', null), 0.35, 0);
+
+  /* ---- 8a. what counts as a surprise ---- */
+
+  const masked = mkEngine({ surpriseMask: { enabled: true, unrevealedWeight: 0.35 } });
+  const dodgeBoard = boardWithDodge();
+  const me = dodgeBoard.active.my;
+  const A = function (name, kind) { return { kind: kind || 'move', name: name, moveId: U.toID(name) }; };
+  check('an unrevealed non-STAB coverage move IS a surprise (Ice on a Ground/Fighting body)',
+    masked._isSurpriseCoverage(A('Ice Spinner'), me) === true);
+  check('...a STAB move is not: its typing is readable off the species',
+    masked._isSurpriseCoverage(A('Headlong Rush'), me) === false &&
+      masked._isSurpriseCoverage(A('Close Combat'), me) === false,
+    JSON.stringify([masked._isSurpriseCoverage(A('Headlong Rush'), me),
+      masked._isSurpriseCoverage(A('Close Combat'), me)]));
+  check('...nor is a move we have already clicked this battle',
+    masked._isSurpriseCoverage(A('Ice Spinner'),
+      Object.assign({}, me, { revealedMoves: ['Ice Spinner'] })) === false);
+  check('...nor a pivot, nor a shield',
+    masked._isSurpriseCoverage({ kind: 'switch', name: 'Iron Valiant' }, me) === false &&
+      masked._isSurpriseCoverage({ kind: 'protect', name: 'Protect' }, me) === false);
+  check('...and with the tier OFF nothing is a surprise',
+    mkEngine({})._isSurpriseCoverage(A('Ice Spinner'), me) === false);
+
+  /* ---- 8b. the perceived matrix is built cell by cell ---- */
+
+  const SUB = [[-10, 120, 30], [60, -40, 20], [40, -60, 10]];
+  const ACTIONS = [A('Ice Spinner'), A('Close Combat'), A('Headlong Rush')];
+  const plan = masked._surprisePerceived(SUB, [0, 1, 2], ACTIONS, dodgeBoard);
+  check('the planner claims exactly the lure row', !!plan && JSON.stringify(plan.rows) === '[0]',
+    JSON.stringify(plan && plan.rows));
+  eq('...and anchors on the best revealed/STAB row (Close Combat, the higher mean of the two)',
+    plan && plan.anchorName, 'Close Combat');
+  same('...blending it cell by cell: 0.35 x true + 0.65 x anchor',
+    plan && plan.perceived[0][1], 0.35 * 120 + 0.65 * -40, 1e-9);
+  eq('...and leaving every other row exactly as it was',
+    plan ? JSON.stringify(plan.perceived.slice(1)) : null, JSON.stringify(SUB.slice(1)));
+  eq('...with the true matrix never written through',
+    JSON.stringify(SUB), JSON.stringify([[-10, 120, 30], [60, -40, 20], [40, -60, 10]]));
+  check('tier off: no perceived matrix is built at all',
+    mkEngine({})._surprisePerceived(SUB, [0, 1, 2], ACTIONS, dodgeBoard) === null);
+  check('a body whose whole set is a surprise has no read to blend toward, so no mask',
+    masked._surprisePerceived(SUB, [0, 1, 2], [A('Ice Spinner'), A('Ice Spinner'), A('Ice Spinner')],
+      dodgeBoard) === null);
+  check('unrevealedWeight 1 is the identity, so no copy is needed',
+    mkEngine({ surpriseMask: { enabled: true, unrevealedWeight: 1 } })
+      ._surprisePerceived(SUB, [0, 1, 2], ACTIONS, dodgeBoard) === null);
+
+  /* ---- 8c. the solver: a hidden lure is not dodged, and its value is scored on the TRUTH ---- */
+
+  const M = [[-10, 120, 30], [60, -40, 20], [40, -60, 10]];
+  const PERCEIVED = M.map(function (row) { return row.slice(); });
+  for (let j = 0; j < PERCEIVED[0].length; j++) PERCEIVED[0][j] = 0.35 * M[0][j] + 0.65 * M[1][j];
+
+  eq('no perceived matrix is bit-identical to the shipped call',
+    JSON.stringify(solve(M, 2000, null, null)), JSON.stringify(solve(M, 2000)));
+  eq('...and so is a perceived copy that IS the true matrix',
+    JSON.stringify(solve(M, 2000, null, { perceived: M.map(function (r) { return r.slice(); }) })),
+    JSON.stringify(solve(M, 2000)));
+  eq('...and so is a perceived matrix of the wrong SHAPE (a ragged copy is ignored, not read)',
+    JSON.stringify(solve(M, 2000, null, { perceived: [[1, 2], [3, 4]] })), JSON.stringify(solve(M, 2000)));
+
+  const sighted = solve(M, 2000);
+  const fooled = solve(M, 2000, null, { perceived: PERCEIVED });
+  check('an opponent who can see the lure concentrates on the column that punishes it',
+    sighted.oppStrategy[2] > 0.5, JSON.stringify(sighted.oppStrategy));
+  check('...while one who cannot walks straight into it',
+    fooled.oppStrategy[1] > 0.5, JSON.stringify(fooled.oppStrategy));
+  check('...which makes the lure worth several times more against their real mix',
+    fooled.rowValues[0] > 3 * sighted.rowValues[0],
+    JSON.stringify([sighted.rowValues[0], fooled.rowValues[0]]));
+  let rail = 0;
+  for (let j = 0; j < M[0].length; j++) rail += fooled.oppStrategy[j] * M[0][j];
+  same('our rows are STILL scored on the true matrix against their mix, not the perceived one',
+    fooled.rowValues[0], rail, 1e-9);
+  check('...and both mixes remain probability distributions',
+    [sighted, fooled].every(function (r) {
+      return Math.abs(r.oppStrategy.reduce(function (a, b) { return a + b; }, 0) - 1) < 1e-9 &&
+        r.oppStrategy.every(function (p) { return p >= 0 && p <= 1; });
+    }), JSON.stringify(fooled.oppStrategy));
+
+  /* ---- 8d. the engine wiring, on the real board ---- */
+
+  const offDefault = mkEngine({});
+  const offExplicit = mkEngine({ surpriseMask: { enabled: false, unrevealedWeight: 0.35 } });
+  const on = mkEngine({ surpriseMask: { enabled: true, unrevealedWeight: 0.35 } });
+  const rowKey = function (rows) {
+    return rows.map(function (r) { return [r.name, r.score, r.confidence, r.isVetoed]; });
+  };
+  const R0 = offDefault.evaluateTurn(boardWithDodge());
+  const RX = offExplicit.evaluateTurn(boardWithDodge());
+  const RN = on.evaluateTurn(boardWithDodge());
+  eq('tier off: the readout publishes no mask', offDefault.lastReadout.surpriseMask, null);
+  eq('enabled: false is bit-identical to the shipped build', rowKey(RX), rowKey(R0));
+  check('tier on: the mask names the lure, its anchor and the blend it wore',
+    !!on.lastReadout.surpriseMask &&
+      JSON.stringify(on.lastReadout.surpriseMask.rows) === '["Ice Spinner"]' &&
+      on.lastReadout.surpriseMask.anchor === 'Close Combat' &&
+      on.lastReadout.surpriseMask.blend === 65,
+    JSON.stringify(on.lastReadout.surpriseMask));
+  const freqOf = function (readout, name) {
+    const mix = (readout && readout.oppStrategy) || [];
+    for (let i = 0; i < mix.length; i++) if (mix[i].name === name) return mix[i].freq;
+    return 0;
+  };
+  const lureOf = function (rows) {
+    for (let i = 0; i < rows.length; i++) if (rows[i].name === 'Ice Spinner') return rows[i];
+    return null;
+  };
+  check('their pivot is a real column on this board (otherwise this block proves nothing)',
+    freqOf(offDefault.lastReadout, 'Landorus-Therian') > 0.3,
+    JSON.stringify(offDefault.lastReadout.oppStrategy));
+  check('with the lure hidden their equilibrium dodges MORE, not less',
+    freqOf(on.lastReadout, 'Landorus-Therian') > freqOf(offDefault.lastReadout, 'Landorus-Therian'),
+    JSON.stringify([freqOf(offDefault.lastReadout, 'Landorus-Therian'),
+      freqOf(on.lastReadout, 'Landorus-Therian')]));
+  check('...and the lure\u2019s true value against that mix goes up',
+    lureOf(RN).score > lureOf(R0).score,
+    JSON.stringify([lureOf(R0).score, lureOf(RN).score]));
+  check('...making it the top line, with the row flagged and the anchor it was read as',
+    RN[0].name === 'Ice Spinner' && RN[0].surpriseMasked === true &&
+      lureOf(RN).surpriseAnchor === 'Close Combat' && !R0[0].surpriseMasked && !lureOf(R0).surpriseMasked,
+    JSON.stringify(RN.map(function (r) { return [r.name, r.surpriseMasked, r.surpriseAnchor]; })));
+  check('...and the masked solve is still finite with confidences summing to 100 %',
+    RN.every(function (r) { return isFinite(r.confidence); }) &&
+      Math.abs(RN.filter(function (r) { return !r.isVetoed; })
+        .reduce(function (a, r) { return a + r.confidence; }, 0) - 100) < 1.5,
+    JSON.stringify(RN.map(function (r) { return r.confidence; })));
+}
+
+/* ============ 9. prior-anchored regret matching: the solve starts where humans are (OFF) */
+
+section('9. prior-anchored regret matching ships OFF, and only ever re-prices THEM');
+{
+  /* THE MECHANISM. Fictitious play gives every one of their actions the same ZERO credibility at
+   * round 0, so an opponent blunder collects a full best response for as long as the running
+   * average takes to wash it out. ATTEMPTS.md E5 priced turning the hard solve off at +8.3 %
+   * against the pure softmax, which read as exactly that over-defence. With the tier on, their
+   * regret-matching response is blended with a behavioral prior at `priorWeight`. */
+  const solve = ST.LaplaceEngine.solveNashFictitiousPlay;
+  eq('the shipped config ships the tier OFF', ST.configGet('laplace.nash.priorAnchored.enabled', null), false);
+  same('...at the documented anchor weight', ST.configGet('laplace.nash.priorAnchored.priorWeight', null), 0.25, 0);
+  same('...with the documented prior weights', ST.configGet('laplace.nash.priorAnchored.switchEscape', null), 70, 0);
+  same('...and they are what the engine actually reads',
+    mkEngine({}).nash.priorAnchored.switchEscape, 70, 0);
+  same('a PARTIAL tier option keeps the config defaults underneath (the merge is at both levels)',
+    mkEngine({ nash: { priorAnchored: { enabled: true, priorWeight: 0.25 } } }).nash.priorAnchored.switchEscape,
+    70, 0);
+
+  /* ---- 9a. the solver: anchoring is a pull, never a new payoff ---- */
+
+  const M = [[-10, 120, 30], [60, -40, 20], [40, -60, 10]];
+  const P = [0.5, 0.3, 0.2];
+  const hard = solve(M, 2000);
+  eq('no prior is bit-identical to the shipped call',
+    JSON.stringify(solve(M, 2000, null, { prior: null, priorWeight: 0.25 })), JSON.stringify(hard));
+  eq('...and so is a weight of 0',
+    JSON.stringify(solve(M, 2000, null, { prior: P, priorWeight: 0 })), JSON.stringify(hard));
+  check('...and so is a malformed prior: the wrong length, a negative entry, a NaN',
+    JSON.stringify(solve(M, 2000, null, { prior: [0.5, 0.5], priorWeight: 0.25 })) === JSON.stringify(hard) &&
+      JSON.stringify(solve(M, 2000, null, { prior: [0.5, -0.1, 0.6], priorWeight: 0.25 })) === JSON.stringify(hard) &&
+      JSON.stringify(solve(M, 2000, null, { prior: [0.5, NaN, 0.5], priorWeight: 0.25 })) === JSON.stringify(hard),
+    JSON.stringify(solve(M, 2000, null, { prior: [0.5, NaN, 0.5], priorWeight: 0.25 }).oppStrategy));
+
+  const anchored = solve(M, 2000, null, { prior: P, priorWeight: 0.25 });
+  const pinned = solve(M, 2000, null, { prior: P, priorWeight: 1 });
+  /* An anchor of 1 makes every response the prior, so their reported mix is the prior plus the ONE
+   * round the loop seeds before it has computed any response at all (the same 1/iters artifact the
+   * QRE path has always had). Doubling the rounds must halve it — which is what makes this a
+   * convergence claim rather than a tolerance. */
+  const priorGap = function (r, iters) {
+    let worst = 0;
+    for (let j = 0; j < P.length; j++) worst = Math.max(worst, Math.abs(r.oppStrategy[j] - P[j]));
+    return worst - 1 / iters;
+  };
+  check('an anchor of 1 makes their mix the prior, up to the one seeded round',
+    priorGap(pinned, 2000) < 1e-9, JSON.stringify(pinned.oppStrategy));
+  check('...and that residual really is the seeded round: it halves when the rounds double',
+    priorGap(solve(M, 20000, null, { prior: P, priorWeight: 1 }), 20000) < 1e-9,
+    JSON.stringify(solve(M, 20000, null, { prior: P, priorWeight: 1 }).oppStrategy));
+  check('...and a partial anchor never prices a supported reply at zero',
+    anchored.oppStrategy.every(function (v, j) { return v >= 0.25 * P[j] - 1e-9; }),
+    JSON.stringify(anchored.oppStrategy));
+  check('...while an unsupported one is still allowed to go unsupported (it is a prior, not a policy)',
+    anchored.oppStrategy[0] !== hard.oppStrategy[0] || anchored.oppStrategy[1] !== hard.oppStrategy[1],
+    JSON.stringify([anchored.oppStrategy, hard.oppStrategy]));
+  check('every mix the tier produces is still a distribution',
+    [anchored, pinned].every(function (r) {
+      return Math.abs(r.oppStrategy.reduce(function (a, b) { return a + b; }, 0) - 1) < 1e-9 &&
+        r.rowValues.every(function (v) { return isFinite(v); });
+    }), JSON.stringify(anchored.oppStrategy));
+
+  /* ---- 9b. the prior itself, on the real board ---- */
+
+  const off = mkEngine({ nash: { priorAnchored: { enabled: false, priorWeight: 0.25 } } });
+  const offDefault = mkEngine({});
+  const on = mkEngine({ nash: { priorAnchored: { enabled: true, priorWeight: 0.25 } } });
+  const rowKey = function (rows) {
+    return rows.map(function (r) { return [r.name, r.score, r.confidence, r.isVetoed]; });
+  };
+  const R0 = offDefault.evaluateTurn(boardWithDodge());
+  const RO = off.evaluateTurn(boardWithDodge());
+  const RN = on.evaluateTurn(boardWithDodge());
+  eq('tier off: no prior is published', off.lastReadout.nashPrior, null);
+  eq('enabled: false is bit-identical to the shipped build', rowKey(RO), rowKey(R0));
+  const priorMix = on.lastReadout.nashPrior && on.lastReadout.nashPrior.mix;
+  check('tier on: the prior is published as a distribution over THEIR actions',
+    !!priorMix && Math.abs(priorMix.reduce(function (a, m) { return a + m.prior; }, 0) - 1) < 0.01 &&
+      priorMix.every(function (m) { return isFinite(m.prior) && m.prior >= 0; }),
+    JSON.stringify(on.lastReadout.nashPrior));
+  same('...at the configured anchor weight', on.lastReadout.nashPrior && on.lastReadout.nashPrior.weight, 0.25, 0);
+  const priorOf = function (name) {
+    for (let i = 0; priorMix && i < priorMix.length; i++) if (priorMix[i].name === name) return priorMix[i];
+    return null;
+  };
+  const pivot = priorOf('Landorus-Therian');
+  const movePriors = (priorMix || []).filter(function (m) { return m.kind !== 'switch'; })
+    .map(function (m) { return m.prior; });
+  check('the pivot carries the ESCAPE weight: our revealed/STAB move OHKOs their active and the incoming body resists it',
+    !!pivot && pivot.prior > 0.4 && movePriors.length >= 2 &&
+      movePriors.every(function (p) { return p < pivot.prior; }),
+    JSON.stringify([pivot && pivot.prior, movePriors]));
+  const zeros = function (readout) {
+    return ((readout && readout.oppStrategy) || []).filter(function (m) { return m.freq < 1e-4; }).length;
+  };
+  check('the hard solve zeroes a set of their replies; the anchored solve gives every one of them weight',
+    zeros(on.lastReadout) === 0 && zeros(off.lastReadout) >= 2,
+    JSON.stringify([zeros(off.lastReadout), zeros(on.lastReadout)]));
+  check('...so our own ranking really does change with it (the tier is not inert)',
+    JSON.stringify(RN.map(function (r) { return [r.name, Math.round(r.score)]; })) !==
+      JSON.stringify(RO.map(function (r) { return [r.name, Math.round(r.score)]; })),
+    JSON.stringify([RO.map(function (r) { return [r.name, Math.round(r.score)]; }),
+      RN.map(function (r) { return [r.name, Math.round(r.score)]; })]));
+  const nanEngine = mkEngine({ nash: { priorAnchored: { enabled: true, priorWeight: 0.25, attackFloor: NaN } } });
+  nanEngine.evaluateTurn(boardWithDodge());
+  check('a malformed prior leaf cannot poison the prior into NaN',
+    !!nanEngine.lastReadout.nashPrior &&
+      nanEngine.lastReadout.nashPrior.mix.every(function (m) { return isFinite(m.prior) && m.prior >= 0; }),
+    JSON.stringify(nanEngine.lastReadout.nashPrior));
 }
 
 /* ------------------------------------------------------------------- summary */
