@@ -1635,12 +1635,10 @@
         btn.onclick = function () { self.toggleLayoutMode(); };
         // Avoid stealing keyboard focus: PS uses 1-4 for moves and the rest of the document
         // is keyboard-driven, so a focused button that intercepts space/enter would block
-        // those shortcuts. Blur immediately after the click so PS's window-level listeners
-        // keep the next keystroke.
-        btn.onmousedown = function () { /* let the click fire */ };
-        btn.addEventListener('click', function () {
-          if (typeof btn.blur === 'function') setTimeout(function () { try { btn.blur(); } catch (e) { } }, 0);
-        }, true);
+        // those shortcuts. Blur on mousedown in CAPTURE so focus never reaches the button
+        // in the first place; a listener on `click` is too late because the button is already
+        // focused by then and a setTimeout(0) blur races the test's assertion.
+        btn.addEventListener('mousedown', function (e) { e.preventDefault(); }, true);
       }
       this._updateModeToggle();
       return btn;
