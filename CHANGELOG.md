@@ -25,8 +25,11 @@ first, so a tie the engine had to order counts as a miss. The report opens with 
 scored by the engine's own evaluator — `(topScore - humanScore) / spread` — and prints agreement beside
 it: on this corpus the human's line was **within 5 % of our pick on 48.2 %** of the 24,426 decisions
 where a spread existed (11,764) and gave up **30 %+ of the menu spread on 36.5 %** (8,925), while
-top-1 agreement over the same decisions is **34.7 %**. Nearly half of what agreement calls a miss
-cost nothing; the report now says so before it says the other thing.
+top-1 agreement over the same decisions is **34.7 %**. Both bands are given in both normalisations
+(5 %-of-spread 48.2 % vs 5 %-of-pick 48.3 %; 30 %-of-spread 36.5 % vs 30 %-of-pick 36.9 %), because a
+table that frames one band as a share of the spread and the other as a share of the pick cannot be
+compared with itself. Nearly half of what agreement calls a miss cost nothing; the report now says so
+before it says the other thing.
 
 **The turn buckets carry a two-sample test instead of a shape.** A flat agreement rate across
 opening / mid / endgame is equally consistent with uniformly decent and uniformly mediocre, so
@@ -55,7 +58,8 @@ above chance — while the MOVE half is 40.9 % against 18.2 % and carries the st
 aggregate 34.7 % is the average of those two. And the pivot ceiling is unchanged and re-quoted: never
 pivoting while holding an attack would score 45.1 % overall against the shipped 34.7 %.
 
-Pinned by `tests/human_match_check.js` (140 → 207 checks): the gap statistics and their bands, the
+Pinned by `tests/human_match_check.js` (140 → 209 checks): the gap statistics and both bands in both
+framings, the
 degenerate-bucket rule and both floors, the phase test at three powers (identical buckets, a 20-point
 gap at n = 100, the same gap on two decisions), the summary/table agreement, and the render's own
 headline. Docs: `ARCHITECTURE.md` §7.2, `README.md`'s tool list, `ATTEMPTS.md` §O.

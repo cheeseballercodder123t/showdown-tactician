@@ -447,6 +447,11 @@ check('the raw units ride along, so the shares can be sanity-checked',
   gaps.unitsMeasured === 5 && gaps.medianUnits === 8 && Math.abs(gaps.meanUnits - 58.4) < 1e-9,
   JSON.stringify([gaps.unitsMeasured, gaps.medianUnits, gaps.meanUnits]));
 eq('the literal "within 5 % of the pick" is counted separately', gaps.nearTop5Ratio, 3);
+eq('...and the 30 % band is counted in that same framing, not only in the spread one', gaps.worseThan30Ratio, 1);
+check('both framings report both bands, so a slice can be compared with itself',
+  typeof gaps.worseThan30Ratio === 'number' && typeof gaps.nearTop5Ratio === 'number' &&
+    gaps.worseThan30Ratio <= gaps.measured && gaps.nearTop5Ratio <= gaps.measured,
+  JSON.stringify([gaps.measured, gaps.nearTop5Ratio, gaps.worseThan30Ratio]));
 
 /* THE BUCKET KEY. Coarse on purpose, and it must move when the things it is supposed to hold apart
  * move: a different active pair is a different bucket, an HP quintile is not. */

@@ -1049,6 +1049,7 @@ The report now opens with the score gap — the human's own click priced by our 
 | median / mean regret in the evaluator's own units | 24,426 | 7.8 / 60.4 |
 | top-1 AGREEMENT, on the same decisions | 25,284 | **34.7 %** |
 | ...the literal 5 %-of-the-pick framing instead of 5 %-of-the-spread | 11,791 of 24,426 | 48.3 % |
+| ...and the 30 % band at the SAME literal-pick framing | 9,002 of 24,426 | 36.9 % |
 
 The two readings are much further apart than the aggregate makes visible: agreement says we match an
 1883-rated human about a **third** of the time, and the gap says that on nearly **half** of those
@@ -1056,7 +1057,10 @@ disagreements the human's line was worth what ours was worth. Both are true, and
 statement about how much the disagreement cost. The two
 "within 5 %" framings agree to a tenth of a point **on this corpus** and are still printed separately,
 because the literal one is undefined when the top score crosses zero; that they coincide here is a
-fact about these 24,426 menus, not a property of the metric.
+fact about these 24,426 menus, not a property of the metric. Both bands are now reported in BOTH
+framings — 48.2 % / 48.3 % at the 5 % threshold and 36.5 % / 36.9 % at the 30 % one — because a table
+that gives the wash band as a share of the spread and the blunder band as a share of the pick cannot
+be compared with itself, which is a defect the first version of this table had.
 
 ### O2. The turn buckets come with a test now — and they are NOT flat
 

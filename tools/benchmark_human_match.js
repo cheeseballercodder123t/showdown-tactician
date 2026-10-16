@@ -661,7 +661,7 @@ function regretStats(list) {
   const shares = [];
   const units = [];
   const ratios = [];
-  let top1 = 0, top2 = 0, near = 0, bad = 0, vetoed = 0, blind = 0, nearRatio = 0;
+  let top1 = 0, top2 = 0, near = 0, bad = 0, vetoed = 0, blind = 0, nearRatio = 0, badRatio = 0;
   for (let i = 0; i < list.length; i++) {
     if (list[i].top1) top1++;
     if (list[i].top2) top2++;
@@ -675,7 +675,11 @@ function regretStats(list) {
      * line scores away from zero, which is why it is counted separately from `measured`. */
     if (typeof list[i].regretRatio === 'number' && isFinite(list[i].regretRatio)) {
       ratios.push(list[i].regretRatio);
+      /* BOTH bands in BOTH framings, because "within 5 % of the pick" and "30 % worse than the pick"
+       * are one sentence read at two thresholds: a slice that reports one framing at 5 % and the other
+       * at 30 % cannot be compared with itself. */
       if (list[i].regretRatio <= 0.05) nearRatio++;
+      if (list[i].regretRatio >= 0.30) badRatio++;
     }
     const sh = list[i].regretShare;
     if (typeof sh === 'number' && isFinite(sh)) {
@@ -706,6 +710,7 @@ function regretStats(list) {
     meanUnits: units.length ? units.reduce(function (a, b) { return a + b; }, 0) / units.length : null,
     ratioMeasured: ratios.length,
     nearTop5Ratio: nearRatio,
+    worseThan30Ratio: badRatio,
     top1: top1,
     top2: top2,
     vetoed: vetoed,
@@ -1210,10 +1215,10 @@ function render(summary, opts) {
     L.push('    engine put on this turn\'s menu. The rate is over the decisions where a spread existed.');
     L.push('  ' + padEnd('slice', 26) + padStart('decisions', 10) + padStart('median', 8) + padStart('p90', 7) +
       padStart('within 5%', 11) + padStart('worse 30%+', 12) + padStart('mean', 8) +
-      padStart('medUnits', 10) + padStart('meanUnits', 10) + padStart('within 5%', 11));
+      padStart('medUnits', 10) + padStart('meanUnits', 10) + padStart('within 5%', 11) + padStart('worse 30%+', 12));
     L.push('  ' + padEnd('', 26) + padStart('(of spread)', 10) + padStart('', 15) + padStart('', 23) +
-      padStart('(of spread)', 10) + padStart('', 10) + padStart('(of pick)', 11));
-    L.push('  ' + '-'.repeat(113));
+      padStart('(of spread)', 10) + padStart('', 10) + padStart('(of pick)', 11) + padStart('(of pick)', 12));
+    L.push('  ' + '-'.repeat(125));
     const fmt = function (v) { return v === null || v === undefined ? 'n/a' : v.toFixed(3); };
     [['all scored', rg.all], ['contested', rg.contested], ['move-vs-move', rg.moveContested],
       ['revealed moveset', rg.revealedOnly], ['move clicks', rg.byKind.move],
@@ -1224,7 +1229,8 @@ function render(summary, opts) {
           padStart(pct(t.worseThan30, t.measured), 12) + padStart(fmt(t.mean), 8) +
           padStart(t.medianUnits === null ? 'n/a' : t.medianUnits.toFixed(1), 10) +
           padStart(t.meanUnits === null ? 'n/a' : t.meanUnits.toFixed(1), 10) +
-          padStart(pct(t.nearTop5Ratio, t.ratioMeasured), 11));
+          padStart(pct(t.nearTop5Ratio, t.ratioMeasured), 11) +
+        padStart(pct(t.worseThan30Ratio, t.ratioMeasured), 12));
       });
     [['opening  (1-' + OPENING_MAX_TURN + ')', 'opening'], ['mid  (' + (OPENING_MAX_TURN + 1) + '-' + MID_MAX_TURN + ')', 'mid'],
       ['endgame  (' + (MID_MAX_TURN + 1) + '+)', 'endgame']].forEach(function (b) {
@@ -1234,7 +1240,8 @@ function render(summary, opts) {
         padStart(pct(t.worseThan30, t.measured), 12) + padStart(fmt(t.mean), 8) +
         padStart(t.medianUnits === null ? 'n/a' : t.medianUnits.toFixed(1), 10) +
         padStart(t.meanUnits === null ? 'n/a' : t.meanUnits.toFixed(1), 10) +
-        padStart(pct(t.nearTop5Ratio, t.ratioMeasured), 11));
+        padStart(pct(t.nearTop5Ratio, t.ratioMeasured), 11) +
+        padStart(pct(t.worseThan30Ratio, t.ratioMeasured), 12));
     });
     L.push('');
     L.push('  A share of 0 means the human\'s line was worth what the engine\'s pick was worth (a tie');
@@ -1244,7 +1251,8 @@ function render(summary, opts) {
     L.push('  The TWO "within 5%" columns normalise differently and are NOT interchangeable: the first');
     L.push('  is 5 % of the menu\'s own spread (bounded, comparable across turns, the headline), the');
     L.push('  second is the literal 5 % of the top line\'s SCORE, which is undefined when that score is');
-    L.push('  near zero — the evaluator\'s units cross zero — so it is counted over fewer decisions.');
+    L.push('  near zero — the evaluator\'s units cross zero — so it is counted over fewer decisions. The');
+    L.push('  30 % columns are the same pair read at the other threshold, so each framing reports both.');
   }
   const cs = summary.consensus;
   if (cs && cs.buckets) {

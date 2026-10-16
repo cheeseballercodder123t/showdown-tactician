@@ -371,7 +371,7 @@ node tests/dom_check.js       #  99 checks: the HUD's DOM lifecycle, driven thro
 node tests/ablation_check.js  # 294 checks: the ablation runner — --set and its refusals, each flag in a real
                               #   engine, the feature table, the aggregation/bootstrap maths, one live batch
 node tests/tactical_puzzles.js #   0 puzzles: the vaccine registry, green until a --harvest run writes a defect
-node tests/human_match_check.js # 197 checks: the human-move-match benchmark — what a replay DOES and does NOT say,
+node tests/human_match_check.js # 209 checks: the human-move-match benchmark — what a replay DOES and does NOT say,
                               #   the score gap and the consensus sets, the turn-bucket flatness test,
                               #   and the pivot ceiling that bounds any switch-penalising change
 ```
