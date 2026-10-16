@@ -279,9 +279,12 @@ tools/fetch_replays.js    a ladder search -> the replay corpus (the only step of
                           rather than only a floor, and `--input a.json,b.json` merges corpora into
                           one file, best-rated first
 tools/extract_training_data.js  a replay corpus -> 128D rows labelled by the eventual winner
-tools/benchmark_human_match.js  a replay corpus -> POLICY fidelity (not win prediction): how often the
-                           engine's top line is the line an elite human actually clicked, by turn
-                           bucket, with the action-space gaps a replay forces MEASURED and reported.
+tools/benchmark_human_match.js  a replay corpus -> POLICY fidelity (not win prediction). It leads with
+                           the SCORE GAP — the human's own click priced by the engine's own evaluator
+                           — rather than with top-1 agreement, which counts a tie-broken row as a miss;
+                           groups the corpus into CONSENSUS SETS by active matchup; and runs a
+                           two-sample test on the turn buckets, so "flat" is a finding rather than a
+                           shape. The action-space gaps a replay forces are MEASURED and reported.
                            `--set` ablates a config tunable (deep-merged, refused if the path does not
                            exist in config.js, and read back after merging) and `--veto-off` suppresses
                            one veto rule, so a policy change can be priced against human agreement
@@ -368,8 +371,9 @@ node tests/dom_check.js       #  99 checks: the HUD's DOM lifecycle, driven thro
 node tests/ablation_check.js  # 294 checks: the ablation runner — --set and its refusals, each flag in a real
                               #   engine, the feature table, the aggregation/bootstrap maths, one live batch
 node tests/tactical_puzzles.js #   0 puzzles: the vaccine registry, green until a --harvest run writes a defect
-node tests/human_match_check.js # 140 checks: the human-move-match benchmark — what a replay DOES and does NOT say,
-                              #   including the pivot ceiling that bounds any switch-penalising change
+node tests/human_match_check.js # 197 checks: the human-move-match benchmark — what a replay DOES and does NOT say,
+                              #   the score gap and the consensus sets, the turn-bucket flatness test,
+                              #   and the pivot ceiling that bounds any switch-penalising change
 ```
 
 The first suite loads every script in manifest order inside a DOM-less sandbox (so a load-order

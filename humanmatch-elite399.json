@@ -1,0 +1,752 @@
+{
+ "corpus": "elite.json (tools/fetch_replays.js --format gen9nationaldex --min-rating 1700 --sort rating)",
+ "battles": 399,
+ "battlesSkippedUnsupported": 0,
+ "battlesErrored": 0,
+ "sides": [
+  "p1",
+  "p2"
+ ],
+ "minRating": null,
+ "ratingBand": {
+  "min": 1857,
+  "max": 1992,
+  "mean": 1883
+ },
+ "configPatches": null,
+ "vetoOff": null,
+ "all": {
+  "n": 25284,
+  "top1": 8770,
+  "top2": 13881,
+  "vetoed": 858,
+  "blind": 8732
+ },
+ "contested": {
+  "n": 19596,
+  "top1": 5561,
+  "top2": 9309,
+  "vetoed": 648,
+  "blind": 4819
+ },
+ "moveContested": {
+  "n": 12788,
+  "top1": 4331,
+  "top2": 7138,
+  "vetoed": 609,
+  "blind": 4819
+ },
+ "revealedOnly": {
+  "n": 16552,
+  "top1": 4879,
+  "top2": 8236,
+  "vetoed": 509,
+  "blind": 0
+ },
+ "buckets": {
+  "opening": {
+   "n": 3696,
+   "top1": 1412,
+   "top2": 2162,
+   "vetoed": 115,
+   "blind": 2273
+  },
+  "mid": {
+   "n": 6937,
+   "top1": 2478,
+   "top2": 3896,
+   "vetoed": 229,
+   "blind": 3126
+  },
+  "endgame": {
+   "n": 14651,
+   "top1": 4880,
+   "top2": 7823,
+   "vetoed": 514,
+   "blind": 3333
+  }
+ },
+ "regret": {
+  "all": {
+   "n": 25284,
+   "measured": 24426,
+   "median": 0.07057283820615277,
+   "p90": 1,
+   "mean": 0.30621447429506876,
+   "nearTop5": 11764,
+   "worseThan30": 8925,
+   "unitsMeasured": 24426,
+   "medianUnits": 7.8190157844287,
+   "meanUnits": 60.36400948599185,
+   "ratioMeasured": 24426,
+   "nearTop5Ratio": 11791,
+   "top1": 8770,
+   "top2": 13881,
+   "vetoed": 858,
+   "blind": 8732
+  },
+  "contested": {
+   "n": 19596,
+   "measured": 18948,
+   "median": 0.14649803076282947,
+   "p90": 1,
+   "mean": 0.34576963999155846,
+   "nearTop5": 7895,
+   "worseThan30": 7885,
+   "unitsMeasured": 18948,
+   "medianUnits": 19.18406543312145,
+   "meanUnits": 71.63734085286553,
+   "ratioMeasured": 18948,
+   "nearTop5Ratio": 7864,
+   "top1": 5561,
+   "top2": 9309,
+   "vetoed": 648,
+   "blind": 4819
+  },
+  "moveContested": {
+   "n": 12788,
+   "measured": 12179,
+   "median": 0.07451057440177938,
+   "p90": 1,
+   "mean": 0.30160145477011524,
+   "nearTop5": 5842,
+   "worseThan30": 4422,
+   "unitsMeasured": 12179,
+   "medianUnits": 10.824657949863706,
+   "meanUnits": 61.22804823127129,
+   "ratioMeasured": 12179,
+   "nearTop5Ratio": 5798,
+   "top1": 4331,
+   "top2": 7138,
+   "vetoed": 609,
+   "blind": 4819
+  },
+  "revealedOnly": {
+   "n": 16552,
+   "measured": 16043,
+   "median": 0.1433277869183849,
+   "p90": 1,
+   "mean": 0.34730377922650324,
+   "nearTop5": 6770,
+   "worseThan30": 6676,
+   "unitsMeasured": 16043,
+   "medianUnits": 18.201960440626024,
+   "meanUnits": 74.81411727302932,
+   "ratioMeasured": 16043,
+   "nearTop5Ratio": 6771,
+   "top1": 4879,
+   "top2": 8236,
+   "vetoed": 509,
+   "blind": 0
+  },
+  "byKind": {
+   "move": {
+    "n": 18313,
+    "measured": 17498,
+    "median": 0.009225566856068249,
+    "p90": 1,
+    "mean": 0.25781419777728337,
+    "nearTop5": 9653,
+    "worseThan30": 5366,
+    "unitsMeasured": 17498,
+    "medianUnits": 1.1018265205462399,
+    "meanUnits": 47.96695191406619,
+    "ratioMeasured": 17498,
+    "nearTop5Ratio": 9660,
+    "top1": 7489,
+    "top2": 11626,
+    "vetoed": 815,
+    "blind": 8732
+   },
+   "switch": {
+    "n": 6971,
+    "measured": 6928,
+    "median": 0.32404963118770425,
+    "p90": 1,
+    "mean": 0.42845870618135723,
+    "nearTop5": 2111,
+    "worseThan30": 3559,
+    "unitsMeasured": 6928,
+    "medianUnits": 33.95872292863703,
+    "meanUnits": 91.67516904048844,
+    "ratioMeasured": 6928,
+    "nearTop5Ratio": 2131,
+    "top1": 1281,
+    "top2": 2255,
+    "vetoed": 43,
+    "blind": 0
+   }
+  },
+  "byBucket": {
+   "opening": {
+    "n": 3696,
+    "measured": 3581,
+    "median": 0.015396533232775057,
+    "p90": 1,
+    "mean": 0.2753476180057191,
+    "nearTop5": 1957,
+    "worseThan30": 1117,
+    "unitsMeasured": 3581,
+    "medianUnits": 0.755667210639178,
+    "meanUnits": 26.296167651182312,
+    "ratioMeasured": 3581,
+    "nearTop5Ratio": 1928,
+    "top1": 1412,
+    "top2": 2162,
+    "vetoed": 115,
+    "blind": 2273
+   },
+   "mid": {
+    "n": 6937,
+    "measured": 6708,
+    "median": 0.035025616082685465,
+    "p90": 1,
+    "mean": 0.2721282166557601,
+    "nearTop5": 3471,
+    "worseThan30": 2150,
+    "unitsMeasured": 6708,
+    "medianUnits": 3.885487452865661,
+    "meanUnits": 39.20555012311526,
+    "ratioMeasured": 6708,
+    "nearTop5Ratio": 3490,
+    "top1": 2478,
+    "top2": 3896,
+    "vetoed": 229,
+    "blind": 3126
+   },
+   "endgame": {
+    "n": 14651,
+    "measured": 14137,
+    "median": 0.1155572039646298,
+    "p90": 1,
+    "mean": 0.33020717632638,
+    "nearTop5": 6336,
+    "worseThan30": 5658,
+    "unitsMeasured": 14137,
+    "medianUnits": 18.84871558021299,
+    "meanUnits": 79.03330898493995,
+    "ratioMeasured": 14137,
+    "nearTop5Ratio": 6373,
+    "top1": 4880,
+    "top2": 7823,
+    "vetoed": 514,
+    "blind": 3333
+   }
+  }
+ },
+ "consensus": {
+  "minN": 5,
+  "buckets": 6220,
+  "qualifying": 1352,
+  "decisionsCovered": 15436,
+  "engineTop1InTop3": 861,
+  "informative": 975,
+  "informativeDecisions": 12988,
+  "degenerate": 377,
+  "engineTop1InTop3Informative": 611,
+  "chanceFloor": 0.7511137548265233,
+  "chanceFloorInformative": 0.5610315861799577,
+  "menuChanceFloorInformative": 0.5132853186399583,
+  "distinctHumanInformative": 5.988717948717949,
+  "distinctHumanMean": 5.046597633136095,
+  "humanTop1ShareMean": 0.43901332966254175,
+  "humanTop1WashShareMean": 0.563792098764354,
+  "pooledClickWashShare": 0.45251360456076706,
+  "top": [
+   {
+    "key": "gliscor vs gliscor",
+    "n": 208,
+    "distinctHuman": 24,
+    "humanTop3": [
+     {
+      "key": "switch:toxapex",
+      "n": 63
+     },
+     {
+      "key": "move:defog",
+      "n": 20
+     },
+     {
+      "key": "move:knockoff",
+      "n": 16
+     }
+    ],
+    "humanTop1": "switch:toxapex",
+    "humanTop1Share": 0.30288461538461536,
+    "engineTopKey": "move:knockoff",
+    "engineTopKeyCount": 73,
+    "engineTop1InTop3": true,
+    "engineTop1Count": 73,
+    "humanTop1WashShare": 0.07936507936507936,
+    "menuChanceFloor": 0.38541666666666635,
+    "informative": true,
+    "clickWashN": 57,
+    "clickWashShare": 0.27403846153846156
+   },
+   {
+    "key": "gliscor vs toxapex",
+    "n": 112,
+    "distinctHuman": 18,
+    "humanTop3": [
+     {
+      "key": "switch:toxapex",
+      "n": 36
+     },
+     {
+      "key": "move:earthquake",
+      "n": 16
+     },
+     {
+      "key": "switch:ditto",
+      "n": 15
+     }
+    ],
+    "humanTop1": "switch:toxapex",
+    "humanTop1Share": 0.32142857142857145,
+    "engineTopKey": "move:earthquake",
+    "engineTopKeyCount": 59,
+    "engineTop1InTop3": true,
+    "engineTop1Count": 59,
+    "humanTop1WashShare": 0.08333333333333333,
+    "menuChanceFloor": 0.38004889455782337,
+    "informative": true,
+    "clickWashN": 21,
+    "clickWashShare": 0.1875
+   },
+   {
+    "key": "toxapex vs gliscor",
+    "n": 111,
+    "distinctHuman": 12,
+    "humanTop3": [
+     {
+      "key": "switch:gliscor",
+      "n": 68
+     },
+     {
+      "key": "move:scald",
+      "n": 11
+     },
+     {
+      "key": "move:toxicspikes",
+      "n": 9
+     }
+    ],
+    "humanTop1": "switch:gliscor",
+    "humanTop1Share": 0.6126126126126126,
+    "engineTopKey": "move:scald",
+    "engineTopKeyCount": 80,
+    "engineTop1InTop3": true,
+    "engineTop1Count": 80,
+    "humanTop1WashShare": 0.1323529411764706,
+    "menuChanceFloor": 0.42213642213642205,
+    "informative": true,
+    "clickWashN": 24,
+    "clickWashShare": 0.21621621621621623
+   },
+   {
+    "key": "zamazenta vs alomomola",
+    "n": 107,
+    "distinctHuman": 14,
+    "humanTop3": [
+     {
+      "key": "move:irondefense",
+      "n": 27
+     },
+     {
+      "key": "move:substitute",
+      "n": 25
+     },
+     {
+      "key": "move:bodypress",
+      "n": 16
+     }
+    ],
+    "humanTop1": "move:irondefense",
+    "humanTop1Share": 0.2523364485981308,
+    "engineTopKey": "move:bodypress",
+    "engineTopKeyCount": 84,
+    "engineTop1InTop3": true,
+    "engineTop1Count": 84,
+    "humanTop1WashShare": 0.07407407407407407,
+    "menuChanceFloor": 0.7104138851802403,
+    "informative": true,
+    "clickWashN": 32,
+    "clickWashShare": 0.29906542056074764
+   },
+   {
+    "key": "alomomola vs zamazenta",
+    "n": 101,
+    "distinctHuman": 11,
+    "humanTop3": [
+     {
+      "key": "move:flipturn",
+      "n": 44
+     },
+     {
+      "key": "move:toxic",
+      "n": 18
+     },
+     {
+      "key": "move:wish",
+      "n": 17
+     }
+    ],
+    "humanTop1": "move:flipturn",
+    "humanTop1Share": 0.43564356435643564,
+    "engineTopKey": "move:flipturn",
+    "engineTopKeyCount": 66,
+    "engineTop1InTop3": true,
+    "engineTop1Count": 66,
+    "humanTop1WashShare": 0.8636363636363636,
+    "menuChanceFloor": 0.6836869401225835,
+    "informative": true,
+    "clickWashN": 53,
+    "clickWashShare": 0.5247524752475248
+   },
+   {
+    "key": "alomomola vs gliscor",
+    "n": 80,
+    "distinctHuman": 13,
+    "humanTop3": [
+     {
+      "key": "move:flipturn",
+      "n": 44
+     },
+     {
+      "key": "move:wish",
+      "n": 14
+     },
+     {
+      "key": "switch:gliscor",
+      "n": 6
+     }
+    ],
+    "humanTop1": "move:flipturn",
+    "humanTop1Share": 0.55,
+    "engineTopKey": "move:flipturn",
+    "engineTopKeyCount": 36,
+    "engineTop1InTop3": true,
+    "engineTop1Count": 36,
+    "humanTop1WashShare": 0.5909090909090909,
+    "menuChanceFloor": 0.509107142857143,
+    "informative": true,
+    "clickWashN": 33,
+    "clickWashShare": 0.4125
+   },
+   {
+    "key": "gliscor vs alomomola",
+    "n": 80,
+    "distinctHuman": 19,
+    "humanTop3": [
+     {
+      "key": "move:earthquake",
+      "n": 17
+     },
+     {
+      "key": "move:protect",
+      "n": 15
+     },
+     {
+      "key": "switch:toxapex",
+      "n": 12
+     }
+    ],
+    "humanTop1": "move:earthquake",
+    "humanTop1Share": 0.2125,
+    "engineTopKey": "move:earthquake",
+    "engineTopKeyCount": 29,
+    "engineTop1InTop3": true,
+    "engineTop1Count": 29,
+    "humanTop1WashShare": 0.7647058823529411,
+    "menuChanceFloor": 0.4213690476190474,
+    "informative": true,
+    "clickWashN": 16,
+    "clickWashShare": 0.2
+   },
+   {
+    "key": "toxapex vs toxapex",
+    "n": 75,
+    "distinctHuman": 13,
+    "humanTop3": [
+     {
+      "key": "switch:gliscor",
+      "n": 34
+     },
+     {
+      "key": "move:scald",
+      "n": 20
+     },
+     {
+      "key": "move:knockoff",
+      "n": 5
+     }
+    ],
+    "humanTop1": "switch:gliscor",
+    "humanTop1Share": 0.4533333333333333,
+    "engineTopKey": "move:scald",
+    "engineTopKeyCount": 51,
+    "engineTop1InTop3": true,
+    "engineTop1Count": 51,
+    "humanTop1WashShare": 0,
+    "menuChanceFloor": 0.43538095238095215,
+    "informative": true,
+    "clickWashN": 18,
+    "clickWashShare": 0.24
+   }
+  ],
+  "fineBuckets": 16582,
+  "qualifyingFine": 434,
+  "fineTop": [
+   {
+    "key": "gliscor|gliscor|4|4|-|-|-|h3",
+    "n": 163,
+    "distinctHuman": 23,
+    "humanTop3": [
+     {
+      "key": "switch:toxapex",
+      "n": 49
+     },
+     {
+      "key": "move:defog",
+      "n": 16
+     },
+     {
+      "key": "move:stealthrock",
+      "n": 14
+     }
+    ],
+    "humanTop1": "switch:toxapex",
+    "humanTop1Share": 0.3006134969325153,
+    "engineTopKey": "move:knockoff",
+    "engineTopKeyCount": 52,
+    "engineTop1InTop3": false,
+    "engineTop1Count": 52,
+    "humanTop1WashShare": 0.10204081632653061,
+    "menuChanceFloor": 0.3869120654396733,
+    "informative": true,
+    "clickWashN": 45,
+    "clickWashShare": 0.27607361963190186
+   },
+   {
+    "key": "gliscor|toxapex|4|4|-|-|-|h3",
+    "n": 66,
+    "distinctHuman": 14,
+    "humanTop3": [
+     {
+      "key": "switch:toxapex",
+      "n": 25
+     },
+     {
+      "key": "switch:ditto",
+      "n": 15
+     },
+     {
+      "key": "move:spikes",
+      "n": 6
+     }
+    ],
+    "humanTop1": "switch:toxapex",
+    "humanTop1Share": 0.3787878787878788,
+    "engineTopKey": "move:earthquake",
+    "engineTopKeyCount": 42,
+    "engineTop1InTop3": false,
+    "engineTop1Count": 42,
+    "humanTop1WashShare": 0.08,
+    "menuChanceFloor": 0.3809523809523807,
+    "informative": true,
+    "clickWashN": 5,
+    "clickWashShare": 0.07575757575757576
+   },
+   {
+    "key": "toxapex|gliscor|4|4|-|-|-|h3",
+    "n": 66,
+    "distinctHuman": 10,
+    "humanTop3": [
+     {
+      "key": "switch:gliscor",
+      "n": 44
+     },
+     {
+      "key": "switch:corviknight",
+      "n": 5
+     },
+     {
+      "key": "move:scald",
+      "n": 4
+     }
+    ],
+    "humanTop1": "switch:gliscor",
+    "humanTop1Share": 0.6666666666666666,
+    "engineTopKey": "move:scald",
+    "engineTopKeyCount": 50,
+    "engineTop1InTop3": true,
+    "engineTop1Count": 50,
+    "humanTop1WashShare": 0.022727272727272728,
+    "menuChanceFloor": 0.42460317460317454,
+    "informative": true,
+    "clickWashN": 8,
+    "clickWashShare": 0.12121212121212122
+   },
+   {
+    "key": "zamazenta|alomomola|4|4|-|-|-|h3",
+    "n": 55,
+    "distinctHuman": 6,
+    "humanTop3": [
+     {
+      "key": "move:irondefense",
+      "n": 22
+     },
+     {
+      "key": "move:substitute",
+      "n": 17
+     },
+     {
+      "key": "move:bodypress",
+      "n": 11
+     }
+    ],
+    "humanTop1": "move:irondefense",
+    "humanTop1Share": 0.4,
+    "engineTopKey": "move:bodypress",
+    "engineTopKeyCount": 52,
+    "engineTop1InTop3": true,
+    "engineTop1Count": 52,
+    "humanTop1WashShare": 0,
+    "menuChanceFloor": 0.7390909090909092,
+    "informative": true,
+    "clickWashN": 12,
+    "clickWashShare": 0.21818181818181817
+   }
+  ]
+ },
+ "flatness": {
+  "minBucketN": 3696,
+  "agreement": {
+   "best": "opening",
+   "bestK": 1412,
+   "bestN": 3696,
+   "worst": "endgame",
+   "worstK": 4880,
+   "worstN": 14651,
+   "p1": 0.38203463203463206,
+   "p2": 0.3330830660023207,
+   "gap": 0.04895156603231138,
+   "se": 0.008890309692674627,
+   "z": 5.506171069906163,
+   "flat": false
+  },
+  "wash": {
+   "best": "opening",
+   "bestK": 1957,
+   "bestN": 3581,
+   "worst": "endgame",
+   "worstK": 6336,
+   "worstN": 14137,
+   "p1": 0.546495392348506,
+   "p2": 0.448185612223244,
+   "gap": 0.09830978012526198,
+   "se": 0.00931146565207772,
+   "z": 10.557927591487767,
+   "flat": false
+  },
+  "levels": [
+   {
+    "name": "opening",
+    "n": 3696,
+    "top1": 1412,
+    "measured": 3581,
+    "wash": 1957,
+    "median": 0.015396533232775057,
+    "mean": 0.2753476180057191,
+    "units": 0.755667210639178
+   },
+   {
+    "name": "mid",
+    "n": 6937,
+    "top1": 2478,
+    "measured": 6708,
+    "wash": 3471,
+    "median": 0.035025616082685465,
+    "mean": 0.2721282166557601,
+    "units": 3.885487452865661
+   },
+   {
+    "name": "endgame",
+    "n": 14651,
+    "top1": 4880,
+    "measured": 14137,
+    "wash": 6336,
+    "median": 0.1155572039646298,
+    "mean": 0.33020717632638,
+    "units": 18.84871558021299
+   }
+  ]
+ },
+ "mix": {
+  "n": 19596,
+  "humanSwitch": 6808,
+  "engineSwitch": 8854
+ },
+ "vetoCodes": {
+  "SPEED_SUICIDE": 461,
+  "WASTED_HAZARD_CLEAR": 94,
+  "ABILITY_IMMUNITY": 170,
+  "SATURATED_HAZARD": 59,
+  "SUCKER_PUNCH_SETUP": 8,
+  "LONE_TR_SETTER": 43,
+  "REDUNDANT_FIELD": 17,
+  "MAGIC_BOUNCE_REDIRECT": 3,
+  "TR_SELF_CANCEL": 2,
+  "CONTACT_SUICIDE": 1
+ },
+ "byKind": {
+  "move": {
+   "n": 18313,
+   "top1": 7489,
+   "top2": 11626,
+   "vetoed": 815,
+   "blind": 8732
+  },
+  "switch": {
+   "n": 6971,
+   "top1": 1281,
+   "top2": 2255,
+   "vetoed": 43,
+   "blind": 0
+  }
+ },
+ "pivotCeiling": {
+  "moveN": 18313,
+  "pivotedN": 6936,
+  "agree": 3904,
+  "neverPivot": 11393,
+  "allN": 25284,
+  "neverPivotAll": 11393
+ },
+ "chanceFloor": {
+  "all": 0.17911328891098585,
+  "contested": 0.1666556302387666,
+  "move": 0.18184828801467134,
+  "switch": 0.17192837446746623
+ },
+ "skipped": {
+  "unobservable": 395,
+  "ambiguous": 87,
+  "forcedSwitch": 1154,
+  "cant": 282,
+  "special": 244,
+  "unavailable": 216,
+  "noActive": 0,
+  "noRanked": 0
+ },
+ "unscoreableBattles": 0,
+ "meanOffered": 6.143015345673153,
+ "purity": {
+  "turn": 1,
+  "side": "p1",
+  "equal": true,
+  "a": "switch:zamazenta,switch:roaringmoon,switch:greattusk,switch:pinsir,switch:greninja",
+  "b": "switch:zamazenta,switch:roaringmoon,switch:greattusk,switch:pinsir,switch:greninja"
+ },
+ "elapsedMs": 1136479
+}

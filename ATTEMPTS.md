@@ -1017,3 +1017,140 @@ them was weakened:
   revealed from turn 1, so a flat row here is the documented construction and not a refutation.
 * **Nothing on a second instrument for anything but `nash-prior`.** Every other row here is one seed,
   n = 60, SE ≈ 6 win points — the §H standard, and still a 60-game deal.
+
+---
+
+## O. The fidelity instrument itself (2026-10-16) — agreement is a proxy, and two of its floors were wrong
+
+This pass changes **no engine behaviour**. It changes the instrument that says how good the policy is,
+because the number this repo quotes about its own policy — top-1 agreement — was being read as if it
+answered a question it does not.
+
+Corpus for every number below: `tools/fetch_replays.js --format gen9nationaldex --min-rating 1700
+--sort rating` → **399 battles**, rating band 1857–1992 (mean 1883), **25,284 scored decisions**
+(27,662 records), 1,136.5 s on a two-core box. Artifacts: `humanmatch-elite399.txt` (the rendered
+report) and `humanmatch-elite399.json` (its summary). The `--out` per-decision file (23 MB) is not
+committed; those two artifacts are a pure re-fold of it, and the re-fold reproduces **every field this
+pass does not touch exactly** — `all`, `contested`, `byKind`, `buckets`, `regret.all`,
+`regret.byBucket`, `chanceFloor`, `pivotCeiling` and `flatness` are all `===` to the run's own output.
+That equality is the check on the whole pass: the instrument changed, the measurement did not move.
+
+### O1. The headline is the gap, and agreement is printed beside it as the proxy
+
+The report now opens with the score gap — the human's own click priced by our own evaluator, as
+`(topScore - humanScore) / spread` — instead of with agreement:
+
+| reading | decisions | value |
+|---|---|---|
+| a spread existed at all | 24,426 of 25,284 | — |
+| the human's click was **within 5 % of our pick** (a wash) | 11,764 | **48.2 %** |
+| the human's click gave up **30 %+ of the menu's spread** | 8,925 | **36.5 %** |
+| median / mean regret share | 24,426 | 0.071 / 0.306 |
+| median / mean regret in the evaluator's own units | 24,426 | 7.8 / 60.4 |
+| top-1 AGREEMENT, on the same decisions | 25,284 | **34.7 %** |
+| ...the literal 5 %-of-the-pick framing instead of 5 %-of-the-spread | 11,791 of 24,426 | 48.3 % |
+
+The two readings are much further apart than the aggregate makes visible: agreement says we match an
+1883-rated human about a **third** of the time, and the gap says that on nearly **half** of those
+disagreements the human's line was worth what ours was worth. Both are true, and only the second is a
+statement about how much the disagreement cost. The two
+"within 5 %" framings agree to a tenth of a point **on this corpus** and are still printed separately,
+because the literal one is undefined when the top score crosses zero; that they coincide here is a
+fact about these 24,426 menus, not a property of the metric.
+
+### O2. The turn buckets come with a test now — and they are NOT flat
+
+The earlier flat turn read (30.8 / 32.4 / 31.6 on the older, pre-adoption corpus) came with no test
+attached, so "flat" was a shape rather than a finding. `extremeSpread` now runs the two-sample comparison on
+the best and worst bucket (twice the standard error of the difference) on both readings:
+
+| bucket | decisions | top-1 | wash ≤ 5 % | median share | median units |
+|---|---|---|---|---|---|
+| opening (1–5) | 3,696 | 38.2 % | **54.6 %** | 0.015 | 0.8 |
+| mid (6–15) | 6,937 | 35.7 % | **51.7 %** | 0.035 | 3.9 |
+| endgame (16+) | 14,651 | 33.3 % | **44.8 %** | 0.116 | 18.8 |
+
+`opening -> endgame` agreement **z = 5.51**, wash share **z = 10.56** — **NOT flat on either**, and
+both fall monotonically while the median regret in raw units rises by a factor of 25 (0.8 → 18.8).
+So the answer to "is the aggregate hiding a phase?" is yes, and the gap says it twice as loudly as
+agreement does (−9.8 points of wash against −4.9 points of top-1). This is the practical value of the
+test: the engine is not uniformly mediocre, it is **decent early and weaker late**, and the endgame is
+both the weakest phase and, at 14,651 decisions, the slice a fix can be measured on most cheaply.
+The report still refuses to overclaim in the other direction — a FLAT verdict is printed as "not
+distinguishable at this n", never as "equal", and the levels are always printed beside it.
+
+### O3. Consensus sets: re-pointed to the matchup, and TWO floors were wrong
+
+The pass re-points the consensus grouping from `stateKeyOf` (active pair + HP quintile + field) to
+`matchupKeyOf` (**the active pair alone**, HP and field deliberately excluded), and keeps the fine
+partition as a reported diagnostic rather than deleting it:
+
+* **Coarse:** 6,220 buckets; **1,352 qualify** at `MIN_CONSENSUS_N` = 5, covering 15,436 of 25,284
+  decisions (61 %).
+* **Fine:** 16,582 buckets; **434 qualify (2.6 %)**. This is the measurement of the "you need more
+  state-clustering machinery" question: at 399 battles the pair+HP+field partition is not merely thin,
+  it is unusable, and no amount of arithmetic over it would fix that. The report says so in place.
+
+**The defect, found by using the new numbers rather than by reviewing the code.** Of the 1,352
+qualifying buckets, **377 are degenerate for the top-3 test**: elites clicked three distinct lines or
+fewer there, so the human top-3 is *every* line clicked and "our pick was in it" is true by
+construction. Pooling those with the honest ones gives **63.7 %**, which is a number made of
+guarantees. Separately, the floor printed against it (mean `3 / distinctHuman` = **75.1 %**) models a
+random draw among the lines **elites clicked** — not a random engine, which draws from its **own
+menu**. Both were misleading in the same direction, and together they made a working metric read as
+"worse than random", which is false:
+
+| reading, over the **975 informative buckets** (12,988 decisions, 5.99 distinct lines on average) | value |
+|---|---|
+| our top pick was among the three most-clicked lines | **62.7 %** (611/975) |
+| ...against a random line from **our own menu** — the faithful baseline, and an upper bound | **51.3 %** |
+| ...against a random draw among the lines **elites clicked** (3 of their distinct count) | 56.1 % |
+| the line elites clicked MOST was within 5 % of our pick (macro over buckets) | **56.4 %** |
+| ...pooled over every click in the qualifying buckets | 45.3 % |
+| the single most-clicked line's share of its bucket | 43.9 % |
+
+So the corrected answer is that the engine's modal pick **does** beat a random engine on matchup
+buckets, by ~11 points of a loose upper bound — a real but modest signal, and a very different
+statement from the 63.7 %/75.1 % pair the first version of the section would have quoted. The four
+thickest buckets (n = 208 / 112 / 111 / 107) all have our modal pick inside the elite top-3, and they
+also show the shape of the disagreement: in a **Gliscor mirror** elites' modal click is
+`switch:toxapex` (63 of 208) while ours is Defog/Knock Off, and in `toxapex vs gliscor` the modal
+click is `switch:gliscor` (68 of 111) against our `move:scald`.
+
+### O4. What this changes about how the aggregate is quoted
+
+Two slices were already in the report and are now the honest way to read the headline:
+
+* **The halves are not the same instrument.** SWITCH top-1 is **18.4 %** (1,281/6,971) against a
+  **complete-menu** floor of **17.2 %** — i.e. on the one half where the menu is not starved, the
+  ranking is barely one point above chance. MOVE top-1 is 40.9 % (7,489/18,313) against an 18.2 %
+  floor, and that half carries the starved-menu caveat (8,732 of 25,284 clicks were moves the log had
+  not revealed). The aggregate 34.7 % is the average of a near-chance half and a better-than-random
+  half. Contested subset: 28.4 % against 16.7 %, **1.70× chance**.
+* **The pivot ceiling.** 6,936 of 18,313 move-clicks (37.9 %) had a SWITCH on top while the human
+  attacked, and on those our own best non-pivot line WAS the human's click 56.3 % of the time. Never
+  pivoting while holding an attack would score 62.2 % on move-clicks and **45.1 % overall** against
+  the shipped 34.7 % — so the ceiling is ~10 points of top-1 and, per §H/§L, the one measured attempt
+  to reach it cost 26.7 win points. The reporting is not what is broken; the preference still is.
+* Context that belongs beside the rate: 858 of 25,284 clicks (3.4 %) were on a line the veto layer
+  refuses (SPEED_SUICIDE 461, ABILITY_IMMUNITY 170, WASTED_HAZARD_CLEAR 94); elites switched on
+  34.7 % of contested turns while our top-1 was a switch 45.2 % of the time; 6.14 lines were offered
+  on average.
+
+### O5. What this pass did NOT establish
+
+* **Nothing about playing strength.** No engine file changed. Every number here is a reading of one
+  frozen build against replays.
+* **Nothing beyond one corpus.** One format (gen9nationaldex), one rating slice (1857–1992), 399
+  battles, one fetch. A second rating band was fetched and **not run** (1,998 replays at 1600+,
+  `--pages 40`); the band comparison is unexplored.
+* **No comparison against the older readings.** The 31.7 % / 44.0 % agreement figures quoted elsewhere
+  in this repo are a different corpus AND a pre-adoption engine, so no delta is computed here.
+* **No fitted threshold.** 0.05 of the menu's spread is a convention that makes "a wash" printable and
+  comparable; it is not calibrated to anything, and the endgame's 44.8 % at that cut would move with
+  it.
+* **Still a coarse key.** The whole consensus pass now rests on the matchup bucket; the fine partition
+  qualifies on 2.6 % of its buckets, and nothing in the report prices the disagreement the coarse key
+  hides (two boards with the same pair and 90 % versus 20 % HP are one bucket).
+* **Nothing about the winner of a battle.** This has always been a policy-fidelity instrument; the
+  gap makes it a better one, not a ladder rating.

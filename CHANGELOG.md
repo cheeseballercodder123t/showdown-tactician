@@ -11,6 +11,55 @@ reaches a verdict.
 
 ## Unreleased
 
+### Changed — the human-match report leads with the score gap, and its consensus floors were wrong
+
+A metric pass (2026-10-16) over `tools/benchmark_human_match.js`. **No engine file changed** — this is
+the instrument that says how good the shipped policy is, and it now carries the score-gap machinery
+(`regretShare` / `regretStats`, and the "WHAT THE HUMAN GAVE UP" table), the consensus pass, and a
+test on the turn buckets; using it immediately found two defects in its own arithmetic. Every number
+below is one run: 399 battles, gen9nationaldex at rating 1857–1992 (mean 1883), 25,284 scored
+decisions (`humanmatch-elite399.txt` / `.json`; `ATTEMPTS.md` §O).
+
+**The headline is now the gap, not the agreement.** Top-1 agreement counts the row the ranking put
+first, so a tie the engine had to order counts as a miss. The report opens with the human's own click
+scored by the engine's own evaluator — `(topScore - humanScore) / spread` — and prints agreement beside
+it: on this corpus the human's line was **within 5 % of our pick on 48.2 %** of the 24,426 decisions
+where a spread existed (11,764) and gave up **30 %+ of the menu spread on 36.5 %** (8,925), while
+top-1 agreement over the same decisions is **34.7 %**. Nearly half of what agreement calls a miss
+cost nothing; the report now says so before it says the other thing.
+
+**The turn buckets carry a two-sample test instead of a shape.** A flat agreement rate across
+opening / mid / endgame is equally consistent with uniformly decent and uniformly mediocre, so
+`extremeSpread` compares the best and worst bucket at twice the standard error of the difference and
+the report states the verdict with the levels beside it. On this corpus the buckets are **NOT flat**
+(agreement z = 5.51, wash share z = 10.56): 38.2 % / 35.7 % / 33.3 % top-1 and 54.6 % / 51.7 % / 44.8 %
+wash from opening to endgame, with the median regret rising 0.8 → 18.8 raw units. The engine is
+decent early and weaker late, and the gap reading says it twice as loudly as agreement does.
+
+**The consensus pass was re-pointed and its arithmetic corrected.** Buckets now key on the active
+MATCHUP (`matchupKeyOf`; HP and field excluded), and the old fine key is reported as the diagnostic
+that justifies the coarse one: 1,352 of 6,220 matchup buckets qualify at n ≥ 5 (61 % of decisions)
+against **434 of 16,582** fine buckets (2.6 %). Two defects were found by using the numbers: **377** of
+the qualifying buckets are DEGENERATE (elites clicked three distinct lines or fewer, so the human
+top-3 is every line clicked and the test is true by construction), and the floor printed against the
+rate modelled a random draw among the lines *elites clicked* rather than a random engine drawing from
+its own menu. Over the 975 informative buckets (12,988 decisions) the engine's modal pick is in the
+elite top-3 **62.7 %** (611/975) against a faithful baseline of **at most 51.3 %** (3/offered, a loose
+upper bound) and 56.1 % for the human-set draw; the pooled figure that would have been quoted reads
+63.7 % against 75.1 % and is not. Each bucket also carries the gap of the modal line: the line elites
+clicked most was a wash **56.4 %** of the time on average, 45.3 % pooled over qualifying clicks.
+
+**Two more readings moved up into the prose they belong in.** The SWITCH half is 18.4 % top-1 against
+a **complete-menu** floor of 17.2 % — on the half where the menu is not starved, the ranking is barely
+above chance — while the MOVE half is 40.9 % against 18.2 % and carries the starved-menu caveat; the
+aggregate 34.7 % is the average of those two. And the pivot ceiling is unchanged and re-quoted: never
+pivoting while holding an attack would score 45.1 % overall against the shipped 34.7 %.
+
+Pinned by `tests/human_match_check.js` (140 → 207 checks): the gap statistics and their bands, the
+degenerate-bucket rule and both floors, the phase test at three powers (identical buckets, a 20-point
+gap at n = 100, the same gap on two decisions), the summary/table agreement, and the render's own
+headline. Docs: `ARCHITECTURE.md` §7.2, `README.md`'s tool list, `ATTEMPTS.md` §O.
+
 ### Changed — the opponent model stops being one-way, and the first one is adopted on two seeds
 
 A follow-up pass (2026-10-15) on the three findings `ATTEMPTS.md` §M left open. **This one DOES move

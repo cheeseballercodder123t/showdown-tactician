@@ -1,0 +1,119 @@
+
+================================================================================
+  HUMAN-MOVE-MATCH  (policy fidelity vs elite human play)
+================================================================================
+  corpus        : elite.json (tools/fetch_replays.js --format gen9nationaldex --min-rating 1700 --sort rating)
+  battles       : 399
+  sides scored  : p1, p2
+  rating band   : 1857-1992  (mean 1883)
+  decisions     : 25284 scored
+  skipped       : unobservable 395, ambiguous 87, forcedSwitch 1154, cant 282, special 244, unavailable 216
+
+  HEADLINE — the gap, not the agreement: a spread existed on 24426 of 25284 decisions, and the
+  human's own click scored within 5 % of the engine's pick on 48.2% of those (11764/24426: on those turns the disagreement is a
+  wash). It gave up 30 % or more of the menu's spread on 36.5% (8925/24426: there the engine is saying the human
+  threw value away). Top-1 agreement on the same decisions is 34.7%, counted beside it, not instead of it.
+
+  metric                         decisions     rate  95% CI
+  ---------------------------------------------------------
+  top-1 agreement  (all)             25284    34.7%    ±0.6
+  top-2 agreement  (all)             25284    54.9%    ±0.6
+  top-1  contested subset            19596    28.4%    ±0.6
+  top-2  contested subset            19596    47.5%    ±0.7
+  top-1  move-vs-move                12788    33.9%    ±0.8
+  top-1  revealed moveset            16552    29.5%    ±0.7
+  top-2  revealed moveset            16552    49.8%    ±0.8
+  chosen line was VETOED             25284     3.4%    ±0.2
+
+  by turn bucket                  decisions     top-1     top-2  wash<=5%   median
+  ---------------------------------------------------------------------------
+  opening  (1-5)                      3696     38.2%     58.5%      54.6%     0.02
+  mid  (6-15)                         6937     35.7%     56.2%      51.7%     0.04
+  endgame  (16+)                     14651     33.3%     53.4%      44.8%     0.12
+
+  IS THE AGGREGATE HIDING A PHASE? agreement: best-vs-worst opening->endgame 38.2% vs 33.3% (z 5.5) -> NOT flat
+  the gap:    best-vs-worst opening->endgame 54.6% vs 44.8% (z 10.6) -> NOT flat
+  "FLAT" means the three buckets are not distinguishable at this n, NOT that they were
+  shown to match: read it together with the levels above (thinnest bucket n=3696).
+
+  action space: 6.14 lines offered on average; 8732 of 25284 clicks (34.5%) were moves the log had not revealed yet
+  veto codes  : SPEED_SUICIDE 461, ABILITY_IMMUNITY 170, WASTED_HAZARD_CLEAR 94, SATURATED_HAZARD 59, LONE_TR_SETTER 43, REDUNDANT_FIELD 17, SUCKER_PUNCH_SETUP 8, MAGIC_BOUNCE_REDIRECT 3, TR_SELF_CANCEL 2, CONTACT_SUICIDE 1
+  action mix  : on the contested turns the human SWITCHED 34.7% of the time and the engine's top-1 was a switch 45.2% of the time
+  pivot ceiling: of 18313 move-clicks its top-1 was a SWITCH 6936 times (37.9%), and on those its best NON-pivot line WAS the
+                human's click 56.3% of the time. Never pivoting while holding an attack -> top-1 62.2% there and 45.1% overall.
+
+  vs chance     : top-1 on the contested subset 28.4% vs a uniform-pick floor of 16.7%  ->  1.70x chance
+  band table    : <40%   Low ladder (~1200)   [plays like a greedy bot]  -- UNCALIBRATED heuristic mapping, not a measured rating.
+
+  by action kind             decisions     top-1     top-2    floor
+  ---------------------------------------------------------
+  move    (menu is starved)       18313     40.9%     63.5%    18.2%
+  switch  (menu is complete)       6971     18.4%     32.3%    17.2%
+
+  THE TWO HALVES ARE NOT MEASURED EQUALLY, and this is where they part. The SWITCH menu is
+  complete — every legal bench body — so the switch half is a FAIR reading of this engine. The
+  ATTACK menu can only hold the moves the log had already revealed (8732 of 25284 clicks
+  were not yet revealed), so the MOVE half is a LOWER BOUND: the engine was choosing between
+  fewer attacks than the human could see. That is also why its top-1 is a switch far more often
+  than the human's click was. Do not average the two halves into one number and call it a
+  rating — the fair half is the weaker one, and the unfair half is the stronger one.
+
+  WHAT THE HUMAN GAVE UP, in the engine's own scores
+    regret = (engine top pick score) - (the human's line score). spread = the range the
+    engine put on this turn's menu. The rate is over the decisions where a spread existed.
+  slice                      decisions  median    p90  within 5%  worse 30%+    mean  medUnits meanUnits  within 5%
+                            (of spread)                                      (of spread)            (of pick)
+  -----------------------------------------------------------------------------------------------------------------
+  all scored                     24426   0.071  1.000      48.2%       36.5%   0.306       7.8      60.4      48.3%
+  contested                      18948   0.146  1.000      41.7%       41.6%   0.346      19.2      71.6      41.5%
+  move-vs-move                   12179   0.075  1.000      48.0%       36.3%   0.302      10.8      61.2      47.6%
+  revealed moveset               16043   0.143  1.000      42.2%       41.6%   0.347      18.2      74.8      42.2%
+  move clicks                    17498   0.009  1.000      55.2%       30.7%   0.258       1.1      48.0      55.2%
+  switch clicks                   6928   0.324  1.000      30.5%       51.4%   0.428      34.0      91.7      30.8%
+    opening  (1-5)                3581   0.015  1.000      54.6%       31.2%   0.275       0.8      26.3      53.8%
+    mid  (6-15)                   6708   0.035  1.000      51.7%       32.1%   0.272       3.9      39.2      52.0%
+    endgame  (16+)               14137   0.116  1.000      44.8%       40.0%   0.330      18.8      79.0      45.1%
+
+  A share of 0 means the human's line was worth what the engine's pick was worth (a tie
+  the ranking still had to order); 0.05 is "a wash", 0.30+ is the engine saying the human
+  threw value away. Read it beside the top-1 rate: agreement counts a tie-broken row as a
+  miss, and this column says how much that miss was worth.
+  The TWO "within 5%" columns normalise differently and are NOT interchangeable: the first
+  is 5 % of the menu's own spread (bounded, comparable across turns, the headline), the
+  second is the literal 5 % of the top line's SCORE, which is undefined when that score is
+  near zero — the evaluator's units cross zero — so it is counted over fewer decisions.
+
+  CONSENSUS SETS (one bucket per ACTIVE PAIR; >= 5 decisions per bucket)
+    1352 of 6220 buckets qualify, covering 15436 of 25284 scored decisions.
+    377 of those buckets are DEGENERATE for the top-3 test below: elites
+    clicked three distinct lines or fewer there, so the human top-3 is every line clicked and
+    the test is true by construction. The 975 informative buckets (12988 decisions, 6.0 distinct lines on average) are the ones it can
+    say anything about:
+      engine top pick in the human top-3   62.7%   (611/975)
+      ...a random line from the engine's own menu, at MOST   51.3%   (the bound is loose: only top-3 lines
+                                                             already in a starved menu can be hit)
+      ...a random draw among the lines ELITES clicked   56.1%   (by construction, 3 of their distinct count)
+    over ALL qualifying buckets, degenerate included, the rate is 63.7% against 75.1% — which is why that number is not
+    the one quoted.
+    in those buckets the single most-clicked line holds 43.9% of the clicks on average, over 5.0 distinct lines
+    scored by the gap instead: the line elites clicked MOST in a bucket was within 5 % of
+    the engine's pick 56.4% of the time on average, and pooling every
+    click in the qualifying buckets 45.3% of them were within 5 %.
+    the FINE partition (pair + HP quintile + field) needs far more corpus: 434 of its 16582 buckets reach 5 decisions here.
+      n=208  gliscor vs gliscor
+            humans clicked : switch:toxapex x63, move:defog x20, move:knockoff x16  (24 distinct)
+            engine top pick: move:knockoff  <- IN the human top-3
+      n=112  gliscor vs toxapex
+            humans clicked : switch:toxapex x36, move:earthquake x16, switch:ditto x15  (18 distinct)
+            engine top pick: move:earthquake  <- IN the human top-3
+      n=111  toxapex vs gliscor
+            humans clicked : switch:gliscor x68, move:scald x11, move:toxicspikes x9  (12 distinct)
+            engine top pick: move:scald  <- IN the human top-3
+      n=107  zamazenta vs alomomola
+            humans clicked : move:irondefense x27, move:substitute x25, move:bodypress x16  (14 distinct)
+            engine top pick: move:bodypress  <- IN the human top-3
+
+  purity probe  : evaluateTurn twice on turn 1 / p1 -> identical (input not mutated)
+
+  elapsed       : 1136.5s
+

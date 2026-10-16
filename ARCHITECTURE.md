@@ -1165,7 +1165,7 @@ Frozen surfaces — what the suites pin, and what the CLI calls:
 | `engine_bridge.js` | `SIM_FORMAT_ID`, `createSession(opts)` (`{baseline:true}` = the frozen shipped config), `EngineSession`, `choiceForRanked`, `teamPreviewOrder`, `loadHarness({setArgs, applyPatch, baseline})`, `loadSim` |
 | `run_arena.js` | `parseArgs(argv)`, `main(argv)`, `createEngineAgent`, `renderSummary`, `applyConfigPatch(ST, sets)`, `parseConfigValue`, `formatConfigValue`, `SetupError` |
 | `run_ablation.js` | `parseArgs(argv)`, `main(argv)`, `FEATURES`, `buildVariants(ids)`, `validateFeaturePaths(variants)`, `arenaArgs(variant, opts, jsonPath)`, `summarizeRun(payload)`, `verifyPairing(base, variant)`, `pairedBootstrap(a, b, B, seed)`, `compareToBaseline(baseSummary, variantSummary, descriptor, opts)`, `renderTable(rows)` |
-| `benchmark_human_match.js` | `parseArgs(argv)`, `main(argv)`, `evaluateBattle(ST, U, replay, sides, opts)`, `scoreDecision(engine, state, cls, ctx)`, `classifySide(bucketLines, side)`, `extractChoices(replayLines)`, `summarize(records, meta)`, `wilson(k, n)`, `eloBand(rate)`, `strideSample(list, n)` |
+| `benchmark_human_match.js` | `parseArgs(argv)`, `main(argv)`, `evaluateBattle(ST, U, replay, sides, opts)`, `scoreDecision(engine, state, cls, ctx)`, `classifySide(bucketLines, side)`, `extractChoices(replayLines)`, `summarize(records, meta)`, `render(summary, opts)`, `regretShare(regret, spread)`, `regretStats(list)`, `extremeSpread(entries)`, `stateKeyOf(state)`, `matchupKeyOf(state)`, `wilson(k, n)`, `eloBand(rate)`, `strideSample(list, n)`, `MIN_CONSENSUS_N` |
 
 **An agent** is anything with `chooseAction(request, { side, turn, request, log, runner })` returning
 a choice string. The runner normalizes it, falls back to the first legal option when an agent
@@ -1265,3 +1265,48 @@ Every attempt this project has made — every row that was adopted, rejected, le
 unresolved — is registered in `ATTEMPTS.md`, indexed by the shape of the idea rather than its name so
 a re-proposal is caught before it is built. That file is the reason a rejected tier keeps its row: an
 untraced rejection gets rebuilt.
+
+### 7.2 The human-match benchmark: four framings, and none of them is "agreement"
+
+`tools/benchmark_human_match.js` answers a different question from the arena: not "does this engine
+beat X", but "does this engine CHOOSE what a strong human chose". A replay is a hostile source for
+that question — it records results, not clicks — so the extraction layers (what a log MEANS, the menu
+repair, the side flip) have their own header and their own suite, `tests/human_match_check.js`. What
+follows is the METRIC design, because the number this project quotes about its own policy is the one
+most easily misread.
+
+**Agreement is a proxy; the gap is the question.** Top-1 agreement counts the row the ranking put
+FIRST, so a tie the engine had to order counts as a miss. The load-bearing measure is the human's own
+line scored by the engine's own evaluator: the regret share is `(topScore - humanScore) / spread`,
+where 0.05 is "a wash" and 0.30+ is the engine saying the human threw value away. The report prints
+that pair in its HEADLINE, ahead of the agreement table, and both normalisations are carried — the
+share of the MENU'S SPREAD (bounded, comparable across turns with different menus) and the literal
+share of the top line's score, which is undefined when that score crosses zero and is therefore
+counted over fewer decisions.
+
+**A click is one draw; a bucket is a distribution.** One human's click can be a different plan, a
+bluff or a blunder, so matching it is not the same as matching elite play. The consensus pass groups
+the corpus by the ACTIVE MATCHUP (`matchupKeyOf` — HP and field deliberately excluded) and asks
+whether the engine's top pick is among the lines elites click most in that position, printing the
+`3 / distinctHuman` chance floor beside the rate. The finer key (`stateKeyOf`: pair + HP quintile +
+field) is kept and REPORTED rather than deleted — how many of its buckets reach `MIN_CONSENSUS_N` —
+because the reason to report on the coarse one is that the fine one is too thin to say anything at
+realistic corpus sizes. Each bucket also carries the gap of the line elites clicked most, which is how
+"the engine agrees with the population" and "the engine is right about the population" are told apart.
+
+**The turn buckets come with a test, not a shape.** A flat top-1 rate across opening / mid / endgame
+is equally consistent with an engine that is uniformly decent and one that is uniformly mediocre, and
+the aggregate alone cannot separate them. `extremeSpread` runs the two-sample comparison on the best
+and worst bucket (twice the standard error of the difference) and the report states the verdict while
+printing the LEVELS beside it, so "flat" can be read as one or the other. FLAT always means the
+evidence failed to separate the phases — never that the phases were shown equal — and the test runs on
+the wash share as well as on agreement, because a flat agreement rate and a flat gap are two different
+kinds of flat.
+
+**Three limits are printed where the number is, not in a footnote.** The ATTACK menu is STARVED (a
+replay reveals only the moves it saw), so the move half is a LOWER BOUND while the SWITCH menu is
+complete; the two halves are printed separately and must not be averaged into one "rating". The
+engine's top-1 is a switch far more often than a human's click is, so the pivot ceiling — how often
+the engine's own best non-pivot line was the human's click — is measured and printed, which bounds any
+switch-penalising change before one is written. And the band table that maps a rate to a ladder rating
+is labelled UNCALIBRATED in the report itself.

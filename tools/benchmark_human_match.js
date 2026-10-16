@@ -68,6 +68,10 @@ const ROOT = path.resolve(__dirname, '..');
  * counting, and the mid-game trench is where a decision engine earns or loses its rating — so the
  * three are reported separately instead of being averaged into one misleading number. */
 const OPENING_MAX_TURN = 5;
+/* The consensus pass (below) only reports buckets with at least this many decisions: a bucket of one
+ * or two draws states nothing about what "elites click here", and putting it in an average of bucket
+ * rates is how a 399-battle corpus reads like a 20,000-decision one. */
+const MIN_CONSENSUS_N = 5;
 const MID_MAX_TURN = 15;
 
 /* Effects that put a `|move|` line in the log WITHOUT the player having chosen that move. A turn
@@ -353,6 +357,47 @@ function scoreDecision(engine, state, cls, ctx) {
   base.vetoCode = vetoRow ? (vetoRow.vetoCode || 'UNKNOWN') : null;
   base.liveLines = liveKeys.length;
   base.topKeys = liveKeys.slice(0, 2);
+  /* ---- THE SCORE GAP, which is the question agreement is only a proxy for ----------------------
+   * `top1` says the human clicked the engine's first row. It does not say the human's line was
+   * WORSE — and on a mixed equilibrium the top rows tie in value while the ranking still has to
+   * order them, so agreement is blind to exactly the case where the engine is most likely to be
+   * wrong. Every number below is a by-product of the ranking that was already computed (each live
+   * row carries the engine's own `.score` for this turn), not a second evaluation.
+   *   - `regret`      = topScore - humanScore, in the engine's own units (>= 0 means the human's
+   *                     click scored below the engine's pick; a tie broken against the human reads
+   *                     as 0, because ordering equal lines is not a loss).
+   *   - `spread`      = topScore - the worst score the engine offered this turn.
+   *   - `regretShare` = regret / spread, the bounded scale-free version (see regretShare()).
+   *   - `regretRatio` = regret / |topScore|, the LITERAL "within 5 % of the engine's pick". Kept
+   *                     because it is the framing people reach for, reported with its domain stated:
+   *                     the evaluator's units cross zero, so it is ill-conditioned when the top line
+   *                     scores near zero and it can exceed 1. The SHARE is the headline.
+   * `stateKey` is the coarse bucket the consensus pass groups these decisions by. */
+  const scoreOf = function (row) {
+    return row && typeof row.score === 'number' && isFinite(row.score) ? row.score : null;
+  };
+  const topScore = scoreOf(live[0]);
+  let worstScore = null;
+  for (let i = 0; i < live.length; i++) {
+    const v = scoreOf(live[i]);
+    if (v === null) continue;
+    if (worstScore === null || v < worstScore) worstScore = v;
+  }
+  const humanScore = base.rank >= 0 ? scoreOf(live[base.rank]) : null;
+  base.topScore = topScore;
+  base.humanScore = humanScore;
+  base.spread = (topScore !== null && worstScore !== null) ? topScore - worstScore : null;
+  base.regret = (topScore !== null && humanScore !== null) ? topScore - humanScore : null;
+  base.regretShare = regretShare(base.regret, base.spread);
+  base.regretRatio = (topScore !== null && humanScore !== null && Math.abs(topScore) > 0)
+    ? base.regret / Math.abs(topScore) : null;
+  base.stateKey = stateKeyOf(state);
+  /* The COARSE key the consensus pass reports on. A few hundred battles spread over a fine key
+   * leaves almost every bucket at n = 1 (measured: 80 buckets for 92 decisions on three battles), and
+   * a bucket of one says nothing about what elites click here. The matchup is the coarsest grouping
+   * that is still a statement about a POSITION rather than about a game, and `stateKey` is kept
+   * beside it as the diagnostic that shows how thin the finer partition is. */
+  base.pairKey = matchupKeyOf(state);
   return base;
 }
 
@@ -544,6 +589,160 @@ function evaluateBattle(ST, U, replay, sides, opts) {
   return { records: records, purity: purity, formatSupported: formatSupported, format: parsed.format };
 }
 
+/**
+ * regretShare(regret, spread) -> [0, 1] | null
+ *
+ * How much of the spread between the engine's BEST and WORST offered line the human's click gave up.
+ * This is the scale-free version of the score gap, and it is the one to quote: the engine's scores
+ * are heuristic units (a +-1000 bound with a 260 lethal bonus) that cross zero, so a ratio against
+ * the top score alone is ill-conditioned near zero, while a share of the menu's own range is bounded
+ * and comparable across turns.
+ *
+ * Negative regret is 0, not negative: a ranking has to ORDER lines that tie in value, and on a mixed
+ * equilibrium the top rows tie by construction, so clicking the engine's row 2 at equal score is not
+ * a loss. A menu with no spread cannot be given up on, so `null` is returned and the decision is
+ * excluded from the averages rather than counted as perfect.
+ */
+function regretShare(regret, spread) {
+  if (regret === null || spread === null || !isFinite(regret) || !isFinite(spread)) return null;
+  if (!(spread > 0)) return regret > 0 ? 1 : 0;
+  if (regret <= 0) return 0;
+  return regret >= spread ? 1 : regret / spread;
+}
+
+/** An HP quintile, so two boards with 64 % and 66 % landed are the same bucket. */
+function quintile(pct) {
+  if (typeof pct !== 'number' || !isFinite(pct)) return '?';
+  return String(Math.max(0, Math.min(4, Math.floor(pct / 20))));
+}
+
+/**
+ * stateKeyOf(state) -> a coarse bucket key for the consensus pass
+ *
+ * The active pair, an HP quintile per side, and the field facts that actually change a line (Trick
+ * Room, weather, terrain, how many entry hazards are up). COARSE ON PURPOSE: a fine key produces
+ * buckets of one, and the question a bucket is for — "what do elites click HERE?" — stops having an
+ * answer at any sample size. Everything the engine reads that would make a bucket unique (boosts,
+ * PP, the opponent's revealed set) is deliberately absent; that is the trade the bucket makes.
+ */
+function matchupKeyOf(state) {
+  const my = (state && state.active && state.active.my) || null;
+  const opp = (state && state.active && state.active.opp) || null;
+  const sp = function (m) { return m ? toID(m.species || m.id || m.name || 'unknown') : 'none'; };
+  return sp(my) + ' vs ' + sp(opp);
+}
+
+function stateKeyOf(state) {
+  const my = (state && state.active && state.active.my) || null;
+  const opp = (state && state.active && state.active.opp) || null;
+  const f = (state && state.field) || {};
+  const hazardCount = function (side) {
+    const h = (f.hazards && f.hazards[side]) || null;
+    return h ? Object.keys(h).length : 0;
+  };
+  const hazards = Math.min(3, hazardCount('p1') + hazardCount('p2'));
+  const sp = function (m) { return m ? toID(m.species || m.id || m.name || 'unknown') : 'none'; };
+  return [sp(my), sp(opp), quintile(my && my.hpPercent), quintile(opp && opp.hpPercent),
+    (f.trickRoom ? 'tr' : '-'), (f.weather || '-'), (f.terrain || '-'),
+    (hazards ? 'h' + hazards : '-')].join('|');
+}
+
+/**
+ * regretStats(list) -> { n, measured, median, p90, mean, nearTop5, worseThan30, top1, top2 }
+ *
+ * The score-gap view of one slice of decisions, reported beside the agreement view rather than
+ * instead of it. `nearTop5` is the share whose line was within 5 % of the available SPREAD of the
+ * engine's pick — the "this disagreement is a wash" band — and `worseThan30` the share that gave up
+ * 30 % or more, i.e. the decisions on which the engine is saying the human threw value away. Both
+ * are counts over `measured` (the decisions where a share is defined), carried with the slice's own
+ * n so a thin slice cannot masquerade as a finding.
+ */
+function regretStats(list) {
+  const shares = [];
+  const units = [];
+  const ratios = [];
+  let top1 = 0, top2 = 0, near = 0, bad = 0, vetoed = 0, blind = 0, nearRatio = 0;
+  for (let i = 0; i < list.length; i++) {
+    if (list[i].top1) top1++;
+    if (list[i].top2) top2++;
+    if (list[i].vetoed) vetoed++;
+    if (list[i].blind) blind++;
+    /* The raw gap, in the engine's own units, beside the normalised shares: the units are what a
+     * reader can check against the evaluator's calibration (the lethal bonus is 260, the bound
+     * +-1000), while the share is what is comparable across turns with different menus. */
+    if (typeof list[i].regret === 'number' && isFinite(list[i].regret)) units.push(list[i].regret);
+    /* The LITERAL "within 5 % of the engine's pick" (regret / |top score|). Only defined when the top
+     * line scores away from zero, which is why it is counted separately from `measured`. */
+    if (typeof list[i].regretRatio === 'number' && isFinite(list[i].regretRatio)) {
+      ratios.push(list[i].regretRatio);
+      if (list[i].regretRatio <= 0.05) nearRatio++;
+    }
+    const sh = list[i].regretShare;
+    if (typeof sh === 'number' && isFinite(sh)) {
+      shares.push(sh);
+      if (sh <= 0.05) near++;
+      if (sh >= 0.30) bad++;
+    }
+  }
+  shares.sort(function (a, b) { return a - b; });
+  units.sort(function (a, b) { return a - b; });
+  const q = function (prob) {
+    if (!shares.length) return null;
+    const idx = Math.min(shares.length - 1, Math.max(0, Math.round((shares.length - 1) * prob)));
+    return shares[idx];
+  };
+  return {
+    n: list.length,
+    measured: shares.length,
+    median: q(0.5),
+    p90: q(0.9),
+    mean: shares.length ? shares.reduce(function (a, b) { return a + b; }, 0) / shares.length : null,
+    nearTop5: near,
+    worseThan30: bad,
+    /* The raw units, so the normalised shares can be sanity-checked against the evaluator's own
+     * scale (lethal bonus 260), and the literal ratio framing with the count it is defined over. */
+    unitsMeasured: units.length,
+    medianUnits: units.length ? units[Math.round((units.length - 1) * 0.5)] : null,
+    meanUnits: units.length ? units.reduce(function (a, b) { return a + b; }, 0) / units.length : null,
+    ratioMeasured: ratios.length,
+    nearTop5Ratio: nearRatio,
+    top1: top1,
+    top2: top2,
+    vetoed: vetoed,
+    blind: blind
+  };
+}
+
+/**
+ * extremeSpread(entries) -> { best, worst, p1, p2, gap, se, z, flat } | null
+ *
+ * entries: [{ name, k, n }] — one per turn bucket. This is the two-sample test the "are the phases
+ * flat?" claim needs, run on the best and worst bucket of the metric and comparing the gap between
+ * them to twice the standard error of that difference. `flat: true` means the three phases are NOT
+ * distinguishable at this n — it is a statement about the evidence, not a claim that the engine is
+ * equally good at every phase, and the per-bucket levels are printed beside it so a flat verdict can
+ * be read as "uniformly decent" or "uniformly mediocre" from those levels, which is the distinction
+ * a flat top-1 rate on its own cannot make.
+ */
+function extremeSpread(entries) {
+  const use = entries.filter(function (e) { return e && e.n > 0; });
+  if (use.length < 2) return null;
+  let best = use[0], worst = use[0];
+  use.forEach(function (e) {
+    if (e.k / e.n > best.k / best.n) best = e;
+    if (e.k / e.n < worst.k / worst.n) worst = e;
+  });
+  const p1 = best.k / best.n, p2 = worst.k / worst.n;
+  const gap = p1 - p2;
+  const se = Math.sqrt(p1 * (1 - p1) / best.n + p2 * (1 - p2) / worst.n);
+  const z = se > 0 ? gap / se : (gap > 0 ? Infinity : 0);
+  return {
+    best: best.name, bestK: best.k, bestN: best.n,
+    worst: worst.name, worstK: worst.k, worstN: worst.n,
+    p1: p1, p2: p2, gap: gap, se: se, z: z, flat: !(z >= 2)
+  };
+}
+
 /* ------------------------------------------------------------------ aggregation */
 
 function tally(list) {
@@ -581,8 +780,157 @@ function summarize(records, meta) {
   const moveContested = scored.filter(function (r) { return r.moveContested; });
   const revealedOnly = scored.filter(function (r) { return !r.blind; });
   const buckets = {};
+  const regretByBucket = {};
   ['opening', 'mid', 'endgame'].forEach(function (b) {
-    buckets[b] = tally(scored.filter(function (r) { return r.bucket === b; }));
+    const slice = scored.filter(function (r) { return r.bucket === b; });
+    buckets[b] = tally(slice);
+    /* The turn-bucket reading of the GAP, which the top-1 rate cannot give: a flat top-1 rate across
+     * the three buckets says the engine is uniformly right (or uniformly wrong) and the aggregate
+     * cannot tell which, while the regret share says how much value the flat rate is hiding. */
+    regretByBucket[b] = regretStats(slice);
+  });
+
+  /* CONSENSUS SETS, NOT INDIVIDUAL CLICKS. One human's click is a single draw from a noisy
+   * distribution — they were playing a different plan, or bluffing, or simply wrong — so matching
+   * that one click is a proxy for the question that matters. A BUCKET of similar states has a
+   * distribution, and the question the environment makes meaningful is whether the engine's top pick
+   * is among the lines elites actually click HERE. This is the only view in the report that can be
+   * right about a decision the particular human got wrong. Buckets below MIN_CONSENSUS_N decisions
+   * are kept in the listing (so a thin corpus says so) and excluded from the rate. */
+  const byState = {};
+  const byPair = {};
+  scored.forEach(function (r) {
+    if (typeof r.regretShare !== 'number') return;
+    const top = r.topKeys && r.topKeys.length ? r.topKeys[0] : null;
+    const add = function (bag, key) {
+      if (!key) return;
+      const b = bag[key] || (bag[key] = { key: key, n: 0, clicks: {}, engineTop: {}, wash: {}, menuFloorSum: 0 });
+      b.n++;
+      b.clicks[r.key] = (b.clicks[r.key] || 0) + 1;
+      /* The floor a RANDOM ENGINE would score here: a uniform draw from that decision's own menu lands
+       * on a given line 1/offered of the time, so landing on ANY of three named lines is at most
+       * 3/offered — at most, because a line the human never revealed need not be in the engine's
+       * starved menu at all. This is the faithful baseline; the other floor below is not. */
+      b.menuFloorSum += Math.min(1, 3 / (r.offered > 0 ? r.offered : 1));
+      /* The gap follows the click into the bucket, keyed by the line: the question a consensus set
+       * makes answerable is not only "is the engine's pick among the popular lines" (agreement) but
+       * "does the line elites actually click here score near the engine's pick" (gap). */
+      if (r.regretShare <= 0.05) b.wash[r.key] = (b.wash[r.key] || 0) + 1;
+      if (top) b.engineTop[top] = (b.engineTop[top] || 0) + 1;
+    };
+    add(byState, r.stateKey);
+    add(byPair, r.pairKey);
+  });
+  const foldBuckets = function (bag) {
+    return Object.keys(bag).map(function (k) {
+    const b = bag[k];
+    const order = function (obj) {
+      return Object.keys(obj).sort(function (x, y) { return obj[y] - obj[x] || (x < y ? -1 : 1); });
+    };
+    const clickOrder = order(b.clicks);
+    const engineOrder = order(b.engineTop);
+    const top3 = clickOrder.slice(0, 3);
+    const washN = Object.keys(b.wash).reduce(function (a, c) { return a + b.wash[c]; }, 0);
+    /* The rate the bucket exists to compute: on how many of its decisions was the ENGINE's top pick
+     * one of the three lines elites click most here? A bucket where the engine's first choice is not
+     * even in the human top-3 is a place the ranking disagrees with the population, not with a
+     * person. */
+    const engineTop = engineOrder.length ? engineOrder[0] : null;
+    return {
+      key: k,
+      n: b.n,
+      distinctHuman: clickOrder.length,
+      humanTop3: top3.map(function (c) { return { key: c, n: b.clicks[c] }; }),
+      /* The human consensus line and the share of the bucket that clicked it — the number that says
+       * how strong the consensus in this bucket actually is. A bucket whose clicks are spread
+       * 2/1/1/1 has no consensus, and a rate over such buckets should be read as chance. */
+      humanTop1: clickOrder.length ? clickOrder[0] : null,
+      humanTop1Share: clickOrder.length ? b.clicks[clickOrder[0]] / b.n : null,
+      engineTopKey: engineTop,
+      engineTopKeyCount: engineTop ? b.engineTop[engineTop] : 0,
+      engineTop1InTop3: engineTop ? top3.indexOf(engineTop) !== -1 : false,
+      engineTop1Count: engineTop ? b.engineTop[engineTop] : 0,
+      /* The GAP of the modal human line, and of every click in the bucket. A bucket can agree with
+       * the engine on its popular line and still be a bucket where the whole consensus is 40 % worse
+       * than the engine's pick — those are different findings and only the second one is about the
+       * engine being RIGHT. */
+      humanTop1WashShare: clickOrder.length ? ((b.wash[clickOrder[0]] || 0) / b.clicks[clickOrder[0]]) : null,
+      menuChanceFloor: b.n ? b.menuFloorSum / b.n : null,
+      /* A bucket where elites clicked only three distinct lines has its top-3 equal to EVERY line
+       * clicked, so "the engine's pick was in the top-3" is true by construction and says nothing.
+       * Those buckets are kept in the listing and excluded from the rate, which is what `informative`
+       * marks and what the report counts out loud. */
+      informative: clickOrder.length > 3,
+      clickWashN: washN,
+      clickWashShare: b.n ? washN / b.n : null
+    };
+    }).sort(function (a, b) { return b.n - a.n || (a.key < b.key ? -1 : 1); });
+  };
+  const pairBuckets = foldBuckets(byPair);
+  const consensusBuckets = foldBuckets(byState);
+  const qualify = function (list) {
+    const q = list.filter(function (b) { return b.n >= MIN_CONSENSUS_N; });
+    return {
+      buckets: list.length,
+      qualifying: q.length,
+      decisionsCovered: q.reduce(function (a, b) { return a + b.n; }, 0),
+      /* The two ways to read the same buckets, and they answer different questions: what the ENGINE
+       * picks most often in the bucket (its modal line), and whether that modal line is in the human
+       * top-3. */
+      engineTop1InTop3: q.filter(function (b) { return b.engineTop1InTop3; }).length,
+      /* THE RATE WORTH READING, and the two floors it has to be read against. Both are macro averages
+       * over the INFORMATIVE buckets (more than three distinct clicks):
+       *   - `chanceFloorInformative` is 3/distinctHuman, i.e. a random draw among the lines elites
+       *     themselves clicked here. It is a floor on being in THEIR set, not a model of a random
+       *     engine, and it is high for exactly the buckets where the humans converged.
+       *   - `menuChanceFloorInformative` is the faithful one: a legal but unranked engine drawing
+       *     uniformly from its own menu. It is an UPPER bound on that baseline, because only the
+       *     top-3 lines that made it into the menu can be hit. */
+      informative: q.filter(function (b) { return b.informative; }).length,
+      informativeDecisions: q.reduce(function (a, b) { return a + (b.informative ? b.n : 0); }, 0),
+      degenerate: q.filter(function (b) { return !b.informative; }).length,
+      engineTop1InTop3Informative: q.filter(function (b) { return b.informative && b.engineTop1InTop3; }).length,
+      chanceFloor: q.length
+        ? q.reduce(function (a, b) { return a + (b.distinctHuman ? 3 / b.distinctHuman : 0); }, 0) / q.length
+        : null,
+      chanceFloorInformative: (function () {
+        const info = q.filter(function (b) { return b.informative; });
+        return info.length
+          ? info.reduce(function (a, b) { return a + 3 / b.distinctHuman; }, 0) / info.length : null;
+      })(),
+      menuChanceFloorInformative: (function () {
+        const info = q.filter(function (b) { return b.informative; });
+        return info.length
+          ? info.reduce(function (a, b) { return a + b.menuChanceFloor; }, 0) / info.length : null;
+      })(),
+      distinctHumanInformative: (function () {
+        const info = q.filter(function (b) { return b.informative; });
+        return info.length
+          ? info.reduce(function (a, b) { return a + b.distinctHuman; }, 0) / info.length : null;
+      })(),
+      distinctHumanMean: q.length
+        ? q.reduce(function (a, b) { return a + b.distinctHuman; }, 0) / q.length : null,
+      humanTop1ShareMean: q.length
+        ? q.reduce(function (a, b) { return a + (b.humanTop1Share || 0); }, 0) / q.length : null,
+      /* Point 1 applied to point 2: among the buckets where elites have a consensus at all, was that
+       * consensus line NEAR the engine's pick (within 5 % of the menu's spread)? Macro-averaged over
+       * buckets, plus the pooled share over every click in them, because the two differ when the
+       * thick buckets behave differently from the thin ones. */
+      humanTop1WashShareMean: q.length
+        ? q.reduce(function (a, b) { return a + (b.humanTop1WashShare || 0); }, 0) / q.length : null,
+      pooledClickWashShare: (function () {
+        const tot = q.reduce(function (a, b) { return a + b.n; }, 0);
+        return tot ? q.reduce(function (a, b) { return a + b.clickWashN; }, 0) / tot : null;
+      })(),
+      top: q.slice(0, 8)
+    };
+  };
+  const consensus = Object.assign({ minN: MIN_CONSENSUS_N }, qualify(pairBuckets), {
+    /* The FINE partition, reported beside it as the diagnostic that says the coarse one was
+     * necessary: `qualifyingFine` is how many pair+HP+field buckets reach MIN_CONSENSUS_N here. */
+    fineBuckets: consensusBuckets.length,
+    qualifyingFine: consensusBuckets.filter(function (b) { return b.n >= MIN_CONSENSUS_N; }).length,
+    fineTop: consensusBuckets.slice(0, 4)
   });
 
   /* The pivot diagnostic. `getMyActions` can only offer the moves a body has revealed, so an
@@ -654,6 +1002,34 @@ function summarize(records, meta) {
     moveContested: tally(moveContested),
     revealedOnly: tally(revealedOnly),
     buckets: buckets,
+    regret: {
+      all: regretStats(scored),
+      contested: regretStats(contested),
+      moveContested: regretStats(moveContested),
+      revealedOnly: regretStats(revealedOnly),
+      byKind: { move: regretStats(scored.filter(isMove)), switch: regretStats(scored.filter(isSwitch)) },
+      byBucket: regretByBucket
+    },
+    consensus: consensus,
+    /* POINT 4. The turn buckets, with the two-sample test on the best-vs-worst pair attached, so
+     * "flat" is a finding the report can state instead of a shape the reader has to eyeball. */
+    flatness: {
+      minBucketN: Math.min(buckets.opening.n, buckets.mid.n, buckets.endgame.n),
+      agreement: extremeSpread(['opening', 'mid', 'endgame'].map(function (b) {
+        return { name: b, k: buckets[b].top1, n: buckets[b].n };
+      })),
+      wash: extremeSpread(['opening', 'mid', 'endgame'].map(function (b) {
+        return { name: b, k: regretByBucket[b].nearTop5, n: regretByBucket[b].measured };
+      })),
+      levels: ['opening', 'mid', 'endgame'].map(function (b) {
+        return {
+          name: b, n: buckets[b].n, top1: buckets[b].top1,
+          measured: regretByBucket[b].measured, wash: regretByBucket[b].nearTop5,
+          median: regretByBucket[b].median, mean: regretByBucket[b].mean,
+          units: regretByBucket[b].medianUnits
+        };
+      })
+    },
     mix: mix,
     vetoCodes: vetoCodes,
     byKind: byKind,
@@ -684,6 +1060,7 @@ function ciText(k, n) {
   return '±' + (100 * Math.max(w.hi - (n ? k / n : 0), (n ? k / n : 0) - w.lo)).toFixed(1);
 }
 
+function pcText(x) { return x === null || x === undefined ? 'n/a' : (100 * x).toFixed(1) + '%'; }
 function padEnd(s, n) { s = String(s); while (s.length < n) s += ' '; return s; }
 function padStart(s, n) { s = String(s); while (s.length < n) s = ' ' + s; return s; }
 
@@ -719,6 +1096,25 @@ function render(summary, opts) {
     .map(function (k) { return k + ' ' + sk[k]; }).join(', ') || '  (none)');
   L.push('');
 
+  /* THE HEADLINE IS THE GAP, NOT THE AGREEMENT, and the order it is printed in is the claim.
+   * Agreement counts a tie-broken row as a miss, so an agreement rate in the twenties is not by
+   * itself a reading of anything; the gap says what each disagreement COST. Both are printed — the
+   * agreement table stays because it is comparable with every earlier run. */
+  const hg = summary.regret.all;
+  if (hg && hg.measured) {
+    L.push('  HEADLINE — the gap, not the agreement: a spread existed on ' + hg.measured + ' of ' +
+      summary.all.n + ' decisions, and the');
+    L.push('  human\'s own click scored within 5 % of the engine\'s pick on ' +
+      pct(hg.nearTop5, hg.measured).trim() + ' of those (' + hg.nearTop5 + '/' + hg.measured +
+      ': on those turns the disagreement is a');
+    L.push('  wash). It gave up 30 % or more of the menu\'s spread on ' +
+      pct(hg.worseThan30, hg.measured).trim() + ' (' + hg.worseThan30 + '/' + hg.measured +
+      ': there the engine is saying the human');
+    L.push('  threw value away). Top-1 agreement on the same decisions is ' +
+      pct(summary.all.top1, summary.all.n).trim() + ', counted beside it, not instead of it.');
+    L.push('');
+  }
+
   const head = '  ' + padEnd('metric', 30) + padStart('decisions', 10) + padStart('rate', 9) + padStart('95% CI', 8);
   L.push(head);
   L.push('  ' + '-'.repeat(57));
@@ -736,14 +1132,33 @@ function render(summary, opts) {
     L.push('  ' + padEnd(r[0], 30) + padStart(r[2], 10) + padStart(pct(r[1], r[2]), 9) + padStart(ciText(r[1], r[2]), 8));
   });
   L.push('');
-  L.push('  by turn bucket                  decisions     top-1     top-2');
-  L.push('  ' + '-'.repeat(57));
+  L.push('  by turn bucket                  decisions     top-1     top-2  wash<=5%   median');
+  L.push('  ' + '-'.repeat(75));
   [['opening  (1-' + OPENING_MAX_TURN + ')', 'opening'],
     ['mid  (' + (OPENING_MAX_TURN + 1) + '-' + MID_MAX_TURN + ')', 'mid'],
     ['endgame  (' + (MID_MAX_TURN + 1) + '+)', 'endgame']].forEach(function (b) {
     const t = summary.buckets[b[1]];
-    L.push('  ' + padEnd(b[0], 30) + padStart(t.n, 10) + padStart(pct(t.top1, t.n), 10) + padStart(pct(t.top2, t.n), 10));
+    const g = summary.regret.byBucket[b[1]];
+    L.push('  ' + padEnd(b[0], 30) + padStart(t.n, 10) + padStart(pct(t.top1, t.n), 10) +
+      padStart(pct(t.top2, t.n), 10) + padStart(pct(g.nearTop5, g.measured), 11) +
+      padStart(g.median === null ? 'n/a' : g.median.toFixed(2), 9));
   });
+  const fl = summary.flatness;
+  if (fl && fl.agreement && fl.wash) {
+    const say = function (x, what) {
+      return what + ' best-vs-worst ' + x.best + '->' + x.worst + ' ' +
+        (100 * x.p1).toFixed(1) + '% vs ' + (100 * x.p2).toFixed(1) + '% (z ' +
+        (isFinite(x.z) ? x.z.toFixed(1) : 'inf') + ') -> ' + (x.flat ? 'FLAT at this n' : 'NOT flat');
+    };
+    L.push('');
+    L.push('  IS THE AGGREGATE HIDING A PHASE? ' + say(fl.agreement, 'agreement:'));
+    L.push('  ' + say(fl.wash, 'the gap:   '));
+    /* The verdict is deliberately two-sided: FLAT is the evidence failing to separate the phases,
+     * which is not the same as the phases being equal — the levels in the table above are what
+     * distinguishes "uniformly decent" from "uniformly mediocre". */
+    L.push('  "FLAT" means the three buckets are not distinguishable at this n, NOT that they were');
+    L.push('  shown to match: read it together with the levels above (thinnest bucket n=' + fl.minBucketN + ').');
+  }
   L.push('');
   L.push('  action space: ' + summary.meanOffered.toFixed(2) + ' lines offered on average; ' +
     summary.all.blind + ' of ' + summary.all.n + ' clicks (' + pct(summary.all.blind, summary.all.n).trim() +
@@ -786,6 +1201,93 @@ function render(summary, opts) {
   L.push('  fewer attacks than the human could see. That is also why its top-1 is a switch far more often');
   L.push('  than the human\'s click was. Do not average the two halves into one number and call it a');
   L.push('  rating — the fair half is the weaker one, and the unfair half is the stronger one.');
+  /* ---- the score gap, which is what the top-1 rate cannot say ------------------------------- */
+  const rg = summary.regret;
+  if (rg) {
+    L.push('');
+    L.push('  WHAT THE HUMAN GAVE UP, in the engine\'s own scores');
+    L.push('    regret = (engine top pick score) - (the human\'s line score). spread = the range the');
+    L.push('    engine put on this turn\'s menu. The rate is over the decisions where a spread existed.');
+    L.push('  ' + padEnd('slice', 26) + padStart('decisions', 10) + padStart('median', 8) + padStart('p90', 7) +
+      padStart('within 5%', 11) + padStart('worse 30%+', 12) + padStart('mean', 8) +
+      padStart('medUnits', 10) + padStart('meanUnits', 10) + padStart('within 5%', 11));
+    L.push('  ' + padEnd('', 26) + padStart('(of spread)', 10) + padStart('', 15) + padStart('', 23) +
+      padStart('(of spread)', 10) + padStart('', 10) + padStart('(of pick)', 11));
+    L.push('  ' + '-'.repeat(113));
+    const fmt = function (v) { return v === null || v === undefined ? 'n/a' : v.toFixed(3); };
+    [['all scored', rg.all], ['contested', rg.contested], ['move-vs-move', rg.moveContested],
+      ['revealed moveset', rg.revealedOnly], ['move clicks', rg.byKind.move],
+      ['switch clicks', rg.byKind.switch]].forEach(function (r) {
+        const t = r[1];
+        L.push('  ' + padEnd(r[0], 26) + padStart(t.measured, 10) + padStart(fmt(t.median), 8) +
+          padStart(fmt(t.p90), 7) + padStart(pct(t.nearTop5, t.measured), 11) +
+          padStart(pct(t.worseThan30, t.measured), 12) + padStart(fmt(t.mean), 8) +
+          padStart(t.medianUnits === null ? 'n/a' : t.medianUnits.toFixed(1), 10) +
+          padStart(t.meanUnits === null ? 'n/a' : t.meanUnits.toFixed(1), 10) +
+          padStart(pct(t.nearTop5Ratio, t.ratioMeasured), 11));
+      });
+    [['opening  (1-' + OPENING_MAX_TURN + ')', 'opening'], ['mid  (' + (OPENING_MAX_TURN + 1) + '-' + MID_MAX_TURN + ')', 'mid'],
+      ['endgame  (' + (MID_MAX_TURN + 1) + '+)', 'endgame']].forEach(function (b) {
+      const t = rg.byBucket[b[1]];
+      L.push('  ' + padEnd('  ' + b[0], 26) + padStart(t.measured, 10) + padStart(fmt(t.median), 8) +
+        padStart(fmt(t.p90), 7) + padStart(pct(t.nearTop5, t.measured), 11) +
+        padStart(pct(t.worseThan30, t.measured), 12) + padStart(fmt(t.mean), 8) +
+        padStart(t.medianUnits === null ? 'n/a' : t.medianUnits.toFixed(1), 10) +
+        padStart(t.meanUnits === null ? 'n/a' : t.meanUnits.toFixed(1), 10) +
+        padStart(pct(t.nearTop5Ratio, t.ratioMeasured), 11));
+    });
+    L.push('');
+    L.push('  A share of 0 means the human\'s line was worth what the engine\'s pick was worth (a tie');
+    L.push('  the ranking still had to order); 0.05 is "a wash", 0.30+ is the engine saying the human');
+    L.push('  threw value away. Read it beside the top-1 rate: agreement counts a tie-broken row as a');
+    L.push('  miss, and this column says how much that miss was worth.');
+    L.push('  The TWO "within 5%" columns normalise differently and are NOT interchangeable: the first');
+    L.push('  is 5 % of the menu\'s own spread (bounded, comparable across turns, the headline), the');
+    L.push('  second is the literal 5 % of the top line\'s SCORE, which is undefined when that score is');
+    L.push('  near zero — the evaluator\'s units cross zero — so it is counted over fewer decisions.');
+  }
+  const cs = summary.consensus;
+  if (cs && cs.buckets) {
+    L.push('');
+    L.push('  CONSENSUS SETS (one bucket per ACTIVE PAIR; >= ' + cs.minN + ' decisions per bucket)');
+    L.push('    ' + cs.qualifying + ' of ' + cs.buckets + ' buckets qualify, covering ' + cs.decisionsCovered +
+      ' of ' + summary.all.n + ' scored decisions.');
+    L.push('    ' + cs.degenerate + ' of those buckets are DEGENERATE for the top-3 test below: elites');
+    L.push('    clicked three distinct lines or fewer there, so the human top-3 is every line clicked and');
+    L.push('    the test is true by construction. The ' + cs.informative + ' informative buckets (' +
+      cs.informativeDecisions + ' decisions, ' +
+      (cs.distinctHumanInformative === null ? 'n/a' : cs.distinctHumanInformative.toFixed(1)) + ' distinct lines on average) are the ones it can');
+    L.push('    say anything about:');
+    L.push('      engine top pick in the human top-3   ' +
+      pct(cs.engineTop1InTop3Informative, cs.informative).trim() + '   (' + cs.engineTop1InTop3Informative + '/' + cs.informative + ')');
+    L.push('      ...a random line from the engine\'s own menu, at MOST   ' +
+      pcText(cs.menuChanceFloorInformative) + '   (the bound is loose: only top-3 lines');
+    L.push('                                                             already in a starved menu can be hit)');
+    L.push('      ...a random draw among the lines ELITES clicked   ' +
+      pcText(cs.chanceFloorInformative) + '   (by construction, 3 of their distinct count)');
+    L.push('    over ALL qualifying buckets, degenerate included, the rate is ' +
+      pct(cs.engineTop1InTop3, cs.qualifying).trim() + ' against ' + pcText(cs.chanceFloor) + ' — which is why that number is not');
+    L.push('    the one quoted.');
+    L.push('    in those buckets the single most-clicked line holds ' +
+      pct(cs.humanTop1ShareMean === null ? 0 : cs.humanTop1ShareMean, 1).trim() +
+      ' of the clicks on average, over ' + (cs.distinctHumanMean === null ? 'n/a' : cs.distinctHumanMean.toFixed(1)) +
+      ' distinct lines');
+    /* The consensus set read through the GAP rather than through agreement: a bucket where the
+     * engine's pick was in the human top-3 is a bucket the engine ranks plausibly, and this asks
+     * whether the line the humans converged on was also a line the engine rates. */
+    L.push('    scored by the gap instead: the line elites clicked MOST in a bucket was within 5 % of');
+    L.push('    the engine\'s pick ' + pcText(cs.humanTop1WashShareMean) + ' of the time on average, and pooling every');
+    L.push('    click in the qualifying buckets ' + pcText(cs.pooledClickWashShare) + ' of them were within 5 %.');
+    L.push('    the FINE partition (pair + HP quintile + field) needs far more corpus: ' + cs.qualifyingFine +
+      ' of its ' + cs.fineBuckets + ' buckets reach ' + cs.minN + ' decisions here.');
+    cs.top.slice(0, 4).forEach(function (b) {
+      L.push('      n=' + padStart(b.n, 3) + '  ' + b.key);
+      L.push('            humans clicked : ' + b.humanTop3.map(function (c) { return c.key + ' x' + c.n; }).join(', ') +
+        (b.distinctHuman > 3 ? '  (' + b.distinctHuman + ' distinct)' : ''));
+      L.push('            engine top pick: ' + (b.engineTopKey || 'n/a') +
+        (b.engineTop1InTop3 ? '  <- IN the human top-3' : '  <- NOT in the human top-3'));
+    });
+  }
   L.push('');
   if (summary.purity) {
     L.push('  purity probe  : evaluateTurn twice on turn ' + summary.purity.turn + ' / ' + summary.purity.side +
@@ -1006,6 +1508,12 @@ module.exports = {
   bucketOf: bucketOf,
   scoreDecision: scoreDecision,
   tally: tally,
+  regretShare: regretShare,
+  extremeSpread: extremeSpread,
+  matchupKeyOf: matchupKeyOf,
+  regretStats: regretStats,
+  stateKeyOf: stateKeyOf,
+  MIN_CONSENSUS_N: MIN_CONSENSUS_N,
   summarize: summarize,
   wilson: wilson,
   rate: rate,
