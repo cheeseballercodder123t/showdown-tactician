@@ -327,6 +327,12 @@ const FEATURES = [
     direction: 'on',
     patch: { 'laplace.priceMyMoveStatus.enabled': true },
     expect: 'helps',
+    /* THE ROW DECLARES ITS CORPUS. The shipped engine seat plays `hazardStackBalance`, which has no
+     * status-inflicting move, so this tier cannot fire there and its gate read `[identical]` in all
+     * 60 battles (ATTEMPTS.md §P7). `stallCore` carries Toxic and Protect on the same bodies, which
+     * is the position this row needs; the field is a property of the RUN, so resolveRunTeam forces
+     * the baseline onto the same team rather than pairing two different games. */
+    team: 'stallCore',
     note: 'SHIPS OFF. On, our own status-Inflicting move (the PRIMARY effect of the move, per ' +
       'U.STATUS_MOVES: Thunder Wave, Will-O-Wisp, Toxic, Spore, Glare, Stun Spore, Nuzzle, Zap ' +
       'Cannon, Inferno, ...) writes that condition onto THEIR leaf body, refused whenever the board ' +
@@ -367,6 +373,8 @@ const FEATURES = [
     direction: 'on',
     patch: { 'laplace.priceMyMoveProtect.enabled': true },
     expect: 'helps',
+    /* Same corpus as its sibling row, for the same reason: a team with no shield cannot price one. */
+    team: 'stallCore',
     note: 'SHIPS OFF. On, OUR own Protect is priced as the shield it is: their reply deals nothing ' +
       'in the cell, and the leaf carries the Protect rhythm (dims 126/127) the live state would ' +
       'carry next turn. Off prices a Protect as a turn on which we did nothing and took their best ' +
@@ -1094,6 +1102,12 @@ function printUsage(out) {
     '                      instrument has no headroom; a mirror sits near 50%, where a variant that',
     '                      HELPS is measurable as well as one that hurts (ATTEMPTS.md section H).',
     '  --parallel <n>      Variants to run at once (default: 1)',
+    '  --team <name>       Team for the ENGINE seat, for the baseline AND every variant (default:',
+    '                      hazardStackBalance, or the one team the selected rows declare). A row that',
+    '                      declares `team` needs a corpus the shipped seat cannot supply — the two',
+    '                      own-move leaf channels read `[identical]` on a team with no shield and no',
+    '                      status move — so the sweep refuses to mix teams rather than pair arms that',
+    '                      are not the same experiment.',
     '  --baseline <file>   Reuse a finished arena report as the reference arm instead of',
     '                      re-running it, so a sweep that died mid-way can be resumed. The',
     '                      report must be the same experiment (--battles / --agent / --seed /',
@@ -1119,7 +1133,8 @@ function printUsage(out) {
 function parseArgs(argv) {
   const opts = {
     battles: DEFAULT_BATTLES, features: 'all', seed: DEFAULT_SEED, maxTurns: DEFAULT_MAX_TURNS,
-    agent: 'all', parallel: 1, out: null, baseline: null, keepTmp: false, list: false, quiet: false, help: false
+    agent: 'all', parallel: 1, out: null, baseline: null, keepTmp: false, list: false, quiet: false,
+    help: false, team: null
   };
   const need = function (flag, value) {
     if (value === undefined) throw new arena.SetupError(flag + ' needs a value');
@@ -1136,6 +1151,7 @@ function parseArgs(argv) {
       case '--league': opts.agent = String(need(a, argv[++i])).toLowerCase(); break;
       case '--mirror': opts.agent = 'mirror'; break;
       case '--parallel': opts.parallel = Number(need(a, argv[++i])); break;
+      case '--team': opts.team = String(need(a, argv[++i])); break;
       case '--out': opts.out = String(need(a, argv[++i])); break;
       case '--baseline': opts.baseline = String(need(a, argv[++i])); break;
       case '--keep-tmp': opts.keepTmp = true; break;
@@ -1199,9 +1215,59 @@ function buildVariants(selectedIds) {
       return {
         id: f.id, label: f.label, tier: f.tier, direction: f.direction, patch: f.patch,
         setArgs: patchToSetArgs(f.patch), expect: f.expect, note: f.note, caveat: f.caveat,
-        parent: f.parent || null
+        parent: f.parent || null, team: f.team || null
       };
     }));
+}
+
+/**
+ * resolveRunTeam(variants, opts) -> team name or null
+ *
+ * THE ENGINE SEAT'S TEAM IS A PROPERTY OF THE EXPERIMENT, NOT OF A VARIANT. A row that declares
+ * `team` is asking for a CORPUS, not for a variant: a leaf tier which writes OUR OWN move's
+ * transition needs a team that can actually play the move family it prices, and the shipped engine
+ * seat cannot supply a shield or a status move (ATTEMPTS.md §P7). The baseline arm is compared
+ * against every variant on paired seeds, so it has to sit in the SAME game — a baseline on one team
+ * and an arm on another is two experiments subtracted from each other, and the pairing check
+ * downstream only verifies seeds, not teams.
+ *
+ * Hence the three rules below: one team per run; an explicit `--team` wins but must not contradict
+ * what the table declares; and a sweep that MIXES declaring and non-declaring rows is refused
+ * rather than quietly reinterpreted, because `--features all` would otherwise silently move forty
+ * unrelated rows onto the corpus two of them asked for.
+ */
+function resolveRunTeam(variants, opts) {
+  const features = variants.filter(function (v) { return v.id !== 'baseline'; });
+  const declared = {};
+  features.forEach(function (v) { if (v.team) declared[v.team] = true; });
+  const names = Object.keys(declared);
+  if (names.length > 1) {
+    throw new arena.SetupError('this sweep declares more than one engine team (' + names.join(', ') +
+      '); the engine seat\'s team is a property of the RUN, not of a row, or the baseline is not the ' +
+      'same experiment as the arms');
+  }
+  if (opts.team) {
+    if (names.length && names[0] !== opts.team) {
+      throw new arena.SetupError('--team ' + opts.team + ' contradicts the feature table, which asks this ' +
+        'row for the ' + names[0] + ' corpus');
+    }
+    return opts.team;
+  }
+  if (!names.length) return null;
+  const undeclared = features.filter(function (v) { return !v.team; });
+  if (undeclared.length) {
+    throw new arena.SetupError('the selected sweep mixes engine teams: ' + names[0] + ' is declared by ' +
+      declNames(features, names[0]) + ' but ' + undeclared.length + ' other row(s) declare none ' +
+      '(' + undeclared.slice(0, 4).map(function (v) { return v.id; }).join(', ') +
+      (undeclared.length > 4 ? ', ...' : '') + '). Pass an explicit --team to make the whole run one ' +
+      'experiment, or run only the rows that share a corpus');
+  }
+  return names[0];
+}
+
+function declNames(features, team) {
+  return features.filter(function (v) { return v.team === team; })
+    .map(function (v) { return v.id; }).join(', ');
 }
 
 /**
@@ -1240,6 +1306,7 @@ function arenaArgs(variant, opts, jsonPath) {
     '--seed', String(opts.seed), '--max-turns', String(opts.maxTurns),
     '--json', jsonPath, '--quiet'
   ];
+  if (opts.team) args.push('--team', opts.team);
   variant.setArgs.forEach(function (s) { args.push('--set', s); });
   return args;
 }
@@ -1267,6 +1334,15 @@ function validateBaselineReport(payload, opts) {
     if (o[k] !== want[i][1]) {
       return 'its options.' + k + ' is ' + JSON.stringify(o[k]) + ' and this run wants ' + JSON.stringify(want[i][1]);
     }
+  }
+  /* The engine seat's team is part of the setup, so a reused baseline from a different team is a
+   * different game, not a reference arm. Normalised to null on both sides so reports written before
+   * --team existed (which carry no `team` field) stay reusable. */
+  const wantTeam = opts.team || null;
+  const gotTeam = o.team || null;
+  if (gotTeam !== wantTeam) {
+    return 'its options.team is ' + JSON.stringify(gotTeam) + ' and this run wants ' +
+      JSON.stringify(wantTeam);
   }
   if ((o.sets || []).length || (payload.appliedSets || []).length) {
     return 'it was run with --set, so it is a variant arm and not a baseline';
@@ -1807,6 +1883,7 @@ async function main(argv) {
     ids = resolveFeatureIds(opts.features);
     variants = buildVariants(ids);
     validateFeaturePaths(variants);
+    opts.team = resolveRunTeam(variants, opts);
   } catch (e) {
     console.error('ablation setup failed: ' + e.message);
     return 2;
@@ -2066,6 +2143,7 @@ module.exports = {
   validateFeaturePaths: validateFeaturePaths,
   patchToSetArgs: patchToSetArgs,
   arenaArgs: arenaArgs,
+  resolveRunTeam: resolveRunTeam,
   validateBaselineReport: validateBaselineReport,
   summarizeRun: summarizeRun,
   verifyPairing: verifyPairing,

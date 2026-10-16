@@ -94,6 +94,12 @@ function printUsage(out) {
     '                       The arena cannot measure this (both players share one event loop, so',
     '                       latency is ~0 ms), so it must be stated; `normal` is the identity and the',
     '                       default. Setting `auto` prices the clock tier against a fast opponent.',
+    '  --team <name>        Team for the ENGINE seat (default: hazardStackBalance). Must name one of',
+    '                       teams.js SAMPLE_TEAMS. This seat used to be hard-coded, which made every',
+    '                       tier that writes OUR OWN move\'s leaf transition unmeasurable in a team',
+    '                       that cannot play the move family it prices: `hazardStackBalance` carries',
+    '                       no shield and no status move, so its own leaf tiers read `[identical]` in',
+    '                       every battle. `--team stallCore` is the corpus that has both.',
     '  --mutate             Fuzz the persona team (item/EV/coverage mutation)',
     '  --harvest            Synthesize a regression puzzle for every loss',
     '  --seed <n>           Base RNG seed (default: ' + DEFAULT_SEED + ')',
@@ -116,7 +122,8 @@ function parseArgs(argv) {
   const opts = {
     battles: 100, mode: 'crucible', agent: 'all', mutate: false, harvest: false,
     seed: DEFAULT_SEED, maxTurns: 100, replay: null, mutateRate: MUTATION_RATE,
-    json: null, quiet: false, help: false, sets: [], rating1: null, rating2: null, deliberation: null
+    json: null, quiet: false, help: false, sets: [], rating1: null, rating2: null, deliberation: null,
+    team: null
   };
   const need = function (flag, value) {
     if (value === undefined) throw new SetupError(flag + ' needs a value');
@@ -136,6 +143,7 @@ function parseArgs(argv) {
       case '--rating1': opts.rating1 = Number(need(a, argv[++i])); break;
       case '--rating2': opts.rating2 = Number(need(a, argv[++i])); break;
       case '--deliberation': opts.deliberation = String(need(a, argv[++i])).toLowerCase(); break;
+      case '--team': opts.team = String(need(a, argv[++i])); break;
       case '--set': opts.sets.push(String(need(a, argv[++i]))); break;
       case '--json': opts.json = String(need(a, argv[++i])); break;
       case '--mutate': opts.mutate = true; break;
@@ -691,6 +699,7 @@ function renderSummary(summary, ctx, options) {
   console.log('  mode: ' + options.mode + (ctx.mode !== options.mode ? c('yellow', ' (fell back to full)') : '') +
     ' | battles: ' + t.battles + ' | seed: ' + options.seed + ' | max turns: ' + options.maxTurns);
   console.log('  teams: engine=' + ctx.engineTeamKey + (options.mutate ? ', persona mutated at rate ' + options.mutateRate : ''));
+  if (options.team) console.log('  engine seat named explicitly by --team: ' + options.team);
   if (ctx.appliedSets && ctx.appliedSets.length) {
     console.log('  config patch: ' + ctx.appliedSets.map(function (s) {
       return s.path + '=' + formatConfigValue(s.to);
@@ -761,7 +770,21 @@ async function main(argv) {
   });
 
   // ---- teams (validated before a single battle runs) --------------------------------
-  const engineTeam = resolveTeam(teamsMod, 'hazardStackBalance', null);
+  /* THE ENGINE SEAT'S TEAM. It used to be hard-coded here — the one seat with no CLI option behind
+   * it — and that made every tier which writes OUR OWN move's leaf transition unmeasurable: a
+   * `--set` for such a tier was applied, the battle ran, and the row came back `[identical]` in
+   * every battle because the team on our side could not play the move family the tier prices.
+   * `laplace.priceMyMoveStatus` and `laplace.priceMyMoveProtect` were read that way for a whole 60
+   * battle pass (ATTEMPTS.md §P7). The name is validated against SAMPLE_TEAMS and an unknown one is
+   * a SETUP ERROR: falling back to the default silently would have a typo measured as "the tier does
+   * nothing", which is the exact false null this flag exists to remove. */
+  const engineTeamName = options.team || 'hazardStackBalance';
+  const sampleTeamKeys = Object.keys((teamsMod && teamsMod.SAMPLE_TEAMS) || {});
+  if (!sampleTeamKeys.length) throw new SetupError('teams.js SAMPLE_TEAMS is empty');
+  if (options.team && sampleTeamKeys.indexOf(options.team) === -1) {
+    throw new SetupError('--team "' + options.team + '" is not one of: ' + sampleTeamKeys.join(', '));
+  }
+  const engineTeam = resolveTeam(teamsMod, engineTeamName, null);
   let enginePacked = null;
   try { enginePacked = teamsMod.toSimTeam(engineTeam.text); }
   catch (e) { throw new SetupError('teams.js could not pack the engine team: ' + (e && e.message)); }

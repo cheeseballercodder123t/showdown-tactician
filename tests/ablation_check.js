@@ -484,6 +484,90 @@ function checkFeatureTable() {
       '--set', 'laplace.nash.enabled=false'].join(' '), args.join(' '));
 }
 
+/* ============================ 3b. the engine seat's team, and the corpus a row needs */
+
+/**
+ * THE FALSE NULL THIS SECTION EXISTS FOR.
+ *   `run_arena` hard-coded the ENGINE seat's team to `hazardStackBalance`. Two leaf tiers write OUR
+ *   OWN move's transition onto the leaf, and that seat can play neither a shield nor a status move,
+ *   so their 60-battle gate came back `[identical]` in every single battle — a silence that reads
+ *   exactly like "this feature does nothing" (ATTEMPTS.md §P7). Two things are pinned here: that the
+ *   two rows DECLARE the corpus they need, and that a declaration is a property of the RUN.
+ */
+function checkEngineTeamCorpus() {
+  section('3b. the engine seat\'s team is declared per row, resolved per RUN, and never mixed');
+
+  const base = { id: 'baseline', setArgs: [], team: null };
+  const asRow = function (team) { return { id: 'r', setArgs: [], team: team || null }; };
+
+  if (simAvailable) {
+    const teamsMod = require(path.join(ROOT, 'tools', 'headless_arena', 'teams.js'));
+    const rows = {};
+    ablation.FEATURES.forEach(function (f) { rows[f.id] = f; });
+    eq('the status row declares the corpus it needs', (rows.pricemymovestatus || {}).team, 'stallCore');
+    eq('...and so does the Protect row', (rows.pricemymoveprotect || {}).team, 'stallCore');
+
+    /* The declaration is JUSTIFIED rather than decorative: the corpus it asks for really carries the
+     * two move families, and the shipped seat really carries neither. Checked against the team
+     * strings the arena validates and plays, not against the comment above them. */
+    const stall = String((teamsMod.SAMPLE_TEAMS || {}).stallCore || '');
+    const shipped = String((teamsMod.SAMPLE_TEAMS || {}).hazardStackBalance || '');
+    const shield = /^- (Protect|Baneful Bunker|King's Shield|Spiky Shield|Silk Trap|Burning Bulwark)$/m;
+    const statuser = /^- (Toxic|Will-O-Wisp|Thunder Wave|Glare|Spore|Sleep Powder|Stun Spore|Toxic Thread)$/m;
+    check('stallCore really carries a shield', shield.test(stall), stall.slice(0, 60));
+    check('...and a primary status move', statuser.test(stall), stall.slice(0, 60));
+    check('and the SHIPPED engine seat carries neither, which is why it read [identical]',
+      !shield.test(shipped) && !statuser.test(shipped));
+  }
+
+  eq('one declaring row resolves the whole run to its corpus',
+    ablation.resolveRunTeam([base, asRow('stallCore')], { team: null }), 'stallCore');
+  eq('two rows that agree share one sweep',
+    ablation.resolveRunTeam([base, asRow('stallCore'), asRow('stallCore')], { team: null }), 'stallCore');
+  eq('a sweep with no declaration is unchanged',
+    ablation.resolveRunTeam([base, asRow(null)], { team: null }), null);
+  eq('an explicit --team that agrees is allowed',
+    ablation.resolveRunTeam([base, asRow('stallCore')], { team: 'stallCore' }), 'stallCore');
+  eq('an explicit --team makes a mixed sweep one experiment',
+    ablation.resolveRunTeam([base, asRow('stallCore'), asRow(null)], { team: 'stallCore' }), 'stallCore');
+
+  const refusal = function (label, variants, opts) {
+    let msg = null;
+    try { ablation.resolveRunTeam(variants, opts); } catch (e) { msg = e.message; }
+    check(label, !!msg, msg || 'it did NOT refuse');
+  };
+  /* A baseline on one team and an arm on another are two experiments subtracted from each other,
+   * and the downstream pairing check only verifies seeds — never teams. So neither of these may be
+   * resolved silently: one would pair across teams, the other would move forty unrelated rows onto
+   * the corpus two of them asked for. */
+  refusal('a MIXED sweep is refused rather than reinterpreted',
+    [base, asRow('stallCore'), asRow(null)], { team: null });
+  refusal('an explicit --team that contradicts the table is refused',
+    [base, asRow('stallCore')], { team: 'hazardStackBalance' });
+  refusal('two rows asking for different corpora is refused',
+    [base, asRow('stallCore'), asRow('trickRoomSweep')], { team: null });
+
+  const carried = ablation.arenaArgs(asRow('stallCore'),
+    { battles: 60, agent: 'mirror', seed: 1337, maxTurns: 100, team: 'stallCore' }, '/tmp/x.json');
+  check('the resolved team reaches the arena child',
+    carried.indexOf('--team') !== -1 && carried[carried.indexOf('--team') + 1] === 'stallCore',
+    carried.join(' '));
+  const plain = ablation.arenaArgs(asRow(null),
+    { battles: 60, agent: 'mirror', seed: 1337, maxTurns: 100, team: null }, '/tmp/x.json');
+  check('...and a run with no team passes no flag at all', plain.indexOf('--team') === -1, plain.join(' '));
+
+  /* The arena's own refusal, through the CLI. An unknown name has to be a SETUP ERROR and not a
+   * silent fall back to the default, or a typo is measured as "the tier does nothing" — which is the
+   * exact false null this flag exists to remove. It fails before the first battle, so it is cheap. */
+  const bad = spawnSync(process.execPath, [path.join(ROOT, 'tools', 'run_arena.js'),
+    '--battles', '1', '--agent', 'anchor', '--team', 'nonsense', '--quiet'],
+    { cwd: ROOT, encoding: 'utf8', timeout: 60000 });
+  eq('an unknown --team is a setup error, not a fallback', bad.status, 2);
+  const said = String(bad.stdout || '') + String(bad.stderr || '');
+  check('...and the message names the teams that do exist', /is not one of: .*stallCore/.test(said),
+    said.slice(-200));
+}
+
 /* ================================================== 4. argument parsing and selection */
 
 function checkArgs() {
@@ -1164,6 +1248,7 @@ async function checkEndToEnd() {
   checkConfigReachesEngine();
   checkLoadTimePatchReachesEngine();
   checkFeatureTable();
+  checkEngineTeamCorpus();
   checkArgs();
   checkBaselineReuse();
   checkAggregation();
