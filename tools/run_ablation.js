@@ -281,6 +281,150 @@ const FEATURES = [
       'already lost — which is the reading that made Recover look like a free turn for them.'
   },
   {
+    id: 'pricemymoveeffects',
+    label: 'own-move leaf effects: setup + hazards (on)',
+    tier: 'laplace',
+    direction: 'on',
+    patch: { 'laplace.priceMyMoveEffects.enabled': true },
+    expect: 'helps',
+    note: 'SHIPS OFF. On, our own setup moves (the 29 SETUP_MOVES in src/util.js) stamp their stat ' +
+      'stages and HP cost onto the leaf board and into that turn\'s defensive calculation, and our ' +
+      'hazard-setting / hazard-clearing moves write their layer change onto a shallow copy of the ' +
+      'leaf field. Off (the shipped default) leaves those channels unchanged on the leaf.',
+    caveat: 'MEASURED NULL ON ITS WIN-RATE GATE, so it still ships OFF and the expectation above ' +
+      'is a pre-registration the run did not confirm. The gate §P6 asked for was run at 60 paired ' +
+      'battles per instrument, seed 1337: personas 83.3% baseline against 80.0% (delta win ' +
+      '-3.3 [-11.7, +5.0], delta score -2.5 [-10.0, +4.2]) and the mirror of itself 48.3% against ' +
+      '46.7% (delta win -1.7 [-16.7, +11.7], delta score -4.2 [-18.3, +9.2]). Both point ' +
+      'estimates are NEGATIVE and both intervals straddle zero, so the honest label is the tool\'s ' +
+      'own "no measurable effect at this sample size" and not a defined loss; a re-proposal needs ' +
+      'a stronger instrument or 500 battles, not another 60-battle run. Its POLICY-FIDELITY ' +
+      'reading is real and is where the tier bites: on a paired 200-battle replay of the same ' +
+      'corpus, top-1 agreement 34.6%->36.9%, the median regret share on MOVE clicks 0.008->0.001, ' +
+      '30%+ give-ups 35.3%->33.6%, and on the families it writes, setup 46.6%->66.7% ' +
+      '(excess over its own uniform floor -17.1 -> +2.9) and hazard clear 41.2%->61.3% — all at ' +
+      'McNemar 240 fixed / 136 broken, chi2 28.2, p < 0.001. That gain simply does not convert ' +
+      'into wins at this sample (ATTEMPTS.md §P6 and §P7). One trap to name: the ' +
+      'rated ROWS are not the leaf. With laplace.nash live, laplace_core.js:3059 publishes ' +
+      'live[k].score = nash.rowValues[k], so this tier perturbs rows it never touched through the ' +
+      'equilibrium (91.0% of unmodelled move rows and 87.4% of switch rows are unchanged; the rest ' +
+      'move by a median of 0.00 and a p95 of 0.35/3.86). The row-LOCAL contract is checked on ' +
+      '_payoff instead, in tests/tuning_check.js section 4d. What this row does NOT do: status moves ' +
+      'and item removal still write nothing to the leaf, and status_inflict is the worst category in ' +
+      'the 200-battle slice (-24.7 pp against its own uniform floor) — ATTEMPTS.md §P6.'
+  },
+  {
+    /* THE TWO REMAINING OWN-MOVE LEAF FAMILIES, each its own switch and its own row.
+     *
+     * They are separate tiers rather than sub-knobs of `pricemymoveeffects` on purpose: that row
+     * is a published measurement of one scope (setup boosts + hazard set/clear), and folding a new
+     * channel into it would silently redefine the experiment every time the bigger one is re-run.
+     * A row here is one boolean flip from the shipped config, which is what the table's own no-op
+     * guard (tests/ablation_check.js section 3) requires. */
+    id: 'pricemymovestatus',
+    label: 'own-move leaf effects: OUR status moves (on)',
+    tier: 'laplace',
+    direction: 'on',
+    patch: { 'laplace.priceMyMoveStatus.enabled': true },
+    expect: 'helps',
+    note: 'SHIPS OFF. On, our own status-Inflicting move (the PRIMARY effect of the move, per ' +
+      'U.STATUS_MOVES: Thunder Wave, Will-O-Wisp, Toxic, Spore, Glare, Stun Spore, Nuzzle, Zap ' +
+      'Cannon, Inferno, ...) writes that condition onto THEIR leaf body, refused whenever the board ' +
+      'says it cannot land (the body is already statused; the type chart or U.immunityReason ' +
+      'nullifies the move — Thunder Wave into a Ground body, Will-O-Wisp into a Flash Fire one; ' +
+      'U.STATUS_TYPE_IMMUNITY makes it impossible for the type — Electric bodies cannot be ' +
+      'paralysed, Fire bodies cannot burn; the move is a powder and the body is Grass; or a ' +
+      'REVEALED ability is on the immunity list). Off leaves the status dims (24..35, 117) ' +
+      'identical across every candidate row.',
+    caveat: 'SHIPS OFF, AND §C4\'S GATE CAME BACK [identical] — THIS ROW IS STRUCTURALLY ' +
+      'UNMEASURABLE ON THE ARENA INSTRUMENT. 60 paired mirror battles on seed 1337 reproduced the ' +
+      'baseline in EVERY battle (same winner AND same turn count; delta win +0.0 [+0.0, +0.0], the ' +
+      'flag \'[identical]\'), and the cause is checkable rather than a question of sample size: ' +
+      'run_arena hard-codes the ENGINE seat\'s team to `hazardStackBalance`, whose 24 moves carry ' +
+      'no status-inflicting move, and this tier writes only OUR OWN move\'s leaf transition — so ' +
+      'the switch has nothing to price and no decision can move. Re-running this command reproduces ' +
+      'the same silence; what has to change first is the engine-seat team (the persona-side ' +
+      '`stallCore` carries Toxic, but it is the wrong SEAT), or the sample size stays irrelevant. ' +
+      'THE FIDELITY READING IS UNTOUCHED and is the only reading this tier has: paired 200 ' +
+      'battles, STATUS INFLICTION\'s top-1 31.4%->41.8% and its median gap ' +
+      '60.9->55.5, with the gap POPULATION rising 96->106 (rows move INTO the slice as the region ' +
+      'the human was clicking in is lifted) and neither family crossing its own uniform floor yet ' +
+      '(ATTEMPTS.md §P7). The measurement it was written against is a policy-fidelity one: in the ' +
+      '200-battle move-half slice, STATUS INFLICTION is the worst family in the whole population — ' +
+      'top-1 31.4 % against its own uniform floor of 56.1 % (excess -24.7 pp) on 366 decisions, ' +
+      'median score gap 60.9 against a pure attack\'s 7.5, and 96 of the 1,550 gap decisions ' +
+      '(ATTEMPTS.md §P6). That is the signature of a channel the leaf never carried rather than of ' +
+      'a weight, which is what this tier writes. NOT MODELLED, so a positive reading is a lower ' +
+      'bound and a flat one is not proof of worthlessness: ACCURACY (a 90 % Thunder Wave and a ' +
+      '60 % Hypnosis both write a landed condition, because a board cannot carry a fraction of a ' +
+      'status), secondary-effect riders (Body Slam\'s 30 % paralysis is not a status move), and ' +
+      'Safety Goggles / Overcoat as powder shields, neither inferable from a revealed board.'
+  },
+  {
+    id: 'pricemymoveprotect',
+    label: 'own-move leaf effects: OUR Protect (on)',
+    tier: 'laplace',
+    direction: 'on',
+    patch: { 'laplace.priceMyMoveProtect.enabled': true },
+    expect: 'helps',
+    note: 'SHIPS OFF. On, OUR own Protect is priced as the shield it is: their reply deals nothing ' +
+      'in the cell, and the leaf carries the Protect rhythm (dims 126/127) the live state would ' +
+      'carry next turn. Off prices a Protect as a turn on which we did nothing and took their best ' +
+      'attack in full. The rule the ON arm encodes is two-sided: a CONSECUTIVE Protect FAILS (the ' +
+      'same rule veto 9 encodes, exempted the same way when a Taunt/Encore means the last one never ' +
+      'went off) and is priced as the wasted turn it is, and a reply that pierces a shield (Feint, ' +
+      'Phantom Force, Shadow Force, Hyperspace Fury / Hole) is not blocked. A shield does NOT stop ' +
+      'their SETUP: a Dragon Dance still buys its boost and its modelled Turn-2 extension, which ' +
+      'lands after this cell.',
+    caveat: 'SHIPS OFF, AND §C4\'S GATE CAME BACK [identical] — THIS ROW IS STRUCTURALLY ' +
+      'UNMEASURABLE ON THE ARENA INSTRUMENT. 60 paired mirror battles on seed 1337 reproduced the ' +
+      'baseline in EVERY battle (same winner AND same turn count; delta win +0.0 [+0.0, +0.0], the ' +
+      'flag \'[identical]\'), and the cause is checkable rather than a question of sample size: ' +
+      'run_arena hard-codes the ENGINE seat\'s team to `hazardStackBalance`, whose 24 moves carry ' +
+      'NO Protect-FAMILY move at all, and this tier writes only OUR OWN move\'s leaf transition — ' +
+      'so the switch has nothing to price and no decision can move. Re-running this command ' +
+      'reproduces the same silence; what has to change first is the engine-seat team (the ' +
+      'persona-side `stallCore` is Protect on everything, but it is the wrong SEAT), or the sample ' +
+      'size stays irrelevant. THE FIDELITY READING IS UNTOUCHED and is the only reading this tier ' +
+      'has: paired 200 battles, the Protect family\'s top-1 35.9%->47.3% and its median gap ' +
+      '83.5->65.0 with McNemar 90 fixed / 22 broken over the move half (ATTEMPTS.md §P7). The ' +
+      'measurement it was written against: Protect is the SINGLE LARGEST ' +
+      'contributor to the 200-battle move-half score gap (20.4 % of the summed per-decision gap), ' +
+      'with top-1 35.9 % against its own floor of 52.8 % (excess -16.9 pp) and a median gap of 83.5 ' +
+      'against a pure attack\'s 7.5, and it did not move by one decimal when the setup/hazard half ' +
+      'of the same idea was switched on (ATTEMPTS.md §P6). NOT MODELLED: the halving success rate ' +
+      'of a repeat Protect is read as a failure rather than as a probability, and a one-ply cell ' +
+      'has no decay — the shield says nothing about what their NEXT turn does with the turn it ' +
+      'bought (§L1).'
+  },
+  {
+    id: 'threatspeedgate',
+    label: 'threat matrix speed gate, softened (on)',
+    tier: 'evaluator',
+    direction: 'on',
+    patch: { 'evaluator.threatSpeedGate.enabled': true },
+    expect: 'helps',
+    note: 'SHIPS OFF. On, dims 76..111 stop being exactly 0 for a body that is not strictly ' +
+      'faster: the binary `mySpeed >= oppSpeed` term becomes a linear decay from 1 at parity to ' +
+      '`floor` over `span` Speed points (the section\'s own `span: 400`, the same number as ' +
+      '`evaluator.speedEdgeSpan`, which the macro dims use). Off (the shipped default) is the ' +
+      'cliff — 0 at a tie as well as a hundred ' +
+      'points behind. At `floor: 0` the soft form is a strict generalisation of the shipped one: ' +
+      'bit-identical for every faster body.',
+    caveat: 'REJECTED ON ITS OWN MEASUREMENT — ships OFF, and this row\'s ON arm is the WEAKER half ' +
+      'of that reading, because a soft gate is a different column and the shipped weights were ' +
+      'fitted on the GATED one. What the row alone measures (gate on, shipped weights): 200 paired ' +
+      'battles, top-1 34.6%->35.0% (+-0.9), move-vs-move 33.7%->34.1%, move top-1 64.8%->64.9%, ' +
+      'McNemar 25 fixed / 19 broken, chi2 0.57, p >= 0.1, and the move-half median gap moving the ' +
+      'WRONG way (34.9->36.2) — a NULL. What rejects it is the REFIT the row implies: the corpus ' +
+      'extracted twice (reproduce with `node tools/extract_training_data.js --input ' +
+      'corpus/replays.json --set evaluator.threatSpeedGate.enabled=true`) and fitted twice gives a ' +
+      'hold-out AUC of 0.7105 -> 0.6971, delta -0.0134 [-0.0262, -0.0012] over a battle-level ' +
+      'paired bootstrap (1.3% of resamples positive). ATTEMPTS.md §P8, including the artifact ' +
+      'staleness the same pass found: the fresh OFF fit scores 0.7105 with 2 clamped low-support ' +
+      'dims against the shipped 0.7011 with 8.'
+  },
+  {
     id: 'damage-evidence',
     label: 'reverse damage evidence (off)',
     tier: 'pruner',
@@ -1752,6 +1896,27 @@ async function main(argv) {
         if (echoed !== variant.setArgs.length) {
           failure = 'the arena applied ' + echoed + ' of ' + variant.setArgs.length +
             ' config flags — this batch would not measure what it claims';
+        }
+      }
+      /* THE INPUT CHECK, read off the CHILD's own report (tools/harness_inputs.js). The echo above
+       * proves each flag reached the child's config; this proves the child ever supplied the
+       * channel the flag reads. A flag reading a channel that never carries anything returns its
+       * inert default on every turn, so the row would be a baseline-vs-baseline comparison printed
+       * as "this feature does nothing" — a false null, which is the one verdict this runner must
+       * never hand over. (The child refuses it first; this is the cross-process half of the same
+       * check, so a variant cannot be reported on if it ran against an older or patched arena.) */
+      if (!failure && variant.setArgs.length) {
+        const supply = payload.inputSupply || null;
+        if (!supply) {
+          failure = 'the arena report carried no inputSupply block, so nothing shows the flags had ' +
+            'an input to act on — this row would not measure what it claims';
+        } else if ((supply.unsupplied || []).length) {
+          /* `unsupplied` carries only CLASSIFIED paths whose channel the batch never fed; an
+           * unclassified path is not evidence of anything and never fails a row (see
+           * tools/harness_inputs.js, and the registry-coverage check in the input suite). */
+          failure = 'never supplied during the batch: ' + supply.unsupplied.map(function (u) {
+            return u.path + ' <- ' + (u.missing || []).join(' + ');
+          }).join('; ') + ' — a flat row here would be a FALSE NULL, not a finding';
         }
       }
       if (!failure) summary = summarizeRun(payload);

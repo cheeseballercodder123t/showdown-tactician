@@ -213,6 +213,85 @@
   };
   const NO_ABILITIES = new Set();
 
+  /* Status-INFLICTING MOVES: the condition a move is BUILT to give, keyed by status then by move
+   * id. This is the leaf-transition half of the status channel (laplace.priceMyMoveStatus): the
+   * 128D evaluator carries fitted weights for dims 24..35 (status counts, ours and theirs), 117
+   * (the status differential) and 32..35 (our active body's condition), and until this table
+   * existed nothing told `_payoff` which condition a candidate MOVE would write, so every status
+   * move was priced on a leaf board where the condition it exists to give was absent.
+   *
+   * WHAT IS IN, AND WHAT IS DELIBERATELY OUT. Only a move whose PRIMARY effect is the status is
+   * listed. A secondary chance on a move that is really an attack (Body Slam's 30 % paralysis,
+   * Ice Beam's 10 % freeze, Malignant Chain's 50 % toxic) is NOT here: the leaf is a deterministic
+   * board, so a coin flip has to be priced as one, and the tier refuses to do that silently.
+   * Conditional inflictions are out for the same reason (Burning Jealousy needs a stat boost
+   * first, Shell Side Arm depends on the target's weaker defence). `frz` has no deterministic
+   * inflicter in this format, so it has no bucket. Accuracy is NOT modelled either — Thunder Wave
+   * is 90 % and Hypnosis 60 %, and the leaf still writes the condition as landed, because a board
+   * cannot carry "60 % of a burn"; that omission is named in the tier's own config comment.
+   *
+   * Zap Cannon, Inferno and Nuzzle are DAMAGING moves with a 100 % status rider. They are listed
+   * because their rider is certain, and the damage channel prices their hit independently — the
+   * two facts are written to the same leaf board, which is the whole point of listing them. */
+  const STATUS_MOVES = {
+    brn: ['willowisp', 'inferno'],
+    par: ['thunderwave', 'stunspore', 'glare', 'nuzzle', 'zapcannon'],
+    psn: ['poisonpowder', 'poisongas'],
+    tox: ['toxic'],
+    slp: ['spore', 'sleeppowder', 'hypnosis', 'sing', 'lovelykiss', 'darkvoid', 'grasswhistle']
+  };
+  const STATUS_BY_MOVE = (function () {
+    const map = new Map();
+    Object.keys(STATUS_MOVES).forEach(function (st) {
+      STATUS_MOVES[st].forEach(function (id) { map.set(id, st); });
+    });
+    return map;
+  })();
+
+  /* TYPES THAT CANNOT BE GIVEN A STATUS. A game rule with a single correct value, like the ability
+   * table above, and the one piece of the status channel the type chart does NOT express: Will-O-
+   * Wisp is a Fire move into a Fire body, which the chart prices at 0.5 rather than 0, so nothing
+   * in typeEffectiveness stops it. Electric-types have been paralysis-proof since Gen 6, and
+   * Poison/Steel bodies cannot be poisoned (the chart's 0 does cover those two, but naming them
+   * here keeps the RULE in one place instead of split between a table and a multiplier). */
+  const STATUS_TYPE_IMMUNITY = {
+    brn: ['Fire'],
+    par: ['Electric'],
+    psn: ['Poison', 'Steel'],
+    tox: ['Poison', 'Steel'],
+    slp: [],
+    frz: ['Ice']
+  };
+
+  /* Powder moves: a Grass-type body cannot be powdered. (Safety Goggles and Overcoat are the other
+   * two powder shields; neither is inferable from a revealed board, so neither is modelled — see
+   * the tier's own note.) */
+  const POWDER_MOVES = new Set(['spore', 'sleeppowder', 'stunspore', 'poisonpowder', 'cottonspore',
+    'ragepowder', 'magicpowder']);
+
+  /* Moves that hit THROUGH a Protect. The Gen 9 list: Feint, and the three two-turn phantoms that
+   * strike on their charge turn regardless of a shield (Phantom Force, Shadow Force, Hyperspace
+   * Fury / Hyperspace Hole). Max and Z moves pierce too, and neither is legal in this format. */
+  const PROTECT_PIERCING_MOVES = new Set(['feint', 'phantomforce', 'shadowforce', 'hyperspacefury',
+    'hyperspacehole']);
+
+  /** The condition (a protocol status id) a move is built to give, or null. */
+  function statusInflictedBy(name) {
+    return STATUS_BY_MOVE.get(toID(name)) || null;
+  }
+
+  function isPowderMove(name) { return POWDER_MOVES.has(toID(name)); }
+
+  function piercesProtect(name) { return PROTECT_PIERCING_MOVES.has(toID(name)); }
+
+  /** Is `status` impossible for a body of this species, on the type chart's own evidence? */
+  function statusBlockedByType(status, speciesName) {
+    const list = STATUS_TYPE_IMMUNITY[status];
+    if (!list || !list.length) return false;
+    for (let i = 0; i < list.length; i++) if (hasType(speciesName, list[i])) return true;
+    return false;
+  }
+
   /* Abilities that leave a body immune to Ground by keeping it airborne or absorbing the type.
    * Their absence of protection is provable: hazard damage that only grounded bodies take (Spikes)
    * or a Ground move that connects disproves them — EXCEPT under Gravity, which grounds everyone
@@ -1019,6 +1098,14 @@
     GRASS_ABSORB_ABILITIES: GRASS_ABSORB,
     UNBLOCKABLE_STATUS_ABILITY: UNBLOCKABLE_STATUS_ABILITY,
     STATUS_IMMUNITY_ABILITIES: STATUS_IMMUNITY_ABILITIES,
+    STATUS_MOVES: STATUS_MOVES,
+    STATUS_TYPE_IMMUNITY: STATUS_TYPE_IMMUNITY,
+    POWDER_MOVES: POWDER_MOVES,
+    PROTECT_PIERCING_MOVES: PROTECT_PIERCING_MOVES,
+    statusInflictedBy: statusInflictedBy,
+    isPowderMove: isPowderMove,
+    piercesProtect: piercesProtect,
+    statusBlockedByType: statusBlockedByType,
     GROUND_IMMUNE_ABILITIES: GROUND_IMMUNE_ABILITIES,
     ABILITY_IGNORING_ABILITIES: ABILITY_IGNORING_ABILITIES,
     SWITCH_IN_TRIGGER_ABILITIES: SWITCH_IN_TRIGGER_ABILITIES,

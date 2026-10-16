@@ -561,6 +561,90 @@ section('5b. the six structurally-zero dims: the two fixes, and the proof they a
     JSON.stringify([winning[120], mirrored[121]]));
 })();
 
+/* ============================================ 5c. `--set`: the patched-extraction contract */
+
+section('5c. --set: two arms of one corpus, one config leaf apart');
+
+/* WHY THIS SECTION EXISTS. ATTEMPTS.md §P8's refit needs the corpus extracted TWICE, once per value
+ * of `evaluator.threatSpeedGate.enabled`, and the whole comparison rests on the claim that the two
+ * datasets differ by THAT LEAF and nothing else. A hand-edited copy of src/config.js cannot
+ * evidence that -- the copy IS the diff -- so the arms come from `--set` instead, and the mechanism
+ * is pinned here rather than trusted: which values it infers, what it refuses, that the patch
+ * reaches the sandbox BEFORE the modules that read config while they load, and that the rows it
+ * moves are the block the leaf owns. */
+
+eq('--set infers only the scalars config.js stores',
+  ['true', 'false', 'null', '0.5', '-3', 'maybe'].map(extractor.parseConfigValue),
+  [true, false, null, 0.5, -3, 'maybe']);
+eq('--set is repeatable, and parseArgs keeps every entry',
+  extractor.parseArgs(['--input', 'a.json', '--set', 'laplace.nash.enabled=true',
+    '--set', 'evaluator.threatSpeedGate.enabled=true']).sets,
+  ['laplace.nash.enabled=true', 'evaluator.threatSpeedGate.enabled=true']);
+throwsWith('a --set with no section path is refused',
+  function () { extractor.buildConfigPatch(ST, ['realOppSwitch=false']); }, /section path/);
+throwsWith('a --set on a path config.js does not define is an ERROR, not a new key',
+  function () { extractor.buildConfigPatch(ST, ['laplace.noSuchKnob.enabled=true']); }, /no such tunable/);
+throwsWith('a --set without a value is refused',
+  function () { extractor.buildConfigPatch(ST, ['laplace.nash.enabled']); }, /path>=<value>/);
+/* `configGet` is the authority on whether a dotted path exists, so a path that walks THROUGH a
+ * scalar is refused here before the section branch below is ever reached (that branch is kept for
+ * the caller that patches a raw CONFIG object, as tools/run_arena.js does). */
+throwsWith('a --set that walks THROUGH a scalar is refused',
+  function () { extractor.buildConfigPatch(ST, ['evaluator.scale.deep=true']); }, /no such tunable/);
+
+/* THE CLONE TRAP. `configMerge` assigns at each level rather than deep-merging, so a patch must
+ * carry the WHOLE top-level section: a patch of `{ laplace: { nash: { enabled: true } } }` would
+ * replace `laplace` outright and silently reset every other knob in it to `cfg()`'s default -- a
+ * run then reads as "that flag is inert" when it was actually "every flag in the section was". */
+const neighbourBefore = ST.configGet('evaluator.scale', null);
+const patched = extractor.loadApi(['evaluator.threatSpeedGate.enabled=true']);
+eq('loadApi reports the patch it read back from the sandbox',
+  patched.applied, [{ path: 'evaluator.threatSpeedGate.enabled', from: false, to: true }]);
+check('the patch reached the config the extractor will read',
+  patched.ST.configGet('evaluator.threatSpeedGate.enabled', null) === true);
+check('...and did NOT reset the rest of the section it lives in',
+  patched.ST.configGet('evaluator.scale', null) === neighbourBefore,
+  JSON.stringify([patched.ST.configGet('evaluator.scale', null), neighbourBefore]));
+
+/* THE ARM ITSELF. Pikachu (base Speed 90) against Charizard (100): with the shipped gate every
+ * threat-matrix dim is exactly 0 for a body that is not strictly faster, so the leaf has a value to
+ * move and the two extractions MUST part company -- on dims 76..111 and on nothing else. */
+const GATE_LOG = [
+  '|player|p1|Ash|1|1500',
+  '|player|p2|Gary|2|1500',
+  '|switch|p1a: Pikachu|Pikachu, L50, M|100/100',
+  '|switch|p2a: Charizard|Charizard, L50, M|100/100',
+  '|turn|1',
+  '|move|p1a: Pikachu|Tackle|p2a: Charizard',
+  '|-damage|p2a: Charizard|80/100',
+  '|move|p2a: Charizard|Ember|p1a: Pikachu',
+  '|-damage|p1a: Pikachu|70/100',
+  '|turn|2',
+  '|move|p1a: Pikachu|Thunderbolt|p2a: Charizard',
+  '|-damage|p2a: Charizard|40/100',
+  '|win|Ash'
+];
+const gateCorpus = [{ winner: 'p1', log: GATE_LOG }];
+const gateOff = extractor.extractDataset(gateCorpus, api);
+const gateOn = extractor.extractDataset(gateCorpus,
+  extractor.loadApi(['evaluator.threatSpeedGate.enabled=true']));
+eq('the unpatched extraction is the shipped corpus, row for row',
+  JSON.stringify(extractor.extractDataset(gateCorpus, api)), JSON.stringify(gateOff));
+check('the two arms have the same rows and the same labels',
+  gateOff.samples === gateOn.samples &&
+  gateOff.rows.every(function (r, i) { return r.y === gateOn.rows[i].y; }),
+  JSON.stringify([gateOff.samples, gateOn.samples]));
+const movedDims = [];
+for (let d = 0; d < 128; d++) {
+  if (gateOff.rows.some(function (r, i) { return r.x[d] !== gateOn.rows[i].x[d]; })) movedDims.push(d);
+}
+check('the patched arm moves the threat matrix, dims 76..111 only',
+  movedDims.length > 0 && movedDims.every(function (d) { return d >= 76 && d <= 111; }),
+  JSON.stringify(movedDims));
+check('...and the gate OFF value it moves is the cliff the flag removes (0 for a slower body)',
+  gateOff.rows[0].x[76] === 0 && gateOn.rows[0].x[76] > 0,
+  JSON.stringify([gateOff.rows[0].x[76], gateOn.rows[0].x[76]]));
+
 /* ======================================================= 6. degenerate inputs */
 
 section('6. degenerate datasets are refused, never fitted to NaN');

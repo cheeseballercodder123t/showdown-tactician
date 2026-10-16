@@ -130,6 +130,11 @@ const INVENTORY = [
   // quiescence (the setup punisher: the two replies the 1-ply matrix priced as no-ops)
   'laplace.quiescence.enabled', 'laplace.quiescence.extendSetup', 'laplace.quiescence.blockProtect',
   'laplace.quiescence.respectTurn2Speed', 'laplace.quiescence.followUpWeight',
+  'laplace.realOppSwitch.enabled', 'laplace.pricePivots.enabled', 'laplace.pricePivots.regenPct',
+  'laplace.priceRecovery.enabled', 'laplace.priceRecovery.defaultHealPct',
+  'laplace.priceMyMoveEffects.enabled',
+  // the other two leaf-transition tiers (each `enabled: false` until a win-rate gate adopts it)
+  'laplace.priceMyMoveStatus.enabled', 'laplace.priceMyMoveProtect.enabled',
   // comeback mode (ships off) + turn urgency (ADOPTED, ships on; adopted on the 60-battle sweep)
   'laplace.comeback.enabled', 'laplace.comeback.winMargin', 'laplace.comeback.lossMargin',
   'laplace.comeback.winChargeScale', 'laplace.comeback.lossChargeScale',
@@ -174,6 +179,7 @@ const INVENTORY = [
   'evaluator.dim', 'evaluator.team', 'evaluator.scale', 'evaluator.tanhDenominator',
   'evaluator.unknownHpDefault', 'evaluator.threatEffSpan', 'evaluator.offenseBasePowerCap',
   'evaluator.boostSumScale', 'evaluator.statusDifferentialDivisor', 'evaluator.speedEdgeSpan',
+  'evaluator.threatSpeedGate.enabled', 'evaluator.threatSpeedGate.span', 'evaluator.threatSpeedGate.floor',
   'evaluator.recoveryPPBudget', 'evaluator.hazardChip.rocks', 'evaluator.hazardChip.spikesPerLayer',
   'evaluator.hazardChip.toxicSpikes', 'evaluator.hazardChip.stickyWeb', 'evaluator.hazardChip.divisor',
   'evaluator.protectRhythm.protectedLastTurn', 'evaluator.protectRhythm.consecutiveProtects',

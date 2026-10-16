@@ -61,6 +61,9 @@
 'use strict';
 
 const path = require('path');
+/* The input-population assertion: every session's engine is WATCHED, so a `--set` whose channel
+ * never carries anything is refused by run_arena instead of being reported as a flat row. */
+const HI = require('../harness_inputs.js');
 
 const HARNESS_PATH = path.join(__dirname, '..', '..', 'tests', 'harness.js');
 
@@ -293,6 +296,9 @@ class EngineSession {
     this.ST = loaded.ST;
     const doc = options.doc || loaded.harness.createFakeDocument();
     this.boot = new this.ST.TacticianBoot({ doc: doc });
+    /* The real pipeline owns the engine, so the watch goes on the engine it built rather than on a
+     * decision call this bridge makes — the bridge only feeds lines. */
+    this.inputs = HI.watch(this.boot.engine, this.ST.util);
     if (options.paste) this.setTeam(options.paste);
     if (this.boot.state && typeof this.boot.state.setFormat === 'function') {
       try { this.boot.state.setFormat(options.formatName || ENGINE_FORMAT_NAME); }

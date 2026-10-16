@@ -39,6 +39,9 @@
 
 const fs = require('fs');
 const path = require('path');
+/* The input-population assertion (see tools/harness_inputs.js): the `appliedSets` echo below proves
+ * a --set LANDED, and this proves the channel the flag reads was actually SUPPLIED. */
+const HI = require('./harness_inputs.js');
 
 const ROOT = path.resolve(__dirname, '..');
 const ARENA_DIR = path.join(__dirname, 'headless_arena');
@@ -907,6 +910,25 @@ async function main(argv) {
     }
   }
 
+  /* THE INPUT CHECK, before any number is rendered. A flag whose channel never carries anything
+   * returns its inert default on every turn, so the batch would come back indistinguishable from
+   * the baseline and be read as "this feature does nothing" — a false null. Refuse instead.
+   * A flag this module has no classification for is a different thing and does NOT refuse the run
+   * (see tools/harness_inputs.js): it is said out loud below, so the gap is visible without
+   * costing the measurement. */
+  try {
+    HI.assertSupplied(ctx.appliedSets, 'run_arena');
+  } catch (e) {
+    const err = new SetupError(e.message);
+    err.findings = e.findings;
+    throw err;
+  }
+  HI.unclassified(ctx.appliedSets).forEach(function (path) {
+    ctx.notes.push('--set ' + path + ' has no input channel classified in tools/harness_inputs.js, ' +
+      'so this run cannot say whether the flag was ever supplied its input — classify it there ' +
+      'before quoting a flat result for it.');
+  });
+
   const summary = summarize(records, specs);
   renderSummary(summary, ctx, options);
 
@@ -922,6 +944,7 @@ async function main(argv) {
       generatedBy: 'tools/run_arena.js', generatedAt: new Date().toISOString(),
       options: options, mode: mode, formatId: formatId, engineTeamKey: ctx.engineTeamKey,
       appliedSets: ctx.appliedSets,
+      inputSupply: HI.supplyReport(ctx.appliedSets),
       crucible: crucible ? { source: crucible.source, turn: crucible.turn, reason: crucible.reason } : null,
       summary: summary, records: records, notes: ctx.notes,
       harvest: { harvested: ctx.harvested, failures: ctx.harvestFailures, target: path.relative(ROOT, PUZZLE_FILE) },

@@ -338,6 +338,18 @@
         enabled: cfgGet('laplace.priceRecovery.enabled', true),
         defaultHealPct: cfgGet('laplace.priceRecovery.defaultHealPct', 50)
       }, options.priceRecovery || {});
+      this.priceMyMoveEffects = Object.assign({
+        enabled: cfgGet('laplace.priceMyMoveEffects.enabled', false)
+      }, options.priceMyMoveEffects || {});
+      // The other two halves of the same idea, each with its OWN switch because each is a different
+      // family of leaf transition and each has to be priceable on its own (see _myMoveStatusEffect
+      // and _myMoveProtectShield). Both are the exact identity when off.
+      this.priceMyMoveStatus = Object.assign({
+        enabled: cfgGet('laplace.priceMyMoveStatus.enabled', false)
+      }, options.priceMyMoveStatus || {});
+      this.priceMyMoveProtect = Object.assign({
+        enabled: cfgGet('laplace.priceMyMoveProtect.enabled', false)
+      }, options.priceMyMoveProtect || {});
       // Comeback mode (prospect theory on the risk dial). A 100-turn tie is a loss, and so is a
       // safe grind when you are already behind: with the board scored by the evaluator, the SAME
       // miss charge is scaled up when we are winning (minimum variance) and down when we are losing
@@ -1619,6 +1631,178 @@
       };
     }
 
+    /**
+     * _myMoveLeafEffects(myAction, myHp, field, state) -> { myBoosts, myHpCost, field } | null
+     *
+     * What OUR non-pivot move writes to the leaf board when `laplace.priceMyMoveEffects` is on:
+     *   - one of the 29 SETUP_MOVES (`U.setupBoosts`): the user's stat stages and any HP price
+     *     (Belly Drum 50, Clangorous Soul 33, Fillet Away 50), refused when `myHp <= cost`;
+     *   - a hazard-setting move (`U.HAZARD_LAYERS`): one layer added on `oppSide` up to the cap;
+     *   - a hazard-clearing move (`U.HAZARD_REMOVAL_MOVES`): our side cleared for Rapid Spin /
+     *     Mortal Spin / Tidy Up, both sides cleared for Defog, or the two sides swapped for
+     *     Court Change.
+     *
+     * Never mutates `state.field`: any hazard change builds a shallow copy of `field` and its
+     * `hazards` table for the leaf alone. Returns null when the tier is off or the move changes
+     * neither boosts nor hazards, so the default build allocates nothing and stays bit-identical.
+     */
+    _myMoveLeafEffects(myAction, myHp, field, state) {
+      if (!this.priceMyMoveEffects || this.priceMyMoveEffects.enabled !== true) return null;
+      if (!myAction || myAction.kind !== 'move') return null;
+      const id = U.toID(myAction.moveId || myAction.name || '');
+      if (!id) return null;
+
+      let myBoosts = null;
+      let myHpCost = 0;
+      const spec = U.setupBoosts(myAction.name || id);
+      if (spec) {
+        const gain = {};
+        Object.keys(spec).forEach(function (k) { if (k !== 'hpCostPct') gain[k] = spec[k]; });
+        const cost = spec.hpCostPct || 0;
+        if (Object.keys(gain).length && myHp > cost) {
+          myBoosts = gain;
+          myHpCost = cost;
+        }
+      }
+
+      let leafField = null;
+      const mySide = (state && state.mySide) || 'p1';
+      const oppSide = (state && state.oppSide) || (mySide === 'p1' ? 'p2' : 'p1');
+      const srcHaz = (field && field.hazards) || {};
+      const cloneHaz = function (h) {
+        return Object.assign({ rocks: false, spikes: 0, toxicspikes: 0, stickyweb: false }, h || {});
+      };
+
+      const hazEntry = U.HAZARD_LAYERS && U.HAZARD_LAYERS[id];
+      if (hazEntry) {
+        const oppH = cloneHaz(srcHaz[oppSide]);
+        if (hazEntry.max === 1) {
+          oppH[hazEntry.key] = true;
+        } else {
+          const cur = typeof oppH[hazEntry.key] === 'number' ? oppH[hazEntry.key] : (oppH[hazEntry.key] ? 1 : 0);
+          oppH[hazEntry.key] = Math.min(hazEntry.max, cur + 1);
+        }
+        const nextHaz = Object.assign({}, srcHaz);
+        nextHaz[oppSide] = oppH;
+        leafField = Object.assign({}, field || {}, { hazards: nextHaz });
+      } else if (U.HAZARD_REMOVAL_MOVES && U.HAZARD_REMOVAL_MOVES.has(id)) {
+        const nextHaz = Object.assign({}, srcHaz);
+        if (id === 'courtchange') {
+          const a = cloneHaz(srcHaz[mySide]);
+          const b = cloneHaz(srcHaz[oppSide]);
+          nextHaz[mySide] = b;
+          nextHaz[oppSide] = a;
+        } else {
+          nextHaz[mySide] = cloneHaz(null);
+          if (id === 'defog') nextHaz[oppSide] = cloneHaz(null);
+        }
+        leafField = Object.assign({}, field || {}, { hazards: nextHaz });
+      }
+
+      if (!myBoosts && !leafField && !myHpCost) return null;
+      return { myBoosts: myBoosts, myHpCost: myHpCost, field: leafField };
+    }
+
+    /**
+     * _myMoveStatusEffect(myAction, oppMon, state) -> { status } | null
+     *
+     * The condition OUR status move writes onto THEIR leaf body when `laplace.priceMyMoveStatus`
+     * is on. `oppMon` is the body that ends the turn standing on their side — the switch-in when
+     * the world named one — so a status thrown into a pivot lands on the body the pivot brought.
+     *
+     * Refused (null, which prices the cell EXACTLY as the shipped build prices it) whenever the
+     * board says the condition cannot land:
+     *   - the move's primary effect is not a status (U.STATUS_MOVES; a secondary chance is not
+     *     modelled — see the table's own note in src/util.js);
+     *   - the target is missing, fainted, or ALREADY statused (a condition replaces nothing);
+     *   - the move cannot connect: the type chart nullifies it (Thunder Wave into a Ground body,
+     *     Toxic into a Steel one) or U.immunityReason names the reason (Levitate, Air Balloon,
+     *     Volt Absorb, Sap Sipper — a Ground move into a Flying body);
+     *   - the status is impossible for that TYPE (U.STATUS_TYPE_IMMUNITY: Electric bodies cannot be
+     *     paralysed, Fire bodies cannot be burned);
+     *   - the move is a POWDER and the body is Grass;
+     *   - the target's own REVEALED (or pinned) ability is one of U.STATUS_IMMUNITY_ABILITIES for
+     *     it. Only a revealed ability counts: a species that COULD carry Water Veil is not evidence
+     *     that it does, and refusing on a possibility would delete rows on a guess.
+     *
+     * Never mutates `oppMon` — the condition is stamped onto the leaf clone by `_leafState`. The
+     * omission this tier accepts on purpose is ACCURACY (Thunder Wave 90 %, Hypnosis 60 %): a board
+     * cannot carry a fraction of a status, so a landed one is priced as landed, and the config
+     * comment says so rather than leaving it to be rediscovered.
+     */
+    _myMoveStatusEffect(myAction, oppMon, state) {
+      if (!this.priceMyMoveStatus || this.priceMyMoveStatus.enabled !== true) return null;
+      if (!myAction || myAction.kind !== 'move' || !oppMon || oppMon.fainted) return null;
+      const name = myAction.name || myAction.moveId || '';
+      const status = U.statusInflictedBy(name);
+      if (!status) return null;
+      if (oppMon.status) return null;                       // already statused: nothing to write
+      const species = oppMon.species || oppMon.id || '';
+      const data = U.getMoveData(name);
+      const moveType = (data && data.type) || 'Normal';
+      if (U.typeEffectiveness(moveType, species) <= 0) return null;
+      const ability = U.toID(oppMon.revealedAbility ||
+        (oppMon.liveSet && oppMon.liveSet.ability) || oppMon.ability || '');
+      const item = oppMon.currentBattleItem || oppMon.confirmedItem ||
+        (oppMon.liveSet && oppMon.liveSet.item) || oppMon.item || '';
+      if (U.immunityReason(moveType, { ability: ability, item: item, species: species })) return null;
+      if (U.statusBlockedByType(status, species)) return null;
+      if (U.isPowderMove(name) && U.hasType(species, 'Grass')) return null;
+      const immune = U.STATUS_IMMUNITY_ABILITIES[status];
+      if (ability && immune && immune.has(ability)) return null;
+      return { status: status };
+    }
+
+    /**
+     * _myMoveProtectShield(myAction, state) -> { up, protect } | null
+     *
+     * OUR OWN PROTECT, priced as the shield it is, when `laplace.priceMyMoveProtect` is on.
+     * `laplace.quiescence.blockProtect` already prices THEIR shield blocking OUR move; nothing
+     * priced ours blocking their reply, so a Protect was scored as a turn on which we did nothing
+     * and ate their best attack in full.
+     *
+     * `up` is whether the shield actually goes up. A CONSECUTIVE PROTECT FAILS — the rule veto 9
+     * encodes (src/veto_guard.js) — read from the body's own record of what it clicked and exempted
+     * the same two ways: a `lastMove` from an earlier stint is not consecutive, and a Protect that
+     * never went off (a Taunt or Encore is up) left the counter clear. A failed shield is priced as
+     * the wasted turn it is.
+     *
+     * `protect` is the rhythm the leaf carries into the rest of the cell and into the next turn's
+     * board the way the live state would: the same three fields `state_manager._trackProtect`
+     * writes, which is why a failed Protect still advances them — the engine counts CLICKS, not
+     * successes. Read from `state.protect`, never written to it.
+     *
+     * NOT MODELLED, and named in the config comment: a repeat Protect's halving success rate is
+     * read as a failure rather than as a probability, and the shield says nothing about what their
+     * NEXT turn does with the turn it bought (a one-ply cell has no decay — ATTEMPTS.md §L1).
+     */
+    _myMoveProtectShield(myAction, state) {
+      if (!this.priceMyMoveProtect || this.priceMyMoveProtect.enabled !== true) return null;
+      if (!myAction) return null;
+      /* Either spelling of a shield: the action kind `getMyActions` assigns (`protect`, from the
+       * move data), or a protect move id on a row that was built by hand — the same two-way test
+       * the tempo vector uses. A caller passing one is passing a Protect. */
+      const isShield = myAction.kind === 'protect' ||
+        U.PROTECT_MOVES.has(U.toID(myAction.moveId || myAction.name || ''));
+      if (!isShield) return null;
+      const my = (state && state.active) ? state.active.my : null;
+      if (!my) return null;
+      const prot = (state && state.protect) || {};
+      const consecutive = typeof prot.myConsecutiveProtects === 'number' ? prot.myConsecutiveProtects : 0;
+      const lastId = U.toID(my.lastMove || '');
+      const lastTurn = typeof my.lastMoveTurn === 'number' ? my.lastMoveTurn : -1;
+      const turn = (typeof state.turn === 'number') ? state.turn : 0;
+      const reused = U.PROTECT_MOVES.has(lastId) && lastTurn >= turn - 1 && !my.taunt && !my.encore;
+      return {
+        up: !reused,
+        protect: {
+          myTurnsSinceLastProtect: 0,
+          myConsecutiveProtects: consecutive + 1,
+          myLastProtectTurn: turn
+        }
+      };
+    }
+
     _mutableSim(state, myActive, oppActive, myHp, oppHp, result) {
       const sim = Object.create(state);
       sim.active = { my: myActive, opp: oppActive };
@@ -1738,6 +1922,11 @@
       }
 
       let pivot = null;
+      let myEffects = null;
+      /* The other two own-move leaf channels, each null unless its own tier is on: the condition a
+       * status move writes onto their body, and the shield our own Protect raises over us. */
+      let myShield = null;
+      let myStatusTo = null;
       if (myAction.kind === 'switch') {
         const incoming = this._switchTarget(state, myAction);
         if (incoming) {
@@ -1753,6 +1942,14 @@
       } else if (!shielded) {
         // Our move still lands on a turn they spend setting up — they are not attacking us yet.
         // It does NOT land through a Protect.
+        myEffects = this._myMoveLeafEffects(myAction, myHp, field, state);
+        // A Protect is priced here too: the action reaches this branch (it is neither a switch nor
+        // a pivot), it deals no damage, and what it changes is whether THEIR reply lands below.
+        myShield = this._myMoveProtectShield(myAction, state);
+        myStatusTo = this._myMoveStatusEffect(myAction, oppSideMon, state);
+        if (myEffects && myEffects.myHpCost) {
+          myHp = U.clamp(myHp - myEffects.myHpCost, 0, 100);
+        }
         if (this.priceRecovery && this.priceRecovery.enabled !== false && U.isRecoveryMove(myAction.name)) {
           /* A HEAL DEALS NO DAMAGE. The 1-ply model used to score Recover/Roost/Slack Off as a
            * wasted turn — the cell was priced on a board where the body stood at the HP it had
@@ -1789,15 +1986,25 @@
         // line the whole feature exists to reward. (Their DAMAGING replies keep the pre-existing
         // symmetric treatment, because who moves first is not modelled there either.)
         const followUp = this._setupFollowUp(myAction, myActive, oppActive, mySideMon, setupGain,
-          setupHpCost, { oppHp: oppHp, myHp: myHp }, field, state);
+          setupHpCost, { oppHp: oppHp, myHp: myHp }, field, state,
+          (myEffects && myEffects.myBoosts) || null);
         oppHp = followUp.oppHp;
         myHp = followUp.myHp;
         events.push({ move: followUp.move, avgPercent: followUp.avgPercent, boosted: true });
       } else {
+        /* OUR SHIELD, IF IT WENT UP. Their reply is the whole point of a Protect, so it is the
+         * thing the shield takes away — and only that. It does not touch the branch above (their
+         * SETUP still buys its boost and its modelled Turn-2 extension, which lands after this
+         * cell, when our shield is long gone), and a reply that pierces a shield (Feint, the
+         * phantom trio) is not blocked. The row's own lethal bonus is untouched too: that is a
+         * property of the board the move leaves, not of who swung. */
+        const shieldedNow = !!(myShield && myShield.up &&
+          !(oppAction && U.piercesProtect(oppAction.name)));
+        const defOpts = (myEffects && myEffects.myBoosts) ? { defender: { boosts: myEffects.myBoosts } } : undefined;
         const dmg = oppAction.name === 'Struggle'
           ? { avgPercent: this.struggleChipPercent, isOHKO: false }
-          : this._damageOf(oppActive, mySideMon, oppAction.name, field, false);
-        if (dmg) {
+          : this._damageOf(oppActive, mySideMon, oppAction.name, field, false, defOpts);
+        if (dmg && !shieldedNow) {
           myHp = U.clamp(myHp - dmg.avgPercent, 0, 100);
         }
       }
@@ -1805,9 +2012,29 @@
       // The boost reaches the leaf only if it is still a LIVE fact: a body that ends this turn
       // fainted keeps no stat stages, so stamping them there would let the evaluator's boost dims
       // move a cell whose own board says the body is gone.
-      const applied = (setupGain && oppHp > 0) ? setupGain : null;
+      const oppApplied = (setupGain && oppHp > 0) ? setupGain : null;
+      const myApplied = (myEffects && myEffects.myBoosts && myHp > 0) ? myEffects.myBoosts : null;
+      const extraBoosts = (oppApplied || myApplied) ? {} : null;
+      if (oppApplied) extraBoosts.opp = oppApplied;
+      if (myApplied) extraBoosts.my = myApplied;
+      if (myEffects && myEffects.field) {
+        leafOpts = Object.assign({}, leafOpts || {}, { field: myEffects.field });
+      }
+      /* The two channels the status and Protect tiers write, merged the same way the field is. A
+       * condition is only a LIVE fact while the body it was written on is standing: a body our own
+       * hit finished this turn keeps no condition (the same rule the boosts above already follow).
+       * The Protect rhythm has no such gate — the body that shielded is the one that is standing,
+       * since a shield is what stopped it taking the damage. */
+      const oppStatus = (myStatusTo && oppHp > 0) ? myStatusTo.status : null;
+      if (oppStatus || (myShield && myShield.protect)) {
+        leafOpts = Object.assign({}, leafOpts || {}, {
+          oppStatus: oppStatus,
+          protect: (myShield && myShield.protect)
+            ? Object.assign({}, state.protect || {}, myShield.protect) : null
+        });
+      }
       const sim = this._leafState(state, mySideMon, oppSideMon, myHp, oppHp,
-        applied ? { opp: applied } : null, leafOpts);
+        extraBoosts, leafOpts);
       let score = this.evaluator.evaluate(sim);
       // Terminal bonuses keep the leaf evaluator honest about KOs.
       if (oppHp <= 0) score += this.lethalBonus;
@@ -2528,10 +2755,10 @@
      *     identity.
      *   - One extension, not a tree: their Protect is not re-checked on the second turn.
      */
-    _setupFollowUp(myAction, myActive, oppActive, mySideMon, gain, hpCostPct, hp, field, state) {
+    _setupFollowUp(myAction, myActive, oppActive, mySideMon, gain, hpCostPct, hp, field, state, myBoosts) {
       let oppHp = hpCostPct ? U.clamp(hp.oppHp - hpCostPct, 0, 100) : hp.oppHp;
       let myHp = hp.myHp;
-      const asAttacker = { attacker: { boosts: gain } };
+      const asAttacker = myBoosts ? { attacker: { boosts: gain }, defender: { boosts: myBoosts } } : { attacker: { boosts: gain } };
       const best = this._bestMoveWithDamage(oppActive, mySideMon, field, asAttacker);
       // Same stand-in as the main path when the body has no modelled attack at all.
       const dmg = best.damage || (best.move === 'Struggle' ? { avgPercent: this.struggleChipPercent } : null);
@@ -2543,8 +2770,8 @@
       const theirDamage = dmg ? dmg.avgPercent * w : 0;
       let again = null;
       if (myAction.kind === 'move') {
-        again = this._damageOf(myActive, oppActive, myAction.name, field, true,
-          { defender: { boosts: gain } });
+        const againOpts = myBoosts ? { attacker: { boosts: myBoosts }, defender: { boosts: gain } } : { defender: { boosts: gain } };
+        again = this._damageOf(myActive, oppActive, myAction.name, field, true, againOpts);
       }
       const ourDamage = again ? again.avgPercent * w : 0;
 
@@ -2591,6 +2818,13 @@
      *               team keeps it at its own HP instead of overwriting its slot with the incoming
      *               body. Without the option the old mapping stands: the active slot's member is
      *               replaced by the leaf's active body.
+     *   - `oppStatus`  a condition OUR status move wrote onto their active body this turn
+     *               (laplace.priceMyMoveStatus). A prototype clone inherits `status` from the
+     *               source body, so the write has to be an OWN property or it would be reflected
+     *               on the source — the same trap the boosts merge below already documents.
+     *   - `protect`  the Protect rhythm OUR shield leaves behind (laplace.priceMyMoveProtect).
+     *               Passed only when it changed, and only as a copy: `state.protect` is a live
+     *               object and the leaf must not write through to it.
      */
     _leafState(state, myMon, oppMon, myHp, oppHp, extraBoosts, opts) {
       const leaf = {
@@ -2599,18 +2833,21 @@
         field: (opts && opts.field) || state.field,
         active: { my: null, opp: null },
         bench: state.bench,
-        protect: state.protect,
+        protect: (opts && opts.protect) || state.protect,
         recoveryPP: state.recoveryPP,
         terastallizationBanned: state.terastallizationBanned,
         mySide: state.mySide,
         oppSide: state.oppSide
       };
-      const cloneMon = function (mon, hp, extra) {
+      const cloneMon = function (mon, hp, extra, status) {
         if (!mon) return null;
         const copy = Object.create(mon);
         copy.hp = hp;
         copy.hpPercent = hp;
         copy.fainted = hp <= 0;
+        // A condition this turn wrote has to be an OWN property for the same reason the boosts
+        // merge below does: a prototype clone would read the source body's `status` instead.
+        if (status) copy.status = status;
         // A prototype clone shares the source's `boosts` OBJECT, so a stat stage the quiescence
         // extension adds has to become an OWN property — otherwise it would be written through to
         // the live board. The merge is additive because the stage is a delta on the current table.
@@ -2624,7 +2861,8 @@
         return copy;
       };
       leaf.active.my = cloneMon(myMon, myHp, extraBoosts && extraBoosts.my);
-      leaf.active.opp = cloneMon(oppMon, oppHp, extraBoosts && extraBoosts.opp);
+      leaf.active.opp = cloneMon(oppMon, oppHp, extraBoosts && extraBoosts.opp,
+        (opts && opts.oppStatus) || null);
       const keepOutgoing = !!(opts && opts.keepOutgoing);
       const outgoingHp = keepOutgoing
         ? (typeof opts.outgoingHp === 'number' ? opts.outgoingHp : this._hp(state.active && state.active.my))

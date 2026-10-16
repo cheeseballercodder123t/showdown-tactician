@@ -293,10 +293,34 @@
       if (isMine && mon.boosterActive) v[base + 5] = 1;
     }
 
-    /** Cheap 6x6 matrix: does my mon i outspeed AND threaten opp mon j on type alone? */
+    /**
+     * Cheap 6x6 matrix: does my mon i outspeed AND threaten opp mon j on type alone?
+     *
+     * THE SPEED TERM, AND WHY IT HAS A SOFTENED FORM (evaluator.threatSpeedGate). As shipped, the
+     * gate is binary: `faster = mySpeed >= oppSpeed ? 1 : 0`, so all 36 dims are EXACTLY ZERO the
+     * moment our body is slower, at a tie as well as at a hundred points behind. That is a strong
+     * claim — a slower body still threatens whatever lives through the turn — and it is the one
+     * thing the fitted coefficients cannot express, because a hard 0 and a small number are
+     * different functions of the same feature. The gated form is also why the 36 threat dims
+     * (collapsed to the two means `threat` / `threatActive`, see lib/trained-weights.json) were
+     * FITTED ON A GATED COLUMN: un-gating changes what those coefficients mean, so the gate and a
+     * refit travel together and the gate ships OFF until that refit has been measured
+     * (ATTEMPTS.md §P5, §P6).
+     *
+     * On, the term becomes the continuous decay a speed deficit actually implies, anchored to the
+     * same `evaluator.speedEdgeSpan` the `_speedEdge` macro dims use: 1 at a tie or faster, falling
+     * linearly to `floor` at a `span`-point deficit (floor 0 makes it a strict generalisation of
+     * the shipped gate — IDENTICAL for every faster body, which is half the corpus — with the
+     * hard cliff replaced by a ramp). Read ONCE per call, outside the 36 cells.
+     */
     _threatMatrix(v, myTeam, oppTeam, state) {
       const field = state.field || {};
       const tr = !!field.trickRoom;
+      const gate = cfg('evaluator.threatSpeedGate', null);
+      const gateOn = !!(gate && gate.enabled === true);
+      const gateSpan = (gateOn && typeof gate.span === 'number' && gate.span > 0)
+        ? gate.span : cfg('evaluator.speedEdgeSpan', 400);
+      const gateFloor = (gateOn && typeof gate.floor === 'number') ? U.clamp(gate.floor, 0, 1) : 0;
       for (let i = 0; i < TEAM; i++) {
         const mine = myTeam[i];
         if (!mine || mine.fainted) continue;
@@ -306,7 +330,9 @@
           const idx = 76 + i * 6 + j;
           if (!theirs || theirs.fainted) { v[idx] = 0; continue; }
           const oppSpeed = this._speedOf(theirs, tr);
-          const faster = mySpeed >= oppSpeed ? 1 : 0;
+          const faster = gateOn
+            ? U.clamp(1 + (mySpeed - oppSpeed) / gateSpan, gateFloor, 1)
+            : (mySpeed >= oppSpeed ? 1 : 0);
           const eff = this._bestOffenseMultiplier(mine, theirs);
           // 0 when we cannot touch them, 1 when we threaten a super-effective line.
           const threat = eff <= 0 ? 0 : U.clamp((eff - 1) / cfg('evaluator.threatEffSpan', 3), 0, 1);
@@ -317,7 +343,12 @@
 
     _speedOf(mon, tr) {
       if (!mon) return 0;
-      const key = mon.slot || mon.id || mon.species;
+      /* THE KEY CARRIES THE SIDE. `slot` in the live pipeline is already side-qualified
+       * ('p1a' / 'p2a'), but a board built by a driver can hold two bodies with the SAME slot,
+       * id or species — a fixture, or `_matchupScore`'s pair — and then the second lookup read
+       * the FIRST body's speed, silently inverting the threat matrix's speed term on that board.
+       * A mirror matchup is the case that makes it visible. */
+      const key = (mon.side || '') + '|' + (mon.slot || mon.id || mon.species);
       if (this._speedCache[key] !== undefined) return this._speedCache[key];
       const speed = U.computeSpeed(mon, {
         item: mon.currentBattleItem || mon.confirmedItem || (mon.liveSet && mon.liveSet.item) || mon.item,

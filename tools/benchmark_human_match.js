@@ -63,6 +63,9 @@ const os = require('os');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
+/* The input-population assertion: see tools/harness_inputs.js. The --set read-back below proves the
+ * patch LANDED; this proves the channel the flag reads was ever SUPPLIED. */
+const HI = require('./harness_inputs.js');
 
 /* The reviewer's turn buckets. The opening is noise (both sides guess leads), a 6v1 is body
  * counting, and the mid-game trench is where a decision engine earns or loses its rating — so the
@@ -266,7 +269,16 @@ function bucketOf(turn) {
  * again, so later turns see only what the log had actually revealed.
  */
 function scoreDecision(engine, state, cls, ctx) {
-  const base = { turn: ctx.turn, side: ctx.side, replay: ctx.replay, bucket: bucketOf(ctx.turn), status: cls.status };
+  const base = {
+    turn: ctx.turn, side: ctx.side, replay: ctx.replay, bucket: bucketOf(ctx.turn), status: cls.status,
+    /* WHICH BATTLE this decision came from. `replay` is the SIDE pass index, not a battle — measured:
+     * every record in a 200-battle run carried one of two values — so nothing in a record file grouped
+     * decisions by battle. That matters the moment a number gets a CONFIDENCE INTERVAL: decisions
+     * inside one battle share a board, a plan and a team, so they are not independent draws and the
+     * resampling unit has to be the battle. Stamped here (null when a caller does not supply it, which
+     * fixtures do) so every downstream analysis can cluster on it instead of guessing at boundaries. */
+    battle: typeof ctx.battle === 'number' ? ctx.battle : null
+  };
   if (cls.status !== 'scorable') return base;
   const choice = cls.action;
   base.action = choice;
@@ -343,6 +355,9 @@ function scoreDecision(engine, state, cls, ctx) {
   base.rank = liveKeys.indexOf(base.key);
   base.top1 = liveKeys.length ? liveKeys[0] === base.key : false;
   base.top2 = liveKeys.length ? liveKeys.slice(0, 2).indexOf(base.key) !== -1 : false;
+  /* A TOP-THREE hit, because top-1/top-2 cannot tell "the engine never had the right line" from
+   * "it ranked that line third" — and those two call for opposite fixes (scoring vs re-ranking). */
+  base.top3 = liveKeys.length ? liveKeys.slice(0, 3).indexOf(base.key) !== -1 : false;
   base.top1Kind = live.length ? live[0].kind : null;
   /* The best NON-pivot line. A switch-penalising change can be bounded without being implemented:
    * "if the engine had never pivoted on a turn it had an attack for, what would its top-1 have
@@ -357,6 +372,67 @@ function scoreDecision(engine, state, cls, ctx) {
   base.vetoCode = vetoRow ? (vetoRow.vetoCode || 'UNKNOWN') : null;
   base.liveLines = liveKeys.length;
   base.topKeys = liveKeys.slice(0, 2);
+  base.topKeys3 = liveKeys.slice(0, 3);
+  /* ---- THE SWITCH-ONLY RANKING, and the question `rank` cannot answer ---------------------------
+   * `rank` is over the WHOLE live list, so on a turn where the engine led with a MOVE the best BENCH
+   * BODY can sit at rank 3+ while being its own first choice among switches — and the engine is
+   * over-pivoting, so those turns are the common case. "When it switches, does it bring in the body
+   * the human brought?" is asked of this sub-list only, and the two branches of the answer are the
+   * whole point of the measurement: a high `switchTop3` with a low `switchTop1` means the bodies are
+   * in the menu and RANKED differently (re-ranking); both at the floor means the engine has no
+   * PREFERENCE between bodies at all (scoring). `switchKeys` is kept so a report can name the bodies
+   * it preferred. */
+  const switchRows = live.filter(function (r) { return r.kind === 'switch'; });
+  base.switchOffered = switchRows.length;
+  base.switchKeys = switchRows.slice(0, 3).map(actionKeyOf);
+  /* THE ENGINE'S OWN SCORE FOR EACH BODY IT OFFERED. A count of "the human's body was ranked 2nd"
+   * cannot say whether the engine was choosing between equals or mis-weighting a clear preference,
+   * and those two need opposite fixes — a tie-break versus a scoring change. Recording the scores is
+   * what makes the gap computable downstream instead of re-running the engine to find out. Kept to
+   * the top five rows because a switch menu deeper than that is not where the answer ever is. */
+  base.switchScores = switchRows.slice(0, 5).map(function (r) {
+    const v = (typeof r.score === 'number' && isFinite(r.score)) ? Math.round(r.score * 100) / 100 : null;
+    return { key: actionKeyOf(r), score: v };
+  });
+  if (choice.kind === 'switch') {
+    const swKeys = switchRows.map(actionKeyOf);
+    base.switchRank = swKeys.indexOf(base.key);
+    base.switchTop1 = swKeys.length ? swKeys[0] === base.key : false;
+    base.switchTop3 = swKeys.length ? swKeys.slice(0, 3).indexOf(base.key) !== -1 : false;
+    /* The uniform floor for THIS decision's body choice: 1/(their bench menu size). Averaged over
+     * the switch decisions by summarize(), exactly as `chanceFloor` averages 1/offered. */
+    base.switchFloor = swKeys.length ? 1 / swKeys.length : null;
+  }
+  /* ---- THE MOVE-ONLY RANKING, the mirror of the switch sub-list above and for the same reason ----
+   * `rank` is over the WHOLE live list, so on a turn where the engine led with a SWITCH the human's
+   * MOVE can sit at rank 3+ while being its own first choice among moves. The attack menu is also
+   * STARVED (only the moves the log had revealed are offered), so the two questions — "did the engine
+   * rank the human's move first among MOVES" and "was that move even in its menu" — have to stay
+   * separable. The switch half had this split from the start and the move half did not, which is how
+   * the misweight reading came to be CONFIRMED for bodies and unconfirmed for moves. `moveScores` is
+   * recorded for the same reason `switchScores` was: a count of "ranked 2nd" cannot say whether the
+   * engine was choosing between equals or mis-weighting a clear preference. */
+  /* A MOVE ROW is everything that is not a switch, matching `bestMoveKey` above and the pivot
+   * diagnostic: a real record proved that testing `kind === 'move'` DROPS rows — a move click with a
+   * positive rank in the mixed list came back with no move-only rank at all, because the row it
+   * matched there carries no `kind` the move test accepts. `!== 'switch'` is the file's convention for
+   * this question and the one the reader compares against. */
+  const moveRows = live.filter(function (r) { return r.kind !== 'switch'; });
+  base.moveOffered = moveRows.length;
+  base.moveKeys = moveRows.slice(0, 3).map(actionKeyOf);
+  base.moveScores = moveRows.slice(0, 5).map(function (r) {
+    const v = (typeof r.score === 'number' && isFinite(r.score)) ? Math.round(r.score * 100) / 100 : null;
+    return { key: actionKeyOf(r), score: v };
+  });
+  if (choice.kind === 'move') {
+    const mvKeys = moveRows.map(actionKeyOf);
+    base.moveRank = mvKeys.indexOf(base.key);
+    base.moveTop1 = mvKeys.length ? mvKeys[0] === base.key : false;
+    base.moveTop3 = mvKeys.length ? mvKeys.slice(0, 3).indexOf(base.key) !== -1 : false;
+    /* The uniform floor for THIS decision's move sub-menu, averaged by summarize() exactly as
+     * `switchFloor` is, so the two halves are read against their own chance level. */
+    base.moveFloor = mvKeys.length ? 1 / mvKeys.length : null;
+  }
   /* ---- THE SCORE GAP, which is the question agreement is only a proxy for ----------------------
    * `top1` says the human clicked the engine's first row. It does not say the human's line was
    * WORSE — and on a mixed equilibrium the top rows tie in value while the ranking still has to
@@ -464,7 +540,7 @@ function buildEngine(ST, opts) {
       return verdict;
     };
   }
-  return new ST.LaplaceEngine({
+  const engine = new ST.LaplaceEngine({
     sampler: ST.WorldSampler ? new ST.WorldSampler({ K: 6 }) : null,
     damage: damage,
     evaluator: ST.DenseStateEvaluator ? new ST.DenseStateEvaluator() : null,
@@ -472,6 +548,35 @@ function buildEngine(ST, opts) {
     veto: veto,
     trickRoom: trickRoom
   });
+  /* THE CLOCK, which src/content.js owns and this harness did not build. `_oppSwitchPrior` reads
+   * `state.clock` and, with no snapshot there, returns its inert default for EVERY turn — so the
+   * whole clock family is unpriceable here no matter how its flags are set. That is the same class
+   * of gap the arena documents as D1-D4, and it is invisible from the output: two arms come back
+   * byte-identical and read as "the flag does nothing" when the flag was never supplied. */
+  if (ST.OpponentClock) engine.clock = new ST.OpponentClock();
+  HI.watch(engine, ST.util);
+  return engine;
+}
+
+/**
+ * syncClock(engine, state) -> snapshot | null
+ *
+ * The mirror of src/content.js's `_syncClock`, and the reason the clock is measurable here: the
+ * ladder rating is a FACT the replay carries, on the opponent's own `|player|` line, so the state
+ * manager has already resolved it into `state.opponentRating`. A replay has no `/choose` lines, so
+ * the clock's deliberation history stays empty and its label stays 'unknown' (whose prior is the
+ * identity) — the PACE of a recorded opponent genuinely cannot be measured from a log, and this
+ * harness does not pretend otherwise. The rating can be, and until it was handed over,
+ * `clock.ratingBands` could not be priced at all.
+ */
+function syncClock(engine, state) {
+  if (!engine || !engine.clock || !state) return null;
+  const rating = typeof state.opponentRating === 'number' && isFinite(state.opponentRating)
+    ? state.opponentRating : null;
+  engine.clock.setRating(rating);
+  const snap = engine.clock.snapshot();
+  state.clock = snap;
+  return snap;
 }
 
 /* ------------------------------------------------------------------ config ablate */
@@ -569,8 +674,11 @@ function evaluateBattle(ST, U, replay, sides, opts) {
       if (!state) continue;
       if (state.formatSupported === false) { formatSupported = false; break; }
 
+      /* The clock is synced BEFORE the decision, exactly as the live pipeline syncs it on the
+       * event that carried the reading. */
+      syncClock(engine, state);
       const cls = classifySide(byTurn[turn] || [], side);
-      const rec = scoreDecision(engine, state, cls, { U: U, turn: turn, side: side, replay: s });
+      const rec = scoreDecision(engine, state, cls, { U: U, turn: turn, side: side, replay: s, battle: opts.battleIndex });
       records.push(rec);
 
       /* Purity probe: `evaluateTurn` is documented as not mutating its input, and this whole
@@ -972,6 +1080,115 @@ function summarize(records, meta) {
     switch: tally(scored.filter(isSwitch))
   };
 
+  /* ---- PROBLEM B: WHEN IT SWITCHES, WHICH BODY? ------------------------------------------------
+   * `byKind.switch` above ranks the human's bench body against EVERY live row, so on a turn where
+   * the engine led with a move the human's body cannot be top-1 however well the engine ranked the
+   * BODIES. The switch-only sub-ranking is the only place the body choice is visible, so it is
+   * measured separately and with its own uniform floor, which makes the two comparable. Records
+   * whose `switchRank` was never computed (a hand-built fixture, an older record file) are excluded
+   * rather than counted as a miss. */
+  const bodyDecisions = scored.filter(function (r) {
+    return isSwitch(r) && typeof r.switchRank === 'number';
+  });
+  const switchBody = {
+    n: bodyDecisions.length,
+    top1: bodyDecisions.filter(function (r) { return r.switchTop1 === true; }).length,
+    top3: bodyDecisions.filter(function (r) { return r.switchTop3 === true; }).length,
+    /* rank 0 = its own first bench body, 1/2 = its second/third, 3 = anything below the third. */
+    ranks: [0, 0, 0, 0],
+    floor: null
+  };
+  let bodyFloor = 0, bodyFloorN = 0;
+  for (let b = 0; b < bodyDecisions.length; b++) {
+    const r = bodyDecisions[b];
+    switchBody.ranks[Math.max(0, Math.min(3, r.switchRank))] += 1;
+    if (typeof r.switchFloor === 'number' && isFinite(r.switchFloor) && r.switchFloor > 0) {
+      bodyFloor += r.switchFloor;
+      bodyFloorN++;
+    }
+  }
+  if (bodyFloorN) switchBody.floor = bodyFloor / bodyFloorN;
+
+  /* ---- PROBLEM B', THE SAME QUESTION FOR THE MOVE HALF -----------------------------------------
+   * The body split above answers "did it rank the human's BODY first among bodies"; this answers the
+   * identical question for moves, and the answer is what separates the two possible readings of the
+   * move half's 40.9 %: near-ceiling against a menu the LOG starved, or the same re-ranking gap the
+   * switch half shows. `revealed` restricts BOTH kinds to the clicks whose line the log had already
+   * shown — for a move that is the only subset on which a ranking is a measurement of the ENGINE
+   * rather than of the log's silence, and it is reported beside the unfiltered number so the bias
+   * stays visible instead of hidden. `${kind}Floor` is this decision's own same-kind uniform floor.
+   * Records without the field (a hand-built fixture, an older record file) are excluded, not counted
+   * as misses. */
+  const subRankOf = function (list, pick, kind) {
+    const rankField = kind + 'Rank', top1Field = kind + 'Top1', top3Field = kind + 'Top3', floorField = kind + 'Floor';
+    const out = { n: 0, top1: 0, top3: 0, ranks: [0, 0, 0, 0], floor: null };
+    let floorSum = 0, floorN = 0;
+    list.forEach(function (r) {
+      /* A NEGATIVE rank is not a rank: it means the human's line was refused by the veto layer, so it
+       * was never in the ranked list at all ("the guard refused an elite click" is the veto-code
+       * table's finding, not a ranking fact). Excluded here rather than filed under "ranked 1st". */
+      if (!pick(r) || typeof r[rankField] !== 'number' || r[rankField] < 0) return;
+      out.n++;
+      if (r[top1Field] === true) out.top1++;
+      if (r[top3Field] === true) out.top3++;
+      out.ranks[Math.max(0, Math.min(3, r[rankField]))] += 1;
+      if (typeof r[floorField] === 'number' && isFinite(r[floorField]) && r[floorField] > 0) {
+        floorSum += r[floorField];
+        floorN++;
+      }
+    });
+    if (floorN) out.floor = floorSum / floorN;
+    return out;
+  };
+  const moveBody = subRankOf(scored, isMove, 'move');
+  const bodyRank = {
+    all: { move: moveBody, switch: subRankOf(scored, isSwitch, 'switch') },
+    revealed: { move: subRankOf(revealedOnly, isMove, 'move'), switch: subRankOf(revealedOnly, isSwitch, 'switch') }
+  };
+
+  /* ---- THE SCORE GAP, on the cases the body split flags as RE-RANKING work --------------------
+   * The body split says how often the human's body was in the engine's top three but not first.
+   * This says how much the engine PREFERRED its own first body over the human's, in its own units,
+   * on exactly those decisions — which is the question that decides the fix: a gap near zero means
+   * the top bodies are TIES the ranking broke arbitrarily (a tie-break problem), while a large gap
+   * means the engine holds a clear opposite preference and is mis-weighting something (a scoring
+   * problem). The bands are the reviewer's own: under ~10 units is a wash, 20+ is systematic.
+   * Reported with the contrast case — how it looks when the body was NOT even in the top three — so
+   * a single story cannot be told about both. */
+  const scoreOfKey = function (r, key) {
+    const list = r.switchScores || [];
+    for (let i = 0; i < list.length; i++) if (list[i].key === key && typeof list[i].score === 'number') return list[i].score;
+    return null;
+  };
+  const gapStats = function (list) {
+    const out = { n: list.length, measured: 0, ties: 0, small: 0, mid: 0, large: 0, median: null, mean: null };
+    const vals = [];
+    list.forEach(function (r) {
+      const human = scoreOfKey(r, r.key);
+      const best = r.switchScores && r.switchScores.length ? r.switchScores[0].score : null;
+      if (typeof human !== 'number' || typeof best !== 'number') return;
+      const gap = best - human;
+      if (!isFinite(gap)) return;
+      out.measured++;
+      vals.push(gap);
+      if (gap <= 0.5) out.ties++;
+      else if (gap < 10) out.small++;
+      else if (gap < 20) out.mid++;
+      else out.large++;
+    });
+    if (vals.length) {
+      const sorted = vals.slice().sort(function (a, b) { return a - b; });
+      out.median = sorted[Math.floor(sorted.length / 2)];
+      out.mean = vals.reduce(function (a, b) { return a + b; }, 0) / vals.length;
+    }
+    return out;
+  };
+  const switchGap = {
+    ranked: gapStats(bodyDecisions.filter(function (r) { return r.switchTop1 !== true; })),
+    inTop3: gapStats(bodyDecisions.filter(function (r) { return r.switchTop1 !== true && r.switchTop3 === true; })),
+    belowTop3: gapStats(bodyDecisions.filter(function (r) { return r.switchTop3 !== true; }))
+  };
+
   /* THE PIVOT CEILING, and the reason it is reported rather than left in prose. `bestMoveKey` is
    * the engine's own best NON-pivot line, recorded from the ranking BEFORE any policy term touches
    * it. On the turns where its top-1 was a SWITCH while the human clicked a MOVE, this counts how
@@ -1038,6 +1255,10 @@ function summarize(records, meta) {
     mix: mix,
     vetoCodes: vetoCodes,
     byKind: byKind,
+    switchBody: switchBody,
+    moveBody: moveBody,
+    bodyRank: bodyRank,
+    switchGap: switchGap,
     pivotCeiling: pivotCeiling,
     chanceFloor: {
       all: uniformFloor(scored),
@@ -1197,6 +1418,56 @@ function render(summary, opts) {
     L.push('  ' + padEnd(k[0], 28) + padStart(t.n, 9) + padStart(pct(t.top1, t.n), 10) +
       padStart(pct(t.top2, t.n), 10) + padStart(fl === null ? 'n/a' : (100 * fl).toFixed(1) + '%', 9));
   });
+  L.push('');
+  /* PROBLEM B, reported next to the by-kind table because it is a different question: the table
+   * asks whether the human's body was the engine's best LINE, this asks whether it was the engine's
+   * best BODY. Printing both is what keeps a low aggregate from being read as "the engine cannot
+   * rank bodies" when it may only be ranking them below a move. */
+  const sb = summary.switchBody;
+  if (sb && sb.n) {
+    L.push('  body choice  : when the human SWITCHED, the engine\'s own first bench body was theirs ' +
+      pct(sb.top1, sb.n).trim() + ' of the time, its top-3 ' + pct(sb.top3, sb.n).trim() +
+      (sb.floor ? ' vs a uniform body floor of ' + (100 * sb.floor).toFixed(1) + '%' : ''));
+    L.push('                 the human\'s body ranked: 1st ' + pct(sb.ranks[0], sb.n).trim() +
+      ', 2nd ' + pct(sb.ranks[1], sb.n).trim() + ', 3rd ' + pct(sb.ranks[2], sb.n).trim() +
+      ', 4th+ ' + pct(sb.ranks[3], sb.n).trim() + '  (n=' + sb.n + ')');
+    /* THE MOVE HALF, the same question asked where the menu is starved — and the revealed-only row
+     * is the one to read, because a click the log had not yet shown could not have been in any
+     * engine's menu. Printed together so the starved number cannot be mistaken for a ranking. */
+    const mb = summary.moveBody;
+    if (mb && mb.n) {
+      L.push('  move choice  : when the human clicked a MOVE, the engine\'s own first MOVE was theirs ' +
+        pct(mb.top1, mb.n).trim() + ' of the time, its top-3 ' + pct(mb.top3, mb.n).trim() +
+        (mb.floor ? ' vs a uniform move floor of ' + (100 * mb.floor).toFixed(1) + '%' : ''));
+      L.push('                 the human\'s move ranked among MOVES: 1st ' + pct(mb.ranks[0], mb.n).trim() +
+        ', 2nd ' + pct(mb.ranks[1], mb.n).trim() + ', 3rd ' + pct(mb.ranks[2], mb.n).trim() +
+        ', 4th+ ' + pct(mb.ranks[3], mb.n).trim() + '  (n=' + mb.n + ')');
+    }
+    const rev = summary.bodyRank && summary.bodyRank.revealed && summary.bodyRank.revealed.move;
+    if (rev && rev.n) {
+      L.push('  ...revealed  : move clicks whose move the log HAD shown (n=' + rev.n + '): top-1 ' +
+        pct(rev.top1, rev.n).trim() + ', top-3 ' + pct(rev.top3, rev.n).trim() +
+        (rev.floor ? ' vs floor ' + (100 * rev.floor).toFixed(1) + '%' : '') +
+        '  | ranked 1st ' + pct(rev.ranks[0], rev.n).trim() + ', 2nd ' + pct(rev.ranks[1], rev.n).trim() +
+        ', 3rd ' + pct(rev.ranks[2], rev.n).trim() + ', 4th+ ' + pct(rev.ranks[3], rev.n).trim());
+    }
+    /* THE GAP, and the fix it implies. A tie the ranking broke arbitrarily is a tie-break problem;
+     * a clear opposite preference is a scoring problem. Printed together so neither is read as the
+     * other. */
+    const g = summary.switchGap;
+    if (g) {
+      const say = function (tag, s) {
+        if (!s || !s.measured) return;
+        L.push('                 ' + tag + ': median ' + s.median.toFixed(1) + ', mean ' + s.mean.toFixed(1) +
+          '  |  ties ' + pct(s.ties, s.measured).trim() + ', <10 ' + pct(s.small, s.measured).trim() +
+          ', 10-20 ' + pct(s.mid, s.measured).trim() + ', 20+ ' + pct(s.large, s.measured).trim() +
+          '  (n=' + s.measured + ')');
+      };
+      L.push('                 score gap between the engine\'s first body and the human\'s (its own units):');
+      say('in top-3, not 1st', g.inTop3);
+      say('below top-3     ', g.belowTop3);
+    }
+  }
   L.push('');
   L.push('  THE TWO HALVES ARE NOT MEASURED EQUALLY, and this is where they part. The SWITCH menu is');
   L.push('  complete — every legal bench body — so the switch half is a FAIR reading of this engine. The');
@@ -1410,7 +1681,7 @@ function run(opts) {
     let out = null;
     try {
       out = evaluateBattle(ST, U, chosen[i], sides, {
-        format: format, buildEngine: buildEngine, vetoOff: opts.vetoOff
+        format: format, buildEngine: buildEngine, vetoOff: opts.vetoOff, battleIndex: i
       });
     } catch (e) {
       /* One malformed replay in a 3,000-battle corpus must not lose the other 2,999. It is counted
@@ -1434,6 +1705,12 @@ function run(opts) {
     mean: Math.round(ratings.reduce(function (a, b) { return a + b; }, 0) / ratings.length)
   } : null;
 
+  /* THE INPUT CHECK. A flag whose channel never carries anything returns its inert default on every
+   * turn, so the run would be indistinguishable from the shipped build and read as "this feature
+   * does nothing". That is exactly how `clock.ratingBands` looked here before the clock was wired:
+   * two arms, byte-identical, over 1,328 decisions. Refuse to publish it as a result. */
+  HI.assertSupplied(api.applied, 'benchmark_human_match --set');
+
   const summary = summarize(records, {
     corpus: path.relative(ROOT, corpus.path) || corpus.path,
     battles: chosen.length - skippedUnsupported,
@@ -1444,6 +1721,7 @@ function run(opts) {
     ratingBand: band,
     purity: purity,
     configPatches: api.applied,
+    inputSupply: HI.supplyReport(api.applied),
     vetoOff: opts.vetoOff,
     elapsedMs: Date.now() - started
   });
@@ -1534,6 +1812,7 @@ module.exports = {
   buildConfigPatch: buildConfigPatch,
   parseConfigValue: parseConfigValue,
   buildEngine: buildEngine,
+  syncClock: syncClock,
   evaluateBattle: evaluateBattle,
   parseArgs: parseArgs,
   run: run,

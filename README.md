@@ -333,6 +333,10 @@ ARCHITECTURE.md            frozen interface contract every module binds to
 ```
 node test_engine.js           #  57 checks: RULE 2 — five ground-truth damage rolls, frozen
 node tests/run_tests.js       # 247 checks: the whole pipeline in a DOM-less sandbox
+node tests/harness_inputs_check.js # 57 checks: the input-population assertion every harness runs — a flag whose
+                              #   channel was never supplied is refused rather than reported as a flat row, and
+                              #   every flag in the ablation table must be classified (an unclassified one is
+                              #   surfaced, not refused, so the rule is enforced where the table is decided)
 node tests/rule_checks.js     #  23 checks: the deductions, replayed from raw protocol lines
 node tests/util_smoke.js      #  55 checks: dex access, item naming, type math, Speed maths, the lookup caches
 node tests/injected_bridge.js #  23 checks: the MAIN-world WebSocket bridge (fake WebSocket/DOM)
@@ -342,7 +346,8 @@ node tests/parser_fuzz.js     #  44 checks: RULE 3 — the real log, all its pre
 node tests/hardening_audit.js #  64 checks: the bug-hunt regressions + a 40-battle invariant fuzz
 node tests/upgrades_check.js  # 118 checks: the mixed-strategy solve, the vetoes, the clock, damage evidence
 node tests/chaos_sync_check.js # 70 checks: the chaos sync + the usage overlay (fixtures only, no network)
-node tests/weights_check.js   # 264 checks: the downloader + the extractor + the fitter + the config adoption
+node tests/weights_check.js   # 277 checks: the downloader + the extractor (and its --set) + the fitter +
+                              #   the config adoption
 node tests/cross_check.js     #  79 checks: the cross screening, the --crosses refit, and the refusal to adopt
 node tests/hud_check.js       # 238 checks: the seven HUD extras (stub DOM), the bench-tap sandbox end to end,
                               #   their engine data, and the Cancel-window ponder's scheduling contract
@@ -361,19 +366,21 @@ node tests/arena_check.js     # 157 checks: the arena — runner, splicer, agent
 node tests/invariants_check.js #  17 checks: the solver's invariants over perturbed boards
 node tests/ability_check.js   #  56 checks: the negative-space ability deduction (status, grounding, the gated absence rule,
                               #   and every observation that only LOOKS like proof)
-node tests/tuning_check.js    # 252 checks: the tuning tiers — the Elo band, turn urgency (adopted), comeback mode,
+node tests/tuning_check.js    # 347 checks: the tuning tiers — the Elo band, turn urgency (adopted), comeback mode,
                               #   the pivot tax (rejected), the 2-ply beam, the stratified active-set
                               #   worlds (which flipped their own default), the QRE opponent, the
-                              #   surprise mask and the prior-anchored opponent response
+                              #   surprise mask, the prior-anchored opponent response, the own-move
+                              #   leaf effects (setup/hazards, status, Protect) and the speed gate
 node tests/preview_check.js   #  31 checks: the Turn-0 lead advisory (parser contract, 6x6 scoring, HUD card)
 node tests/mlp_check.js       #  48 checks: the residual head's gate, fail-safe and clamp (it ships off)
 node tests/dom_check.js       #  99 checks: the HUD's DOM lifecycle, driven through a stub parser
-node tests/ablation_check.js  # 294 checks: the ablation runner — --set and its refusals, each flag in a real
+node tests/ablation_check.js  # 307 checks: the ablation runner — --set and its refusals, each flag in a real
                               #   engine, the feature table, the aggregation/bootstrap maths, one live batch
 node tests/tactical_puzzles.js #   0 puzzles: the vaccine registry, green until a --harvest run writes a defect
-node tests/human_match_check.js # 209 checks: the human-move-match benchmark — what a replay DOES and does NOT say,
+node tests/human_match_check.js # 263 checks: the human-move-match benchmark — what a replay DOES and does NOT say,
                               #   the score gap and the consensus sets, the turn-bucket flatness test,
-                              #   and the pivot ceiling that bounds any switch-penalising change
+                              #   the switch-body sub-ranking and its gap bands, and the pivot ceiling
+                              #   that bounds any switch-penalising change
 ```
 
 The first suite loads every script in manifest order inside a DOM-less sandbox (so a load-order
@@ -793,6 +800,46 @@ number by hand.
 rides on, the arithmetic of the extra exchange as identities against the damage engine's own
 numbers, the three guards, purity and the cost.
 
+## The leaf-transition family: what OUR OWN move writes to the board
+
+Quiescence (above) prices the opponent's non-damaging replies. The mirror image is our **own**
+non-damaging move, and it fails differently: the leaf board a row is scored against is built **before
+the turn resolves**, so a setup move, a hazard, a status, a heal or a shield has to be written onto
+it explicitly — otherwise the evaluator is handed a board that is IDENTICAL for that row and for the
+attack beside it, and answers the question it was asked about a position that does not exist. The
+128D evaluator has fitted weights for exactly those channels (hazards 48..55, status 24..35,
+boosts 36..47, the Protect rhythm 126/127), and it was being handed the pre-move board for all of
+them.
+
+Six switches own those writes. They are six and not one because each is a scope that was measured on
+its own (`ATTEMPTS.md` §J, §P6, §P7; `tests/tuning_check.js` §4d/§4e):
+
+| switch | ships | what it writes | evidence |
+|---|---|---|---|
+| `laplace.realOppSwitch` | ON | names the switch-in a pivot brings in, charges their entry hazards to it, and resets the body that left to 100 % | 60-battle mirror row, flat at this sample; kept ON as a correction (`ATTEMPTS.md` §J) |
+| `laplace.pricePivots` | ON | prices a pivot as a hit **plus** a switch, with Regenerator credit on the body leaving | same row family (+10.0, leaning the same way as `extendsetup`) |
+| `laplace.priceRecovery` | ON | credits the heal instead of reading the turn as wasted | same |
+| `laplace.priceMyMoveEffects` | **OFF** | our 29 `SETUP_MOVES`' stat stages and HP price (Belly Drum 50, Clangorous Soul 33, refused below cost), the hazard setters' layer up to its cap, the removers' clear (Rapid Spin / Mortal Spin / Tidy Up on our side, Defog both sides, Court Change swapped), and our boosted Def/SpD inside that turn's reply | **fidelity:** top-1 **34.6 % → 36.9 %**, median regret share on MOVE clicks **0.008 → 0.001**, 30 %+ give-ups 35.3 % → 33.6 %, McNemar 240/136, p < 0.001. **win gate: a NULL on both instruments** — personas 83.3 % → 80.0 %, mirror 48.3 % → 46.7 %, both intervals straddling zero — which is why it ships OFF (§P6, §P7, `ATTEMPTS.md` §B8) |
+| `laplace.priceMyMoveStatus` | **OFF** | our status move's condition onto THEIR leaf body, refused wherever the board says it cannot land: already statused, type-nullified, `STATUS_TYPE_IMMUNITY` (Electric cannot be paralysed, Fire cannot burn), a powder into Grass, or a REVEALED immunity ability | **fidelity:** the status-infliction family **31.4 % → 41.8 %** top-1 (median gap 60.9 → 55.5), McNemar 90/22, p < 0.001. **win gate UNRUN** (§P7, `ATTEMPTS.md` §C4) |
+| `laplace.priceMyMoveProtect` | **OFF** | our own shield: their reply deals nothing inside the cell and the Protect rhythm follows; a CONSECUTIVE Protect FAILS (veto 9's rule, exempted when a Taunt/Encore means the last one never went off) and the piercers (Feint, Phantom Force, Shadow Force, Hyperspace Fury/Hole) are not blocked | **fidelity:** the Protect family **35.9 % → 47.3 %** top-1, median gap 83.5 → 65.0, gap population 143 → 119. **win gate UNRUN** (§P7, §C4) |
+
+The three ON rows were priced by switching them OFF; the three OFF rows were written after §P6 sliced
+the move-half gap by move family and found the hole was the leaf rather than a weight — the two
+families the evaluator cannot see are the two it ranks worst (status infliction is 24.7 points BELOW
+its own uniform floor, Protect holds 20.4 % of the summed gap). Both of the new channels' win-rate
+gates are the next run, not a result. Nothing here is calibrated for ACCURACY on purpose: a 90 %
+Thunder Wave and a 60 % Hypnosis both write a landed condition, because a board cannot carry a
+fraction of a status, so a positive reading is a lower bound where the move is reliable and an upper
+bound where it is not.
+
+`evaluator.threatSpeedGate` (**OFF**, `src/evaluator_128d.js`) is the neighbouring question about the
+same leaf and it ships OFF for a measured reason: dims 76..111 are `faster * (0.4 + 0.6 * threat)`
+with `faster = mySpeed >= oppSpeed ? 1 : 0`, so all 36 cells are exactly 0 the moment our body is not
+strictly faster. Softening that cliff into a ramp is a **refit** (the coefficients were fitted on the
+gated column), the refit is a measured loss out of sample — hold-out AUC **0.7105 → 0.6971**, Δ
+**−0.0134 [−0.0262, −0.0012]** — and the gate without the refit is a decision-level null (top-1
+34.6 % → 35.0 %, McNemar 25/19, p ≥ 0.1). `ATTEMPTS.md` §B9, `tests/tuning_check.js` §11.
+
 ## The four gated tiers
 
 Four more tiers exist, one file each, and **every one of them ships `enabled: false`**. That is not
@@ -1006,6 +1053,13 @@ the side table the log declares, and skipping rather than guessing when it canno
 winner; and `tools/fit_weights.js` fits them by IRLS with an L2 ridge, reports a train AUC-ROC and
 a hold-out AUC-ROC taken over whole battles, prints a ready `evaluator.weights` snippet, and lists
 every dim the corpus barely observed (`lowSupport`) so an adoption has to decide about each by name.
+The extractor also takes `--set <path>=<value>` (repeatable), applied inside the harness's load
+window so the modules that read config while they load see it, and **read back** afterwards — so a
+refit that needs two arms (one per value of one flag) is produced from ONE corpus with that leaf as
+the only difference, instead of from a hand-edited copy of `config.js` that could not evidence its
+own diff. A 200-replay subset re-extracted that way is row-for-row and provenance-for-provenance
+identical to the single largest arm used below, which is what makes the §P8 refit reproducible from
+a checkout (`tests/weights_check.js` §5c pins the flag's contract).
 
 The last question asked of that pipeline was whether it pays to add interaction terms. A single
 dot product cannot say "Kingambit is only worth this once its allies have fainted and no

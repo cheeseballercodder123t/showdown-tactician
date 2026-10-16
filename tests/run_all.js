@@ -20,6 +20,7 @@ const ROOT = path.resolve(__dirname, '..');
 
 // Ordered cheapest-first so a trivial break fails fast. `test_engine.js` lives at the repo root.
 const SUITES = [
+  'tests/harness_inputs_check.js',
   'tests/util_smoke.js',
   'tests/injected_bridge.js',
   'tests/rule_checks.js',

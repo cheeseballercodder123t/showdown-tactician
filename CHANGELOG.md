@@ -11,6 +11,230 @@ reaches a verdict.
 
 ## Unreleased
 
+### Measured — the two leaf channels' gate reads `[identical]`, and the ARENA cannot carry the flag
+
+`pricemymovestatus` and `pricemymoveprotect` shipped OFF with a fidelity reading and no win-rate
+reading. That gate has now been run — 3 batches × 60 paired mirror battles, seed 1337, 3,956 s — and
+both arms reproduced the baseline in **every** battle: same winner AND same turn count, Δwin
+**+0.0 [+0.0, +0.0]**, Δscore **+0.0 [+0.0, +0.0]**, both stamped `[identical]`.
+
+A flat row is not a null, and the run's own footnote says so (`FLAT, NOT NEUTRAL — CHECK THE INPUT`).
+Here the input is checkable and the answer is not about the tiers: **the instrument cannot carry the
+flag.** `run_arena.js` hard-codes the ENGINE seat's team to `hazardStackBalance` — the one slot with
+no CLI option behind it — and that team's 24 moves contain **no Protect-family move and no
+status-inflicting move**. Its status-class moves are hazards, setup, recovery and Rapid Spin, which
+belong to `priceMyMoveEffects`, not to these two tiers. Both tiers write OUR OWN move's leaf
+transition, so with neither family on the board the switch has nothing to price and no decision can
+move; zero divergence across 60 battles is then the expected reading.
+
+So both flags stay `false` and the reason is structural: **the gate is unrun in effect, not read as a
+null.** Re-running the identical command reproduces the same silence, so no sample size on this
+instrument can adopt these tiers — unlike `priceMyMoveEffects`, whose gate was a real reading on a
+real matchup shape that merely failed to clear zero. `--agent all` does not rescue it either: the
+personas occupy the OPPOSING seat, so the engine still plays `hazardStackBalance`, while the
+persona-side `stallCore` — Protect on everything, with Toxic and Leech Seed — is the team that would
+fire these tiers, in the wrong seat. The next run needs an engine-seat team carrying a shield and a
+primary status move, or a `run_arena` option to choose the engine's team at all. `ATTEMPTS.md` §C4
+and §P7 carry the row; the fidelity reading below is untouched and remains the only reading these two
+tiers have.
+
+### Measured — the set-up/hazard leaf tier's win-rate gate, run at last: a NULL on both instruments
+
+The tier `laplace.priceMyMoveEffects` shipped OFF with a strong policy-fidelity reading and no
+win-rate reading at all — its `expect: helps` was a pre-registration, not a result, and §P6 said so.
+That gate has now been run, at 60 paired battles per instrument on seed 1337, and both instruments
+say the same thing:
+
+| instrument | baseline | gate ON | delta win | delta score | capped games |
+|---|---|---|---|---|---|
+| personas (5 seats) | 83.3 % (50-9-1) | 80.0 % (48-10-2) | **−3.3 [−11.7, +5.0]** | −2.5 [−10.0, +4.2] | 1/60 → 2/60 |
+| mirror of itself | 48.3 % (29-26-5) | 46.7 % (28-30-2) | **−1.7 [−16.7, +11.7]** | −4.2 [−18.3, +9.2] | 5/60 → 2/60 |
+
+Both point estimates are negative and both intervals straddle zero, so the tool's own verdict is
+`no measurable effect at this sample size` — not a defined loss. The flag therefore stays `false`, now
+on a measurement rather than on the absence of one. The difference between this row and the fidelity
+reading it was written from is worth stating plainly: **the tier's own corpus reading is decisive**
+(top-1 34.6 % → 36.9 %, median regret share on MOVE clicks 0.008 → 0.001, 30 %+ give-ups 35.3 % →
+33.6 %, McNemar 240 fixed / 136 broken, chi2 28.2, p < 0.001) **and it does not convert into wins at
+this sample.** That is the same agreement-vs-strength split the pivot tax showed from the other side
+(+12.3 points of agreement for −26.7 win points), now seen on a change that is a correction rather
+than a tax. `ATTEMPTS.md` §B8 carries the row and §G the shape; a re-proposal needs a stronger
+instrument — or 500 battles — not another 60-battle run.
+
+### Added — the other two leaf channels: our own status moves and our own Protect (both ship OFF)
+
+§P6 wrote our own setup moves and hazards onto the leaf and named what was still unwritten, in order
+of contribution to the summed move-half gap: Protect **20.4 %**, other status 15.5 %, recovery 14.4 %,
+setup 13.7 % (written), status infliction 10.0 %. Two of those were fixable the same way, and
+`laplace.priceMyMoveStatus` and `laplace.priceMyMoveProtect` (src/config.js, both `enabled: false`)
+are those two. They are separate switches rather than sub-knobs of `priceMyMoveEffects` because that
+row is a published measurement of one scope, and the ablation table's own no-op guard requires every
+row to be a single real flip.
+
+- **Status infliction** writes our status move's condition onto THEIR leaf body — the PRIMARY effect
+  of the move (`U.STATUS_MOVES`: Thunder Wave, Will-O-Wisp, Toxic, Spore, Glare, Stun Spore, Nuzzle,
+  Zap Cannon, Inferno, …) — and refuses wherever the board says it cannot land: the body is already
+  statused, the move cannot connect (the type chart or `U.immunityReason`), the status is impossible
+  for the TYPE (`U.STATUS_TYPE_IMMUNITY`: Electric bodies cannot be paralysed, Fire bodies cannot
+  burn), the move is a powder into a Grass body, or a REVEALED ability is on the immunity list. A
+  body that only MIGHT carry the immunity is not enough to suppress the row.
+- **Our own Protect** is priced as the shield it is: their reply deals nothing inside the cell, and
+  the leaf carries the Protect rhythm the live state would carry next turn. Two rules keep it from
+  being a free pass — a CONSECUTIVE Protect FAILS (veto 9's rule, exempted the same way when a Taunt
+  or an Encore means the last one never went off) and the Feint-style piercers are not blocked — and
+  a shield does NOT stop their SETUP.
+
+On the live path the rows move as claimed: Toxic against an Earthquake reply **−43.9 → −17.3**,
+Protect against the same reply **−43.9 → +6.2** (the block is worth ~+81 there, against a
+protect-rhythm charge of ~−31: dim 127 carries a weight of −26.4, so a shield that blocks nothing,
+against their setup turn, is a net −30.8).
+
+**The paired 200-battle reading, on §P6's instrument** (same corpus, band, battles, seeds; the OFF arm
+reproduces §P6's baseline to the decimal): top-1 agreement over all 12,073 decisions **34.6 % →
+35.4 %**, top-2 54.8 % → 55.6 %, move-vs-move 33.7 % → 34.9 %, contested 28.5 % → 29.3 %; on the
+score-gap table the human's click is within 5 % of our pick on **49.9 % vs 49.1 %** (5,811 vs 5,716)
+and 30 %+ give-ups fall **35.3 % → 34.2 %** (3,981 vs 4,114), with the median regret falling in every
+turn bucket. Paired McNemar on the move-only top-1 over 8,436 decisions: **90 fixed / 22 broken,
+chi2 40.08, p < 0.001.** The families are the claim: Protect **35.9 % → 47.3 %** (median gap 83.5 →
+65.0, gap population 143 → 119) and status infliction **31.4 % → 41.8 %** (60.9 → 55.5), while every
+family they do not write barely stirs — including the three §P6 models, which are OFF in both arms.
+
+What the pass does NOT claim: neither family crosses its own uniform floor yet (Protect −5.5 pp,
+status −14.3 pp, against §P6's setup, which went −17.1 → **+2.9**), status infliction's gap POPULATION
+rises (96 → 106: rows move INTO the slice as the region the human was clicking in is lifted), and
+**the win-rate gate came back `[identical]` — see the top of this file: the arena's engine seat
+plays a team with no shield and no status move, so the gate could not be run in effect**. That is an
+instrument gap rather than a null, and it is named instead of re-run. Both ship `false`;
+registered at `ATTEMPTS.md` §C4, with §P7 for the measurement and §B8 for the sibling tier's
+now-measured null. `tests/tuning_check.js` §4e pins the row-local contract: each refusal, the
+consecutive-Protect failure, the Taunt exemption, Feint, and the two tiers' independence.
+
+### Rejected — the threat matrix's speed gate: softened, refitted, measured, and left OFF
+
+`_threatMatrix` builds dims 76..111 as `clamp(faster * (0.4 + 0.6 * threat))` with
+`faster = mySpeed >= oppSpeed ? 1 : 0`, so all 36 cells are exactly 0 the moment we are not strictly
+faster — at a tie as well as a hundred points behind. That is a gate, not a bias, and the fitted
+coefficients were fitted on the gated column, which is why softening it is a **refit and not an
+edit**. `evaluator.threatSpeedGate` (src/config.js, `enabled: false`) replaces the cliff with a linear
+decay from 1 at parity to `floor` at a `span`-point deficit, anchored to `evaluator.speedEdgeSpan` — a
+strict generalisation of the shipped gate at `floor: 0`, bit-identical for every faster body.
+
+**The scope, measured before any fit:** re-extracting 40 replays (1,426 rows) with the gate off and on
+moves 1,394 rows, and the dims that move are **76..111 only** — all 36, nothing else — with a max
+|Δ| of 0.99 and a mean of 0.366 across the changed cells. (Measuring that turned up a real defect on
+the way: `_speedOf`'s memo key did not carry the SIDE, so a board whose two bodies share the key read
+the second body's speed from the first. The key now carries `mon.side`; no live battle was affected —
+live slots are side-qualified — but a mirror or a hand-built fixture was silently inverting the speed
+term.)
+
+**The refit is a loss out of sample.** The same corpus extracted twice (3,521 replays / 107,024 rows)
+and fitted twice with the artifact's own settings: the fitter's own AUCs are 0.7507 → 0.7496
+(train) and **0.7105 → 0.7023** (battle-level hold-out), and scoring the **exported** (clamped)
+vectors on the SHARED grouped hold-out (22,047 rows over 704 battles) with a 2,000-resample
+battle-level paired bootstrap gives **0.7105 → 0.6971, Δ −0.0134 [−0.0262, −0.0012]**, with **1.3 %**
+of resamples positive. Sign accuracy at 0.5 on those rows: 65.52 % → 64.69 %.
+
+**The gate WITHOUT the refit is a null on the decision instrument** — 200 paired battles, top-1
+**34.6 % → 35.0 %** (±0.9), top-2 54.8 % → 54.9 %, contested 28.5 % → 28.8 %, move-vs-move 33.7 % →
+34.1 %, revealed moveset 29.1 % → 29.4 %, vetoed 3.6 % → 3.6 %; move-half top-1 64.8 % → 64.9 %,
+McNemar **25 fixed / 19 broken, chi2 0.57, p ≥ 0.1**, and the move-half median gap moves the WRONG way
+(34.9 → 36.2; unmodelled slice 57.5 → 58.3). So the term does not close the fidelity gap it was
+proposed against either.
+
+Two instruments, one verdict: a wash at the decision level, and a loss on the model a refit must
+improve. It ships `false` and the refit is recorded rather than adopted. What it does buy is real but
+is not enough: the collinear split §P5 measured shrinks (`macro[4]`, the net hazard differential,
+**−3.33 → −2.95** against the shipped **−9.29**) — readable weights are the precondition for reading
+a coefficient, not a reason to accept a worse model. **And the same pass found the shipped artifact
+stale:** `lib/trained-weights.json` reports 111,820 samples over 3,712 battles while this checkout's
+corpus yields 107,024 over 3,521, with 106,956 rows differing from the shipped
+`corpus/training_data.json`; the fresh OFF fit scores **0.7105** with **2** clamped low-support dims
+against the artifact's 0.7011 with 8. Replacing the vector on that evidence is a separate decision
+with its own gate, deliberately not taken here. `ATTEMPTS.md` §B9; `tests/tuning_check.js` §11 pins
+the flag's contract, including the parity-is-bit-identical case.
+
+### Added — `--set` on the training extractor: two arms of one corpus, one config leaf apart
+
+A refit for a config leaf needs the corpus extracted twice, and the difference between the two
+datasets has to be the leaf and nothing else — a hand-edited copy of `src/config.js` cannot evidence
+that, because the copy IS the diff. `tools/extract_training_data.js` therefore takes
+`--set <path>=<value>` (repeatable), applies it inside the harness's load window so the modules that
+read config while they load see it, and **reads every patch back**, so an arm that silently failed to
+patch cannot be compared as if it had. An unknown path is an error rather than a new key; the patch
+carries the whole top-level section, because `configMerge` assigns at each level rather than
+deep-merging and a leaf-only patch would reset the rest of its section to the defaults; and only the
+scalars config.js actually stores are inferred from text. `tests/weights_check.js` §5c pins all of
+that plus the arm itself (the two extractions part company on dims 76..111 and on nothing else — the
+suite is now at 277 checks, 0 failed). The §P8 arms above are reproducible from it:
+
+```
+node tools/extract_training_data.js --input corpus/replays.json \
+  --set evaluator.threatSpeedGate.enabled=true --out gate_on.json
+```
+
+and a 200-replay subset re-extracted this way comes out row-for-row and provenance-for-provenance
+identical to the 94 MB arm the refit above was fitted on.
+
+### Added — the own-move leaf effects (`laplace.priceMyMoveEffects`, ships OFF), and the two readings behind it
+
+`_payoff` prices our own pivots and recovery moves, and it left every OTHER non-damaging move of ours
+without writing its board change to the leaf `sim`. The 128D evaluator has fitted weights for hazards
+(dims 48..55), status (24..35) and boosts (36..47), and on a Stealth Rock, a Swords Dance, a Defog or a
+Toxic row it was reading the PRE-move board — identical across every candidate move. The question was
+not answered wrongly; it was never asked. `_myMoveLeafEffects` (src/laplace_core.js) now stamps our own
+setup moves' stat stages and HP price (Belly Drum 50, Clangorous Soul 33, refused below cost), the
+hazard setters' layer up to its cap, and the removers' clear (Rapid Spin / Mortal Spin / Tidy Up on our
+side, Defog both sides, Court Change swapped) onto a SHALLOW COPY of the leaf field, and feeds our
+boosted Defence / Special Defence into that turn's reply through `_setupFollowUp`. The live board is
+never written through. `enabled: false` is bit-identical to the previous pricing.
+
+**The slice that justified it, on records that already existed.** Of the 1,550 gap decisions in the
+200-battle move half (a menu of >= 3 same-kind lines where the human's click is in our top-3 but not
+first), 707 are families whose board change the leaf never carried, and their median gap is **7.7x a
+pure attack's** (57.5 vs 7.5). The engine beats its own uniform floor on exactly two families — raw
+damage (+18.9 pp) and Knock Off's damage (+11.3 pp) — and lands 16-25 points BELOW it on every family
+the leaf cannot see. Protect (medGap 83.5), hazard clear (67.1) and status infliction (60.9) are the
+extremes; status infliction is the worst family in the whole slice at **-24.7 pp against its own floor**.
+
+**What the tier measured**, paired on the same corpus / battles / seeds (the OFF arm reproduces the
+baseline to the decimal): all 12,073 decisions top-1 **34.6 % -> 36.9 %**, top-2 54.8 % -> 57.0 %,
+move-vs-move 33.7 % -> 35.2 %, contested 28.5 % -> 29.5 %; on the score-gap table the human's click is
+within 5 % of our pick on **51.4 %** vs 49.1 % (5,980 vs 5,716) and 30 %+ give-ups fall 35.3 % -> 33.6 %;
+median regret share on MOVE clicks 0.008 -> **0.001** with the switch half unchanged (0.267 -> 0.272).
+Paired McNemar on the move-only top-1 over 8,436 decisions: 240 fixed, 136 broken, chi2 28.2, p < 0.001.
+Per family, top-1 rises 20.1 pp (setup 46.6 -> 66.7 %), 13.3 pp (hazard set 50.6 -> 63.9 %), 20.1 pp
+(hazard clear 41.2 -> 61.3 %) and their excess over the uniform floor flips sign. The families it does
+NOT model barely move: **status infliction is identical on every statistic** (31.4 % top-1, median gap
+60.9, gap population 96, excess -24.7 pp on both arms), and **Protect is identical on median gap (83.5)
+and population (143)** while its top-1 moves one decision in 370 (35.9 -> 35.7 %, excess -16.9 -> -17.1)
+— an untouched row losing first place to a setup row that now outranks it. The modelled families move
+13-20 pp; an untouched one moves 0.2 pp. That is the signature of a leaf-transition change rather than
+an evaluator change.
+
+The move-half median gap falls **35.2 -> 31.0 (-12 %)**, not toward zero, and the arithmetic says why:
+the tier covers 317 of 1,550 gap decisions (20.5 %). Protect (20.4 % of the summed gap), other status
+(15.5 %), recovery (14.4 %) and status infliction (10.0 %) are still unwritten, so a fix over a fifth
+of the gap cannot move a median of the whole. It SHIPS OFF on a win-rate gate pending an arena reading;
+`expect: 'helps'` on its `run_ablation` row is still a prior.
+
+**One trap this run found, and one retraction.** (1) The rated ROWS are not the leaf: with
+`laplace.nash` live, `laplace_core.js:3059` publishes `live[k].score = nash.rowValues[k]`, so the tier
+perturbs rows it never touched through the equilibrium — 91.0 % of unmodelled move rows and 87.4 % of
+switch rows came back exactly unchanged and the rest moved by a median of 0.00 (p95 0.35 / 3.86). The
+row-local contract is pinned on `_payoff` in `tests/tuning_check.js` §4d (attack, status, Protect,
+pivot and switch each bit-identical with the tier on). (2) The caveat this tier first shipped with —
+"setting hazards has net negative weight under the current fit" — is **FALSE and is retracted**. The
+shipped `evaluator.weights` pair base dims with `macro` dims that are EXACT linear combinations of them
+(`v[116]` of 48..55 through `_hazardDifferential`; `v[118] = (1/3)·(v36+…+v41)` through `_boostSum/18`),
+so ridge (`lambda` 0.5 on standardized columns) split one coefficient into two: `macro[4] = -9.287`
+against base hazard dims of +3.36..+6.57, `macro[6] = +18.372` against base boost dims of -4.84..-5.62
+(±484.8 and +959.0 at `fitScale` 52.2). Neither half can be read alone, so the NET weight of one fact was
+measured instead: every SIGN is right (their hazards help us, ours hurt us, our boosts help us and
+theirs hurt us — Stealth Rock on their side +13.6, our rocks -22.0, our +1 Atk +11.2 raw) and the
+MAGNITUDES are not (single-layer hazards priced +13.6 / +7.0 / +4.5 / +62.4, a 14x spread between Toxic
+Spikes and Sticky Web decided by how much of each base weight the residual cancels). `ATTEMPTS.md` §P5
+and §P6.
+
 ### Changed — the human-match report leads with the score gap, and its consensus floors were wrong
 
 A metric pass (2026-10-16) over `tools/benchmark_human_match.js`. **No engine file changed** — this is

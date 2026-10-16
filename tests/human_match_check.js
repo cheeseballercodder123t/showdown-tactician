@@ -247,6 +247,98 @@ check('each kind carries its own uniform-pick floor',
 check('a kind with no decisions has no floor rather than a zero',
   BM.summarize([], {}).chanceFloor.move === null && BM.summarize([], {}).chanceFloor.switch === null, '');
 
+/* PROBLEM B, the body choice, which the whole-list ranking structurally cannot see: on a turn where
+ * the engine led with a MOVE the human's bench body cannot be rank 0 however well the engine ranked
+ * the BODIES. The sub-ranking is therefore measured on its own, with its own uniform floor, and the
+ * two branches it separates are the reason it exists — top-3 high with top-1 low means the bodies
+ * are ranked differently (re-ranking work); both at the floor means no body preference at all
+ * (scoring work). A record carrying no `switchRank` is EXCLUDED rather than counted as a miss. */
+const bodyRecs = [
+  { status: 'scorable', turn: 6, side: 'p1', bucket: 'mid', top1: false, top2: false, top3: true, vetoed: false, blind: false, offered: 6, contested: true, moveContested: false, action: { kind: 'switch' }, top1Kind: 'move', key: 'switch:a', bestMoveKey: 'move:x', switchRank: 0, switchTop1: true, switchTop3: true, switchFloor: 1 / 5 },
+  { status: 'scorable', turn: 7, side: 'p1', bucket: 'mid', top1: false, top2: false, top3: true, vetoed: false, blind: false, offered: 6, contested: true, moveContested: false, action: { kind: 'switch' }, top1Kind: 'switch', key: 'switch:c', bestMoveKey: 'move:x', switchRank: 2, switchTop1: false, switchTop3: true, switchFloor: 1 / 5 },
+  { status: 'scorable', turn: 8, side: 'p2', bucket: 'mid', top1: false, top2: false, top3: false, vetoed: false, blind: false, offered: 6, contested: true, moveContested: false, action: { kind: 'switch' }, top1Kind: 'switch', key: 'switch:e', bestMoveKey: 'move:x', switchRank: 4, switchTop1: false, switchTop3: false, switchFloor: 1 / 5 }
+];
+const bsum = BM.summarize(bodyRecs, {});
+eq('the body split counts only the switch decisions that carry a sub-ranking', bsum.switchBody.n, 3);
+eq('...its own top-1', bsum.switchBody.top1, 1);
+eq('...and its own top-3, which is what separates re-ranking from scoring', bsum.switchBody.top3, 2);
+eq('...with the rank histogram, best rank first', bsum.switchBody.ranks, [1, 0, 1, 1]);
+check('...and its own uniform body floor, averaged over the switch decisions',
+  Math.abs(bsum.switchBody.floor - 1 / 5) < 1e-12, String(bsum.switchBody.floor));
+eq('top-3 can never fall below top-1 on the body split', bsum.switchBody.top3 >= bsum.switchBody.top1, true);
+eq('a switch record with no sub-ranking is excluded, not counted as a miss',
+  BM.summarize([recs[2]], {}).switchBody.n, 0);
+check('an empty run has no body floor rather than a zero', BM.summarize([], {}).switchBody.floor === null, '');
+
+/* THE SAME SPLIT FOR THE MOVE HALF, which the switch work did not cover: `rank` is over the WHOLE
+ * live list, so a move click can sit at rank 3+ overall while being the engine's own first MOVE. A
+ * refused line (rank < 0) is excluded rather than filed as "ranked 1st", and `revealed` drops the
+ * clicks whose move the log had not yet shown — the only subset on which a move ranking is a
+ * statement about the engine rather than about the log's silence. */
+const mvRecs = [
+  { status: 'scorable', turn: 6, side: 'p1', bucket: 'mid', vetoed: false, blind: false, offered: 5, action: { kind: 'move' }, key: 'move:a', moveRank: 0, moveTop1: true, moveTop3: true, moveFloor: 1 / 4 },
+  { status: 'scorable', turn: 7, side: 'p1', bucket: 'mid', vetoed: false, blind: false, offered: 5, action: { kind: 'move' }, key: 'move:b', moveRank: 2, moveTop1: false, moveTop3: true, moveFloor: 1 / 4 },
+  { status: 'scorable', turn: 8, side: 'p2', bucket: 'mid', vetoed: false, blind: true, offered: 5, action: { kind: 'move' }, key: 'move:c', moveRank: 4, moveTop1: false, moveTop3: false, moveFloor: 1 / 4 },
+  { status: 'scorable', turn: 9, side: 'p2', bucket: 'mid', vetoed: true, blind: false, offered: 5, action: { kind: 'move' }, key: 'move:d', moveRank: -1, moveTop1: false, moveTop3: false, moveFloor: 1 / 4 },
+  bodyRecs[0]
+];
+const msum = BM.summarize(mvRecs, {});
+eq('the move split counts only the move decisions that carry a sub-ranking', msum.moveBody.n, 3);
+eq('...its own top-1', msum.moveBody.top1, 1);
+eq('...and its own top-3, which is what separates re-ranking from scoring here too', msum.moveBody.top3, 2);
+eq('...with the rank histogram, best rank first', msum.moveBody.ranks, [1, 0, 1, 1]);
+check('...and its own uniform move floor, averaged over the move decisions',
+  Math.abs(msum.moveBody.floor - 1 / 4) < 1e-12, String(msum.moveBody.floor));
+eq('a REFUSED line (rank < 0) is excluded, not counted as the engine\'s first move', msum.moveBody.n, 3);
+eq('the switch half is not counted in the move split', msum.moveBody.n, 3);
+eq('...while the switch half is still measured beside it', msum.bodyRank.all.switch.n, 1);
+eq('the revealed-only split drops the blind click from the move half', msum.bodyRank.revealed.move.n, 2);
+check('...and its top-3 stays a subset of the unfiltered one',
+  msum.bodyRank.revealed.move.top3 <= msum.moveBody.top3, '');
+
+/* THE SCORE GAP on the top-3-but-not-first cases, which is what decides the FIX rather than the
+ * count: a gap near zero means the engine's top bodies are ties it broke arbitrarily (a tie-break
+ * problem), a large gap means it holds a clear opposite preference (a scoring problem). The two
+ * must not be readable as each other, so the bands are pinned separately. */
+/* `rank` decides the booleans, so a fixture cannot claim to be a non-first case and carry rank 0. */
+const mkSwitchRec = function (key, rank, top3, scores) {
+  return {
+    status: 'scorable', turn: 9, side: 'p1', bucket: 'mid', top1: false, top2: false, top3: top3,
+    vetoed: false, blind: false, offered: scores.length, contested: true, action: { kind: 'switch' },
+    top1Kind: 'switch', key: key, bestMoveKey: null, switchOffered: scores.length,
+    switchRank: rank, switchTop1: rank === 0, switchTop3: top3,
+    switchFloor: 1 / scores.length, switchScores: scores
+  };
+};
+const bodyGapRecs = [
+  /* ranked 2nd: a 1.6-unit gap — a wash the ranking broke arbitrarily */
+  mkSwitchRec('switch:a', 1, true, [{ key: 'switch:b', score: 100.0 }, { key: 'switch:a', score: 98.4 }]),
+  /* ranked 3rd: a 70-unit gap — a real opposite preference */
+  mkSwitchRec('switch:c', 2, true, [{ key: 'switch:e', score: 100.0 }, { key: 'switch:f', score: 70.0 }, { key: 'switch:c', score: 30.0 }]),
+  /* not even in the top three: the contrast case */
+  mkSwitchRec('switch:z', 4, false, [{ key: 'switch:y', score: 100.0 }, { key: 'switch:z', score: -50.0 }])
+];
+const bodyGapSum = BM.summarize(bodyGapRecs, {});
+eq('the gap is measured on the top-3-but-not-first cases', bodyGapSum.switchGap.inTop3.measured, 2);
+eq('...separating a wash from a real preference', [bodyGapSum.switchGap.inTop3.small, bodyGapSum.switchGap.inTop3.large], [1, 1]);
+eq('...with the 10-20 band its own count', [bodyGapSum.switchGap.inTop3.mid, bodyGapSum.switchGap.inTop3.ties], [0, 0]);
+eq('...and the contrast case measured apart, not folded in', bodyGapSum.switchGap.belowTop3.measured, 1);
+eq('the three slices partition the body cases', bodyGapSum.switchGap.ranked.measured, bodyGapSum.switchGap.inTop3.measured + bodyGapSum.switchGap.belowTop3.measured);
+check('a record with no per-body scores is SKIPPED, not counted as a zero gap',
+  BM.summarize([Object.assign({}, bodyGapRecs[0], { switchScores: [] })], {}).switchGap.inTop3.measured === 0, '');
+check('a tie reads as a tie rather than as a small gap', (function () {
+  const tie = mkSwitchRec('switch:a', 1, true, [{ key: 'switch:b', score: 50 }, { key: 'switch:a', score: 49.8 }]);
+  const t = BM.summarize([tie], {}).switchGap.inTop3;
+  return t.ties === 1 && t.small === 0 && t.large === 0;
+})(), '');
+check('a first-choice body is not in the gap population at all', (function () {
+  const first = mkSwitchRec('switch:a', 0, true, [{ key: 'switch:a', score: 90 }, { key: 'switch:b', score: 10 }]);
+  return BM.summarize([first], {}).switchGap.ranked.measured === 0;
+})(), '');
+check('an empty run has no gap rather than a zero',
+  BM.summarize([], {}).switchGap.inTop3.measured === 0 && BM.summarize([], {}).switchGap.inTop3.median === null, '');
+check('the render prints the gap beside the body choice', /score gap between/.test(BM.render(bodyGapSum, {})), '');
+
 /* ------------------------------------------------- 7. the engine, for real */
 
 section('7. scoreDecision repairs the menu, and puts the board back');
@@ -311,6 +403,12 @@ check('the click was in the menu the engine actually evaluated', rec1.rank !== -
   'rank=' + rec1.rank + ' vetoed=' + rec1.vetoed);
 check('a ranked outcome was produced', typeof rec1.top1 === 'boolean' && typeof rec1.top2 === 'boolean',
   JSON.stringify({ top1: rec1.top1, top2: rec1.top2 }));
+check('the top-three keys are recorded, so "ranked third" is distinguishable from "never held"',
+  typeof rec1.top3 === 'boolean' && Array.isArray(rec1.topKeys3) && rec1.topKeys3.length <= 3,
+  JSON.stringify({ top3: rec1.top3, topKeys3: rec1.topKeys3 }));
+check('its switch sub-ranking names at most three BODIES and never more than it was offered',
+  Array.isArray(rec1.switchKeys) && rec1.switchKeys.every(function (k) { return k.indexOf('switch:') === 0; }) &&
+  rec1.switchKeys.length === Math.min(3, rec1.switchOffered), rec1.switchOffered);
 check('the menu was restored on the way out (no leak into later turns)',
   st1.legalActions.moves === savedMoves, JSON.stringify(st1.legalActions.moves));
 check('...and the restored menu is the one that was there before',
@@ -340,6 +438,44 @@ const firstRun = engine.evaluateTurn(stA).map(BM.actionKeyOf).join(',');
 const secondRun = engine.evaluateTurn(stA).map(BM.actionKeyOf).join(',');
 eq('evaluateTurn is repeatable on an unchanged board', firstRun, secondRun);
 check('...and it produced lines', firstRun.length > 0, firstRun);
+
+/* THE CLOCK THE HARNESS NEVER BUILT. `_oppSwitchPrior` reads `state.clock` and returns an inert
+ * default without it, so EVERY clock flag — the deliberation priors and `clock.ratingBands` alike —
+ * was unpriceable in this tool however it was set. The failure is silent and looks like a result:
+ * two arms come back byte-identical and read as "the flag does nothing". The rating is a fact the
+ * replay carries on the opponent's own `|player|` line, so it is handed over; the PACE is not, and
+ * the label stays the identity because a recorded opponent's deliberation cannot be measured from
+ * a log. */
+check('buildEngine attaches the opponent clock the live pipeline owns',
+  !!engine.clock && typeof engine.clock.setRating === 'function' && typeof engine.clock.snapshot === 'function', '');
+check('...and a board with no synced snapshot is inert on purpose (the state this tool shipped in)',
+  JSON.stringify(engine._oppSwitchPrior(st1)) ===
+    JSON.stringify({ label: 'unknown', factor: 1, keepSwitchReplies: true }), '');
+const clockState = stateAt('p1', 2);
+clockState.opponentRating = 1300;
+const clockSnap = BM.syncClock(engine, clockState);
+check('syncClock publishes the rating the log carried onto the board the engine reads',
+  !!clockSnap && clockSnap.rating === 1300 && clockState.clock === clockSnap,
+  JSON.stringify(clockSnap && { rating: clockSnap.rating, label: clockSnap.label }));
+eq('...and with no measured pace the label stays the identity', clockSnap.label, 'unknown');
+const BAND_SHIPPED = JSON.parse(JSON.stringify(ST.configGet('clock.ratingBands', null)));
+ST.configMerge({
+  clock: {
+    ratingBands: { enabled: true, low: 1350, high: 1650, lowFactor: 0.05, midFactor: 1.0, highFactor: 1.6 }
+  }
+});
+BM.syncClock(engine, clockState);
+const lowBandPrior = engine._oppSwitchPrior(clockState);
+eq('the low band takes their switch replies out of the matrix', lowBandPrior.keepSwitchReplies, false);
+clockState.opponentRating = 1800;
+BM.syncClock(engine, clockState);
+const highBandPrior = engine._oppSwitchPrior(clockState);
+eq('...while the high band leaves them in', highBandPrior.keepSwitchReplies, true);
+eq('...with a factor the matrix never reads', highBandPrior.factor, 1.6);
+check('...so on a high-rated opponent the band can only be decoration: only SUB-threshold bites',
+  highBandPrior.keepSwitchReplies === true && lowBandPrior.keepSwitchReplies === false, '');
+ST.configMerge({ clock: { ratingBands: BAND_SHIPPED } });
+eq('the shipped band is put back, still off', ST.configGet('clock.ratingBands.enabled', null), false);
 
 /* ------------------------------------------------------------- 8. end to end */
 
@@ -388,6 +524,76 @@ check('each side only ever acted with its OWN bodies',
 check('...and a switch decision from EACH side was scored (a flipped side forfeits every one)',
   run1.records.filter(function (r) { return r.status === 'scorable' && r.side === 'p1' && r.action.kind === 'switch'; }).length > 0 &&
   run1.records.filter(function (r) { return r.status === 'scorable' && r.side === 'p2' && r.action.kind === 'switch'; }).length > 0, '');
+/* THE BODY-RANK CONTRACT on real decisions (problem B). Every scored switch has to carry its rank
+ * among the engine's OWN switch rows and its own uniform floor, the two booleans have to agree with
+ * that rank, and the summary has to count the same population — a sub-ranking that silently dropped
+ * records would make the fair half of the measurement shrink without saying so. */
+const scoredSwitches = run1.records.filter(function (r) {
+  return r.status === 'scorable' && r.action && r.action.kind === 'switch';
+});
+check('every scored switch carries its body rank and its own uniform floor (1/menu)',
+  scoredSwitches.length > 0 && scoredSwitches.every(function (r) {
+    return typeof r.switchRank === 'number' && r.switchRank >= 0 && r.switchOffered > 0 &&
+      Math.abs(r.switchFloor - 1 / r.switchOffered) < 1e-12 &&
+      r.switchTop1 === (r.switchRank === 0) && r.switchTop3 === (r.switchRank <= 2);
+  }), JSON.stringify(scoredSwitches.map(function (r) { return [r.switchRank, r.switchOffered]; }).slice(0, 5)));
+eq('...and the summary counts exactly that population', run1.summary.switchBody.n, scoredSwitches.length);
+eq('...which is the same set the by-kind switch row measures', run1.summary.switchBody.n, run1.summary.byKind.switch.n);
+eq('...with the rank histogram partitioning it', run1.summary.switchBody.ranks.reduce(function (a, b) { return a + b; }, 0), scoredSwitches.length);
+check('...and the histogram\'s best rank agrees with top-1',
+  run1.summary.switchBody.ranks[0] === run1.summary.switchBody.top1, '');
+check('the rendered report prints the body-choice line', /body choice/.test(BM.render(run1.summary, runOpts)), '');
+/* THE MOVE-SIDE CONTRACT ON REAL DECISIONS (problem B'). The switch half has had this since the
+ * misweight work; the move half is what says whether the re-ranking gap is UNIVERSAL or whether the
+ * starved attack menu was doing the work. Same contract, and the same refusal to let a silent drop
+ * shrink the population the number is quoted over. */
+const moveClicks = run1.records.filter(function (r) { return r.status === 'scorable' && r.action && r.action.kind === 'move'; });
+const refusedMoves = moveClicks.filter(function (r) { return typeof r.moveRank === 'number' && r.moveRank < 0; }).length;
+check('every scored move carries its rank among the engine\'s own MOVES and its own floor',
+  moveClicks.length > 0 && moveClicks.every(function (r) {
+    if (typeof r.moveRank !== 'number') return false;
+    /* A REFUSED click (rank < 0, moveOffered 0) is the veto layer's doing: the line the human took is
+     * not in the ranked list at all, so there is no floor to divide by and no rank to report. Measured
+     * here rather than assumed — the first version of this check required moveOffered > 0 for every
+     * scored move and a real record disproved it. */
+    if (r.moveRank < 0) {
+      /* TWO SHAPES, both real: the human's move was the ONLY move row and the veto layer removed it
+       * (moveOffered 0, no floor at all), or other moves were still offered and only the human's was
+       * refused (moveOffered > 0, and the floor is the OTHER moves' floor). Both report no rank. */
+      if (r.moveTop1 !== false || r.moveTop3 !== false) return false;
+      if (r.moveOffered === 0) return r.moveFloor === null;
+      return Math.abs(r.moveFloor - 1 / r.moveOffered) < 1e-12;
+    }
+    return r.moveOffered > 0 && Math.abs(r.moveFloor - 1 / r.moveOffered) < 1e-12 &&
+      r.moveTop1 === (r.moveRank === 0) && r.moveTop3 === (r.moveRank <= 2);
+  }), JSON.stringify(moveClicks.map(function (r) { return [r.moveRank, r.moveOffered]; }).slice(0, 5)));
+/* A move click with no move-only rank has no MIXED rank either, because both come from the same
+ * ranked list: the human's line was not in it at all. The cause is visible beside it — a veto code on
+ * most of them, an engine-side omission on the rest — and the point of the check is that the move
+ * split never files such a click as a rank-1 hit or as a miss. */
+eq('...and a move is ranked among MOVES exactly when it was ranked in the mixed list',
+  refusedMoves, moveClicks.filter(function (r) { return r.rank < 0; }).length);
+eq('...and the move split covers every scored move click except the refused ones',
+  run1.summary.moveBody.n, moveClicks.length - refusedMoves);
+check('...and the revealed-only move split cannot exceed the whole one',
+  run1.summary.bodyRank.revealed.move.n <= run1.summary.moveBody.n, '');
+check('...and top-3 is never below top-1 on the move split',
+  run1.summary.moveBody.top3 >= run1.summary.moveBody.top1, '');
+check('the rendered report prints the move-choice line too', /move choice/.test(BM.render(run1.summary, runOpts)), '');
+/* THE BATTLE STAMP, without which no confidence interval from a record file is honest: `replay` is the
+ * side pass index (it takes two values in a 200-battle run), and the decisions inside one battle share
+ * a board, a team and a plan, so they are not independent draws. The resampling unit has to be the
+ * battle, and until this field existed nothing in a record grouped by battle. */
+check('every scored decision is stamped with the battle it came from',
+  run1.records.length > 0 && run1.records.every(function (r) { return typeof r.battle === 'number' && r.battle >= 0; }), '');
+check('...and the stamp never goes backwards, because the file is written battle by battle',
+  run1.records.every(function (r, i, all) { return i === 0 || r.battle >= all[i - 1].battle; }), '');
+eq('...and it takes exactly one value per battle scored',
+  (function () {
+    const seen = {};
+    run1.records.forEach(function (r) { seen[r.battle] = 1; });
+    return Object.keys(seen).length;
+  })(), run1.summary.battles);
 check('...and an attack decision from each side too',
   run1.records.filter(function (r) { return r.status === 'scorable' && r.side === 'p1' && r.action.kind === 'move'; }).length > 0 &&
   run1.records.filter(function (r) { return r.status === 'scorable' && r.side === 'p2' && r.action.kind === 'move'; }).length > 0, '');

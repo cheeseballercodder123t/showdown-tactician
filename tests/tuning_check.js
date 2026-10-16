@@ -97,6 +97,9 @@ function mkEngine(opts) {
     realOppSwitch: (opts && opts.realOppSwitch) || null,
     pricePivots: (opts && opts.pricePivots) || null,
     priceRecovery: (opts && opts.priceRecovery) || null,
+    priceMyMoveEffects: (opts && opts.priceMyMoveEffects) || null,
+    priceMyMoveStatus: (opts && opts.priceMyMoveStatus) || null,
+    priceMyMoveProtect: (opts && opts.priceMyMoveProtect) || null,
     beam2Ply: (opts && opts.beam2Ply) || null,
     endgameSolver: (opts && opts.endgameSolver) || null,
     qre: (opts && opts.qre) || null,
@@ -727,6 +730,246 @@ const ESPEED_ACT = { kind: 'move', name: 'Extreme Speed', moveId: 'extremespeed'
   /* A DAMAGING line is untouched by the tier. */
   same('on: an attack is priced identically with the tier on and off',
     REC._payoff(ICE, EQ, st, st.field, null), NO_REC._payoff(ICE, EQ, st, st.field, null), 1e-6);
+}
+
+/* --------------------------------------------------------------- 4d. own-move leaf effects */
+{
+  eq('the shipped config ships priceMyMoveEffects OFF', ST.configGet('laplace.priceMyMoveEffects.enabled', null), false);
+  const M_OFF = mkEngine({ realOppSwitch: { enabled: false }, pricePivots: { enabled: false }, priceRecovery: { enabled: false }, priceMyMoveEffects: { enabled: false }, quiescence: { enabled: true, respectTurn2Speed: false } });
+  const M_ON = mkEngine({ realOppSwitch: { enabled: false }, pricePivots: { enabled: false }, priceRecovery: { enabled: false }, priceMyMoveEffects: { enabled: true }, quiescence: { enabled: true, respectTurn2Speed: false } });
+
+  const st = boardBothBenches();
+  const me = st.active.my, them = st.active.opp;
+  const SD = { kind: 'move', name: 'Swords Dance', moveId: 'swordsdance' };
+  const ID_MOVE = { kind: 'move', name: 'Iron Defense', moveId: 'irondefense' };
+  const ROCKS = { kind: 'move', name: 'Stealth Rock', moveId: 'stealthrock' };
+  const DEFOG = { kind: 'move', name: 'Defog', moveId: 'defog' };
+
+  same('off: our Swords Dance leaves the leaf boosts unchanged (the shipped default)',
+    M_OFF._payoff(SD, EQ, st, st.field, null),
+    M_OFF.evaluator.evaluate(M_OFF._leafState(st, me, them,
+      U.clamp(100 - M_OFF._damageOf(them, me, 'Earthquake', st.field, false).avgPercent, 0, 100), 100)), 1e-6);
+
+  const sdReply = M_ON._damageOf(them, me, 'Earthquake', st.field, false, { defender: { boosts: { atk: 2 } } });
+  const sdHp = U.clamp(100 - (sdReply ? sdReply.avgPercent : 0), 0, 100);
+  const sdExpected = M_ON.evaluator.evaluate(M_ON._leafState(st, me, them, sdHp, 100, { my: { atk: 2 } }));
+  same('on: our Swords Dance stamps +2 Atk onto our leaf body',
+    M_ON._payoff(SD, EQ, st, st.field, null), sdExpected, 1e-6);
+  check('on: our Swords Dance scores higher than the unboosted leaf (net positive weight in 128D)',
+    M_ON._payoff(SD, EQ, st, st.field, null) > M_OFF._payoff(SD, EQ, st, st.field, null),
+    M_OFF._payoff(SD, EQ, st, st.field, null) + ' -> ' + M_ON._payoff(SD, EQ, st, st.field, null));
+
+  const idReply = M_ON._damageOf(them, me, 'Earthquake', st.field, false, { defender: { boosts: { def: 2 } } });
+  const plainReply = M_ON._damageOf(them, me, 'Earthquake', st.field, false);
+  check('on: Iron Defense cuts their physical reply on the same turn',
+    idReply && plainReply && idReply.avgPercent < plainReply.avgPercent,
+    (plainReply && plainReply.avgPercent) + ' -> ' + (idReply && idReply.avgPercent));
+  const idHp = U.clamp(100 - (idReply ? idReply.avgPercent : 0), 0, 100);
+  same('on: Iron Defense prices both the smaller hit and the +2 Def leaf',
+    M_ON._payoff(ID_MOVE, EQ, st, st.field, null),
+    M_ON.evaluator.evaluate(M_ON._leafState(st, me, them, idHp, 100, { my: { def: 2 } })), 1e-6);
+  eq('...and never mutates the live board\'s boosts', me.boosts.atk || 0, 0);
+
+  const rocksExpectedField = Object.assign({}, st.field, {
+    hazards: { p1: {}, p2: { rocks: true, spikes: 0, toxicspikes: 0, stickyweb: false } }
+  });
+  const rocksHp = U.clamp(100 - (plainReply ? plainReply.avgPercent : 0), 0, 100);
+  same('on: Stealth Rock writes rocks onto a copy of the leaf field',
+    M_ON._payoff(ROCKS, EQ, st, st.field, null),
+    M_ON.evaluator.evaluate(M_ON._leafState(st, me, them, rocksHp, 100, null, { field: rocksExpectedField })), 1e-6);
+  eq('...and leaves the live field untouched', !!st.field.hazards.p2.rocks, false);
+
+  const hazSt = boardBothBenches();
+  hazSt.field.hazards.p1 = { rocks: true, spikes: 2, toxicspikes: 0, stickyweb: false };
+  hazSt.field.hazards.p2 = { rocks: true, spikes: 0, toxicspikes: 0, stickyweb: false };
+  const spinEffect = M_ON._myMoveLeafEffects(SPIN, 100, hazSt.field, hazSt);
+  const defogEffect = M_ON._myMoveLeafEffects(DEFOG, 100, hazSt.field, hazSt);
+  check('on: Rapid Spin clears our side only on the leaf field',
+    !!spinEffect && spinEffect.field.hazards.p1.rocks === false && spinEffect.field.hazards.p1.spikes === 0 &&
+    spinEffect.field.hazards.p2.rocks === true, JSON.stringify(spinEffect && spinEffect.field.hazards));
+  check('on: Defog clears both sides on the leaf field',
+    !!defogEffect && defogEffect.field.hazards.p1.rocks === false && defogEffect.field.hazards.p2.rocks === false,
+    JSON.stringify(defogEffect && defogEffect.field.hazards));
+  eq('...without mutating the live hazards', hazSt.field.hazards.p1.spikes, 2);
+
+  /* ---- THE ROW-LOCAL CONTRACT. `_myMoveLeafEffects` returns null for every move that is not one of
+   * our own setup moves, hazard setters or hazard removers, so every OTHER kind of row — an attack,
+   * a status move, a Protect, a pivot whose own tier is off, a switch — must price BIT-IDENTICALLY
+   * with the tier on and off. That is the difference between a leaf-transition fix and an evaluator
+   * change: the tier may only move the rows whose board change it actually writes.
+   *
+   * Checked on `_payoff` and NOT on the ranked rows, deliberately. On the shipped build
+   * `laplace.nash.enabled` is live, and `laplace_core.js:3059` publishes
+   * `live[k].score = nash.rowValues[k]` — each row's value against the SOLVED mixture — so changing
+   * one row's payoff perturbs every row a little through the equilibrium by construction. That
+   * coupling is real and is sized in the 200-battle ON/OFF run; the LEAF is what must stay local,
+   * and this is the leaf. */
+  const TOL = 1e-12;
+  const TOXIC = { kind: 'move', name: 'Toxic', moveId: 'toxic' };
+  const SHIELD = { kind: 'move', name: 'Protect', moveId: 'protect' };
+  const UTURN = { kind: 'move', name: 'U-turn', moveId: 'uturn' };
+  same('on: an unmodelled ATTACK prices bit-identically with the tier on and off',
+    M_ON._payoff(ICE, EQ, st, st.field, null), M_OFF._payoff(ICE, EQ, st, st.field, null), TOL);
+  same('on: an unmodelled STATUS move prices bit-identically too',
+    M_ON._payoff(TOXIC, EQ, st, st.field, null), M_OFF._payoff(TOXIC, EQ, st, st.field, null), TOL);
+  same('on: Protect prices bit-identically too (the tier models no shield)',
+    M_ON._payoff(SHIELD, EQ, st, st.field, null), M_OFF._payoff(SHIELD, EQ, st, st.field, null), TOL);
+  same('on: a pivot prices bit-identically with its own tier off',
+    M_ON._payoff(UTURN, EQ, st, st.field, null), M_OFF._payoff(UTURN, EQ, st, st.field, null), TOL);
+  same('on: a SWITCH row prices bit-identically (the tier is move-only)',
+    M_ON._payoff(SWITCH, EQ, st, st.field, null), M_OFF._payoff(SWITCH, EQ, st, st.field, null), TOL);
+
+  /* The positive half of the same statement, once per modelled family. */
+  check('on: each modelled family — setup, hazard set, hazard clear — does move the cell',
+    Math.abs(M_ON._payoff(SD, EQ, st, st.field, null) - M_OFF._payoff(SD, EQ, st, st.field, null)) > 1e-9 &&
+    Math.abs(M_ON._payoff(ROCKS, EQ, st, st.field, null) - M_OFF._payoff(ROCKS, EQ, st, st.field, null)) > 1e-9 &&
+    Math.abs(M_ON._payoff(SPIN, EQ, hazSt, hazSt.field, null) - M_OFF._payoff(SPIN, EQ, hazSt, hazSt.field, null)) > 1e-9,
+    'a modelled family left the cell where it was');
+
+  /* And the tier is INERT for a move it models whose board change is already a fact: laying Spikes
+   * when our own read of their side already has the maximum is not a ledger entry, and the leaf
+   * must not be handed a phantom extra layer. */
+  const cappedSt = boardBothBenches();
+  cappedSt.field.hazards.p2 = { rocks: false, spikes: 3, toxicspikes: 0, stickyweb: false };
+  const capped = M_ON._myMoveLeafEffects({ kind: 'move', name: 'Spikes', moveId: 'spikes' }, 100, cappedSt.field, cappedSt);
+  eq('on: Spikes is capped at 3 on the leaf field, not stacked past it',
+    capped && capped.field.hazards.p2.spikes, 3);
+}
+
+/* --------------------------------- 4e. own-move leaf effects II: status infliction + our Protect */
+{
+  eq('the shipped config ships priceMyMoveStatus OFF', ST.configGet('laplace.priceMyMoveStatus.enabled', null), false);
+  eq('the shipped config ships priceMyMoveProtect OFF', ST.configGet('laplace.priceMyMoveProtect.enabled', null), false);
+
+  const BASE = {
+    realOppSwitch: { enabled: false }, pricePivots: { enabled: false }, priceRecovery: { enabled: false },
+    priceMyMoveEffects: { enabled: false }, priceMyMoveStatus: { enabled: false },
+    priceMyMoveProtect: { enabled: false }, quiescence: { enabled: true, respectTurn2Speed: false }
+  };
+  const withTier = function (extra) { return mkEngine(Object.assign({}, BASE, extra)); };
+  const OFF = withTier({});
+  const ST_ON = withTier({ priceMyMoveStatus: { enabled: true } });
+  const PR_ON = withTier({ priceMyMoveProtect: { enabled: true } });
+  const TOL = 1e-12;
+
+  const st = boardBothBenches();
+  const me = st.active.my, them = st.active.opp;
+  const eqReply = OFF._damageOf(them, me, 'Earthquake', st.field, false);
+  const eqHp = U.clamp(100 - (eqReply ? eqReply.avgPercent : 0), 0, 100);
+  const FEINT = { kind: 'move', name: 'Feint', moveId: 'feint' };
+  const TAUNT = { kind: 'move', name: 'Taunt', moveId: 'taunt' };
+  const TWAVE = { kind: 'move', name: 'Thunder Wave', moveId: 'thunderwave' };
+  const WOW = { kind: 'move', name: 'Will-O-Wisp', moveId: 'willowisp' };
+  const SPORE = { kind: 'move', name: 'Spore', moveId: 'spore' };
+
+  /* ---- the status channel ---- */
+  same('status off: Toxic prices the leaf with NO condition on their body (the tier is the identity)',
+    OFF._payoff(TOXIC, EQ, st, st.field, null),
+    OFF.evaluator.evaluate(OFF._leafState(st, me, them, eqHp, 100)), 1e-6);
+  same('status on: an ATTACK is untouched',
+    ST_ON._payoff(ICE, EQ, st, st.field, null), OFF._payoff(ICE, EQ, st, st.field, null), TOL);
+  same('status on: a move that inflicts nothing (Taunt) is untouched',
+    ST_ON._payoff(TAUNT, EQ, st, st.field, null), OFF._payoff(TAUNT, EQ, st, st.field, null), TOL);
+  same('status on: a SWITCH row is untouched (the tier is move-only)',
+    ST_ON._payoff(SWITCH, EQ, st, st.field, null), OFF._payoff(SWITCH, EQ, st, st.field, null), TOL);
+
+  const toxLeaf = ST_ON._leafState(st, me, them, eqHp, 100, null, { oppStatus: 'tox' });
+  same('status on: Toxic writes the condition onto their leaf body, and on nothing else',
+    ST_ON._payoff(TOXIC, EQ, st, st.field, null), ST_ON.evaluator.evaluate(toxLeaf), 1e-6);
+  check('status on: ...which moves the cell (a condition is not a no-op on the leaf)',
+    Math.abs(ST_ON._payoff(TOXIC, EQ, st, st.field, null) - OFF._payoff(TOXIC, EQ, st, st.field, null)) > 1e-9,
+    OFF._payoff(TOXIC, EQ, st, st.field, null) + ' -> ' + ST_ON._payoff(TOXIC, EQ, st, st.field, null));
+  eq('status on: the live body is never mutated', them.status || '', '');
+
+  /* THE REFUSALS, each one a board on which the condition does not land. `_myMoveStatusEffect` is
+   * read directly here because that is the unit the tier is: a rule about which facts are legal. */
+  const gr = mon('Garchomp', { isActive: true });                       // Dragon / Ground
+  const fire = mon('Charizard', { isActive: true });                     // Fire / Flying
+  const grass = mon('Amoonguss', { isActive: true });                    // Grass / Poison
+  const limber = mon('Dragonite', { isActive: true, revealedAbility: 'Limber' });
+  const possibleLimber = mon('Dragonite', { isActive: true, possibleAbilities: ['Limber', 'Multiscale'] });
+  const statused = mon('Dragonite', { isActive: true, status: 'brn' });
+  const dragon = mon('Dragonite', { isActive: true });
+
+  check('status: Toxic writes `tox` onto a body that can take it',
+    JSON.stringify(ST_ON._myMoveStatusEffect(TOXIC, dragon, st)) === JSON.stringify({ status: 'tox' }),
+    JSON.stringify(ST_ON._myMoveStatusEffect(TOXIC, dragon, st)));
+  check('status: Thunder Wave cannot be written into a GROUND body',
+    ST_ON._myMoveStatusEffect(TWAVE, gr, st) === null);
+  check('status: Will-O-Wisp cannot be written into a FIRE body (the chart prices it 0.5, not 0)',
+    ST_ON._myMoveStatusEffect(WOW, fire, st) === null);
+  check('status: Spore is a powder, so a GRASS body cannot be put to sleep by it',
+    ST_ON._myMoveStatusEffect(SPORE, grass, st) === null);
+  check('status: a REVEALED immunity ability refuses the write (Limber vs Thunder Wave)',
+    ST_ON._myMoveStatusEffect(TWAVE, limber, st) === null);
+  check('status: a body that only MIGHT have the ability is not refused',
+    JSON.stringify(ST_ON._myMoveStatusEffect(TWAVE, possibleLimber, st)) === JSON.stringify({ status: 'par' }));
+  check('status: a body that already carries a condition keeps it (nothing is overwritten)',
+    ST_ON._myMoveStatusEffect(TOXIC, statused, st) === null);
+  check('status: a secondary-effect rider is not a status move (Ice Beam writes nothing)',
+    ST_ON._myMoveStatusEffect({ kind: 'move', name: 'Ice Beam', moveId: 'icebeam' }, dragon, st) === null);
+  check('status: the tier is off in the shipped build, so every write is refused',
+    OFF._myMoveStatusEffect(TOXIC, dragon, st) === null);
+
+  /* ---- our own Protect ---- */
+  same('protect off: Protect prices the leaf with NO shield (their reply lands in full)',
+    OFF._payoff(PROTECT, EQ, st, st.field, null),
+    OFF.evaluator.evaluate(OFF._leafState(st, me, them, eqHp, 100)), 1e-6);
+  same('protect on: an ATTACK is untouched',
+    PR_ON._payoff(ICE, EQ, st, st.field, null), OFF._payoff(ICE, EQ, st, st.field, null), TOL);
+  same('protect on: Toxic is untouched (the shield tier writes no condition)',
+    PR_ON._payoff(TOXIC, EQ, st, st.field, null), OFF._payoff(TOXIC, EQ, st, st.field, null), TOL);
+  same('the two tiers are independent: Protect is untouched with only the status tier on',
+    ST_ON._payoff(PROTECT, EQ, st, st.field, null), OFF._payoff(PROTECT, EQ, st, st.field, null), TOL);
+
+  /* The rhythm the shield leaves on the leaf, read off the fixture rather than retyped. */
+  const shieldLeafOpts = function (board, consec) {
+    return { protect: Object.assign({}, board.protect, {
+      myTurnsSinceLastProtect: 0, myConsecutiveProtects: consec, myLastProtectTurn: board.turn
+    }) };
+  };
+  same('protect on: the shield prices their reply away, and leaves the rhythm behind',
+    PR_ON._payoff(PROTECT, EQ, st, st.field, null),
+    PR_ON.evaluator.evaluate(PR_ON._leafState(st, me, them, 100, 100, null, shieldLeafOpts(st, 1))), 1e-6);
+  check('protect on: ...so a shield scores strictly above the same turn priced with no shield',
+    PR_ON._payoff(PROTECT, EQ, st, st.field, null) > OFF._payoff(PROTECT, EQ, st, st.field, null),
+    OFF._payoff(PROTECT, EQ, st, st.field, null) + ' -> ' + PR_ON._payoff(PROTECT, EQ, st, st.field, null));
+
+  /* A CONSECUTIVE PROTECT FAILS: no shield, and the rhythm still advances (the engine counts clicks). */
+  const stConsec = boardBothBenches();
+  stConsec.active.my.lastMove = 'Protect';
+  stConsec.active.my.lastMoveTurn = stConsec.turn - 1;
+  same('protect on: a consecutive Protect is a FAILED shield — their reply lands in full',
+    PR_ON._payoff(PROTECT, EQ, stConsec, stConsec.field, null),
+    PR_ON.evaluator.evaluate(PR_ON._leafState(stConsec, stConsec.active.my, stConsec.active.opp,
+      eqHp, 100, null, shieldLeafOpts(stConsec, 1))), 1e-6);
+  check('protect on: ...and the failed one is NOT the same cell as a live shield',
+    Math.abs(PR_ON._payoff(PROTECT, EQ, stConsec, stConsec.field, null) -
+      PR_ON._payoff(PROTECT, EQ, st, st.field, null)) > 1e-6);
+  /* The exempted case: a Taunt means the last Protect never went off, so the counter is clear. */
+  const stTaunted = boardBothBenches();
+  stTaunted.active.my.lastMove = 'Protect';
+  stTaunted.active.my.lastMoveTurn = stTaunted.turn - 1;
+  stTaunted.active.my.taunt = true;
+  same('protect on: a Taunted last Protect left the counter clear, so this shield is LIVE',
+    PR_ON._payoff(PROTECT, EQ, stTaunted, stTaunted.field, null),
+    PR_ON.evaluator.evaluate(PR_ON._leafState(stTaunted, stTaunted.active.my, stTaunted.active.opp,
+      100, 100, null, shieldLeafOpts(stTaunted, 1))), 1e-6);
+
+  /* A reply that pierces the shield is not blocked. */
+  const feint = PR_ON._damageOf(them, me, 'Feint', st.field, false);
+  const feintHp = U.clamp(100 - (feint ? feint.avgPercent : 0), 0, 100);
+  same('protect on: Feint is not blocked (a pierce is a pierce)',
+    PR_ON._payoff(PROTECT, FEINT, st, st.field, null),
+    PR_ON.evaluator.evaluate(PR_ON._leafState(st, me, them, feintHp, 100, null, shieldLeafOpts(st, 1))), 1e-6);
+
+  /* A shield does not stop their SETUP: they still get the boost and its modelled Turn-2
+   * extension, which lands after this cell. */
+  const DD_ACT = { kind: 'move', name: 'Dragon Dance', moveId: 'dragondance' };
+  check('protect on: their SETUP reply still buys its boost (a shield is not a Taunt)',
+    Math.abs(PR_ON._payoff(PROTECT, DD_ACT, st, st.field, null) -
+      OFF._payoff(PROTECT, DD_ACT, st, st.field, null)) > 1e-6,
+    'the shield swallowed the setup extension');
 }
 
 /* ============================================================ 5. the 2-ply beam */
@@ -1688,6 +1931,76 @@ section('10. the exploit blend and the proven-mate promotion (identity when off,
   eq('...in which case the top line is the equilibrium one again',
     JSON.stringify(live(gatedRows).map(freq)), JSON.stringify(live(plainRows).map(freq)));
   ST.configMerge({ laplace: { endgame: { promoteMate: true } } });
+}
+
+/* ======================================== 11. the threat speed gate (a softened speed term) */
+
+section('11. the threat speed gate: the cliff becomes a ramp, and only for slower bodies');
+{
+  const GC = ST.configGet('evaluator.threatSpeedGate', null);
+  eq('the shipped config ships the gate OFF', !!(GC && GC.enabled), false);
+  eq('...with parity at a `span`-point deficit and a zero floor',
+    [GC && GC.span, GC && GC.floor], [400, 0]);
+
+  /* Two Draugapults with the SAME set, so `threat` is the same number on both sides and every
+   * difference measured below is the speed term and nothing else. `slow` is the same body at 0
+   * Speed EVs with a -Spe nature, which is a deficit far wider than the 1-point span used to test
+   * the floor. */
+  const SETS = ['Shadow Ball', 'Draco Meteor', 'U-turn', 'Thunder Wave'];
+  const fast = { evs: OFFENSE, ivs: IVS, nature: 'Jolly', ability: 'Infiltrator', hpPercent: 100, setMoves: SETS.slice() };
+  const slow = { evs: spread({ atk: 252 }), ivs: IVS, nature: 'Brave', ability: 'Infiltrator', hpPercent: 100, setMoves: SETS.slice() };
+  const pair = function (ourExtra, theirExtra) {
+    const me = mon('Dragapult', Object.assign({ side: 'p1', isActive: true }, ourExtra));
+    const them = mon('Dragapult', Object.assign({ isActive: true }, theirExtra));
+    const b = board();
+    b.myTeam = [me]; b.oppTeam = [them]; b.active = { my: me, opp: them }; b.bench = { my: [], opp: [] };
+    return b;
+  };
+  const ev = new ST.DenseStateEvaluator();
+  /* dim 76 is our active body x their active body, the one cell on this fixture with a body on
+   * both sides of it. */
+  const cell = function (b) { return Array.from(ev.extractVector(b))[76]; };
+  const row = function (b) { return Array.from(ev.extractVector(b)).slice(76, 112); };
+  const setGate = function (g) { ST.configMerge({ evaluator: { threatSpeedGate: Object.assign({ enabled: true }, g) } }); };
+  const gateOff = function () { ST.configMerge({ evaluator: { threatSpeedGate: { enabled: false } } }); };
+
+  gateOff();
+  const tieOff = cell(pair(fast, fast));
+  const slowOff = cell(pair(slow, fast));
+  setGate({});
+  const tieOn = cell(pair(fast, fast));
+  const slowOn = cell(pair(slow, fast));
+
+  check('gate off: a slower body scores its threat cell at EXACTLY zero (the hard gate)',
+    slowOff === 0, String(slowOff));
+  check('gate on: the same body keeps a nonzero threat (the cliff became a ramp)',
+    slowOn > 0 && slowOn < tieOn, slowOff + ' -> ' + slowOn);
+  same('gate on: a body at PARITY is untouched (1 + 0/span is 1, so the tie is not a discontinuity)',
+    tieOn, tieOff, 1e-12);
+
+  /* The span and the floor, exactly. At a 1-point span any deficit is a full one, so the cell is
+   * `floor` copies of the parity cell — 0.25 of it, to the bit. */
+  setGate({ span: 1, floor: 0.25 });
+  same('gate on: the floor is exactly the term a body a full span behind keeps (0.25 x parity)',
+    cell(pair(slow, fast)), 0.25 * tieOn, 1e-12);
+
+  /* THE STRICT-GENERALISATION CLAIM, on the real fixture: our Jolly Great Tusk against their
+   * Adamant Dragonite is a body that genuinely outspeeds, and its whole row must come back
+   * bit-identical. */
+  const fb = board();
+  check('...and the fixture that claim is checked on really is not at parity',
+    ev._speedOf(fb.active.my, false) > ev._speedOf(fb.active.opp, false),
+    ev._speedOf(fb.active.my, false) + ' vs ' + ev._speedOf(fb.active.opp, false));
+  gateOff();
+  const fastRowOff = row(board());
+  setGate({});
+  eq('gate on: every cell of a FASTER body is bit-identical to the shipped gate',
+    row(board()), fastRowOff);
+  check('...and the row has content (the claim is not vacuous)',
+    fastRowOff.some(function (x) { return x > 0; }), JSON.stringify(fastRowOff));
+
+  gateOff();
+  eq('the config is left as it was found', ST.configGet('evaluator.threatSpeedGate.enabled', null), false);
 }
 
 /* ------------------------------------------------------------------- summary */

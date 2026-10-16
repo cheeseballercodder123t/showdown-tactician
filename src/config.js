@@ -196,6 +196,60 @@
         enabled: true,
         defaultHealPct: 50                 // percent of max HP credited for a healing move
       },
+      // Own-move leaf effects (see laplace_core._myMoveLeafEffects). `_payoff` prices our own
+      // pivot and recovery moves above, and left every other non-damaging move of ours — Stealth
+      // Rock / Spikes / Toxic Spikes / Sticky Web, Rapid Spin / Defog / Mortal Spin / Tidy Up /
+      // Court Change, and our own 29 setup moves — without writing its board change to the leaf
+      // `sim`, so the 128D evaluator read the pre-move hazards and boosts on every candidate row.
+      // With this on, the leaf carries the hazard layer / clear and our own setup stages (and in
+      // that turn's reply, our boosted Defence / Special Defence and any HP cost like Belly Drum).
+      // Ships OFF on a win-rate gate, not on a weight reading: the 128D fitted weights pair base dims
+      // (`hazards` 48..55, `boosts` 36..41) with `macro` dims that are EXACT linear combinations of
+      // them (`v[116]` of 48..55, `v[118] = (1/3)·(v36+…+v41)`), so ridge split one coefficient into
+      // two (`macro[4] = -9.29` against base hazard dims of +3.36..+6.57, `macro[6] = +18.37` against
+      // base boost dims of -4.84..-5.62). Neither half means anything alone; the NET weight of one
+      // fact is measured, layer by layer, in ATTEMPTS.md §P5 — where every sign is right and the
+      // magnitudes are not.
+      priceMyMoveEffects: {
+        enabled: false
+      },
+      // Own-move leaf effects, part 2 — OUR STATUS MOVES (see laplace_core._myMoveStatusEffect).
+      // The 128D evaluator fits dims 24..31 (how many bodies on each side carry a condition),
+      // 28..31 / 117 (the status differential) and 32..35 (our own active body's condition), and
+      // until this tier existed `_payoff` handed it leaf boards on which the condition a move
+      // exists to give was ABSENT from every candidate row — so Thunder Wave, Will-O-Wisp, Toxic,
+      // Spore and the rest were priced as turns that changed nothing. On, our status-inflicting
+      // move (U.STATUS_MOVES: the move's PRIMARY effect) writes that condition onto THEIR leaf
+      // body, refused when the board says it cannot land: the body is already statused, the type
+      // chart or the defender's revealed ability nullifies the move (Thunder Wave into a Ground
+      // body, Will-O-Wisp into a Water Veil), the status is impossible for the type
+      // (U.STATUS_TYPE_IMMUNITY — Electric bodies cannot be paralysed, Fire bodies cannot burn),
+      // or the move is a powder and the body is Grass. Ships OFF until a win-rate gate adopts it.
+      // NOT MODELLED, stated here rather than discovered later: ACCURACY (Thunder Wave 90 %, Hypo-
+      // nosis 60 %) — the leaf writes a landed condition, because a board cannot carry a fraction
+      // of a status; secondary-effect riders (Body Slam's 30 % paralysis) and conditional
+      // inflictions, which U.STATUS_MOVES deliberately omits; and Safety Goggles / Overcoat as
+      // powder shields, neither of which is inferable from a revealed board.
+      priceMyMoveStatus: {
+        enabled: false
+      },
+      // Own-move leaf effects, part 3 — OUR OWN PROTECT (see laplace_core._myMoveProtectShield).
+      // `laplace.quiescence.blockProtect` prices THEIR shield blocking OUR move; nothing priced
+      // OURS blocking THEIR reply, so a Protect was scored as a turn on which we did nothing and
+      // took their best hit in full — the largest single unwritten family in the move-half gap
+      // (20.4 % of the summed gap, median score gap 83.5; ATTEMPTS.md §P6). On, the cell is priced
+      // on the board a shield actually produces: their reply deals nothing this turn, and the leaf
+      // carries the Protect rhythm (dims 126/127) that the live state would carry next turn.
+      // A PROTECT THAT FAILS IS NOT A SHIELD: a consecutive use (the same rule veto 9 encodes —
+      // a Protect on the board's turn minus one, exempted when a Taunt/Encore means it never went
+      // off) is priced as the wasted turn it is, and a reply that pierces a shield (Feint, Phantom
+      // Force, Shadow Force, Hyperspace Fury / Hole) is not blocked. Ships OFF until a win-rate
+      // gate adopts it. NOT MODELLED: the 1-in-3-and-halving success rate of a repeat Protect is
+      // read as a failure, not as a probability, and a shield takes no account of what their NEXT
+      // turn does with the turn it bought.
+      priceMyMoveProtect: {
+        enabled: false
+      },
       // Comeback mode (prospect theory on the risk dial — see laplace_core._comebackScale). Scales
       // the volatility charge by where the 128D evaluator puts the board: sharpened when we are
       // ahead (minimum variance), softened when we are behind (we need the swing). Ships OFF; the
@@ -531,6 +585,24 @@
       boostSumScale: 18,              // +/-3 in every stat == 1.0
       statusDifferentialDivisor: 4,
       speedEdgeSpan: 400,             // Speed points mapped onto [-1, 1]
+      // The threat matrix's SPEED TERM (dims 76..111). As shipped, `faster` is binary — a body
+      // that is slower by one point scores every one of its 36 threat cells at EXACTLY 0, and so
+      // does a body that is slower by two hundred. That is a gate, not a bias: the fitted
+      // coefficients cannot express "a slower body still threatens whatever lives through the
+      // turn", because a hard 0 and a small number are different functions of the same feature.
+      // The 36 cells are collapsed to two fitted means (`evaluator.weights.threat` -0.0248 and
+      // `.threatActive` +0.1811, lib/trained-weights.json), and those two were fitted ON THE GATED
+      // COLUMN — which is why turning this on is a REFIT, not an edit, and why it ships OFF until
+      // that refit has been measured (ATTEMPTS.md §P5, §P6, §P8). On, the term is the continuous
+      // decay a speed deficit implies, anchored to `evaluator.speedEdgeSpan`: 1 for a body that is
+      // at least as fast, falling linearly to `floor` at a `span`-point deficit. At floor 0 it is
+      // a STRICT generalisation of the shipped gate — identical for every faster body — with the
+      // cliff replaced by a ramp; the tie stops being a discontinuity.
+      threatSpeedGate: {
+        enabled: false,
+        span: 400,                    // Speed points from parity to `floor`
+        floor: 0                      // the term a body a full `span` slower keeps
+      },
       recoveryPPBudget: 8,            // Recover/Soft-Boiled/Roost PP from full
       hazardChip: {                   // mirror of tempo.chip, used only for the differential
         rocks: 12.5,
