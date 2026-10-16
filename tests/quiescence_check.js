@@ -123,7 +123,7 @@ function board(theirExtra, protectExtra) {
 
 /* Every engine is built from the same option object the other suites use; the quiescence override
  * travels through the constructor so this suite exercises the real config plumbing. */
-function mkEngine(quiescence) {
+function mkEngine(quiescence, rollKo) {
   const damage = new ST.DamageEngine({ gen: 9 });
   const trickRoom = new ST.TrickRoomEngine(damage);
   return new ST.LaplaceEngine({
@@ -131,13 +131,16 @@ function mkEngine(quiescence) {
     evaluator: new ST.DenseStateEvaluator(),
     tempo: new ST.TempoEngine({ damage: damage, trickRoom: trickRoom }),
     veto: new ST.BlunderVetoGuard({ damage: damage, trickRoom: trickRoom }), trickRoom: trickRoom,
-    quiescence: quiescence || null
+    quiescence: quiescence || null,
+    rollKoBranch: rollKo || null
   });
 }
 const SHIPPED = mkEngine();                                              // whatever config.js ships
 const ON = mkEngine({ enabled: true, extendSetup: true, blockProtect: true });
 const OFF = mkEngine({ enabled: false });                                // the 1-ply model replaced
 const NO_EXTEND = mkEngine({ enabled: true, extendSetup: false });
+const KO_ON = mkEngine(null, { enabled: true });                               // the exact-roll expectation
+const KO_OFF = mkEngine(null, { enabled: false });                             // the scalar cliff
 const NO_BLOCK = mkEngine({ enabled: true, blockProtect: false });
 
 const ICE = { kind: 'move', name: 'Ice Spinner', moveId: 'icespinner' };
@@ -656,6 +659,89 @@ function damageCalls(engine, fn) {
   const onBlock = damageCalls(ON, function () { ON._payoff(ICE, PROTECT, st, st.field); });
   same('their shield costs ONE call fewer: our hit is skipped entirely', onBlock, offBlock - 1);
 }
+
+/* ============================================ 8. the KO cliff on the exact 16 rolls */
+
+section('8. the 100 % cliff: one mean used as a certainty, replaced by the exact-roll share');
+
+/* THE CLIFF. `_payoff` moved the target by `avgPercent` — the MEAN over the sixteen damage rolls —
+ * and clamped at 0, so a mean of 101 % was priced as a certain OHKO that nothing answered from,
+ * while a mean of 97 % left the target alive and its reply landing in full. Those are one
+ * distribution, not two, and the difference between them was the shape of the mean rather than the
+ * game. Checked through the method the cell actually calls, so a rename cannot leave this passing. */
+same('OFF is the historical line: a mean past the target clamps to zero',
+  KO_OFF._koTransition(100, { avgPercent: 101 }), 0);
+same('OFF ignores the roll set entirely',
+  KO_OFF._koTransition(100, { avgPercent: 97, koChanceExact: 62.5 }), 3);
+
+/* ON: expected HP = (1 - p) x surviving HP, with the surviving branch floored so a 15-of-16 roll
+ * is not read as a KO. Direction checks are identities against the numbers above rather than magic
+ * constants, so a fixture drifting by a percent cannot make this suite lie. */
+const at = function (hp, avg, exact) {
+  return KO_ON._koTransition(hp, { avgPercent: avg, koChanceExact: exact });
+};
+const mid = at(100, 101, 62.5);
+same('ON prices the SAME cell as an expectation instead of a certainty', mid, 0.375);
+check('...which is strictly between the two certainties the mean could have been read as',
+  mid > 0 && mid < 3, String(mid));
+/* The endpoints are not special-cased — they fall out of the formula — which is why the two arms
+ * agree exactly wherever the outcome was never ambiguous. */
+same('a hit that never KOs is the scalar path exactly', at(100, 40, 0), 60);
+same('a hit that always KOs is still exactly zero', at(100, 101, 100), 0);
+same('...and so is a mean that already passed the target with every roll', at(30, 90, 100), 0);
+/* Monotone in the share of the roll set that reaches: more of it must never leave a healthier body. */
+const ladder = [0, 25, 50, 75, 100].map(function (p) { return at(80, 70, p); });
+check('expected HP is monotone in the share of rolls that reach',
+  ladder.every(function (v, i) { return i === 0 || v <= ladder[i - 1]; }), ladder.join(' '));
+check('...and strictly falls across the ambiguous middle', ladder[1] > ladder[3], ladder.join(' '));
+check('...while the off arm reads every one of those as the same number',
+  [0, 25, 50, 75].every(function (p) { return KO_OFF._koTransition(80, { avgPercent: 70, koChanceExact: p }) === 10; }));
+/* An EXACT answer is required: a roll set that cannot answer keeps the scalar path rather than
+ * guessing, which is the same refusal `calc_engine` makes when it returns a null `koChanceExact`. */
+same('a roll set that cannot answer exactly keeps the scalar path', at(100, 101, null), 0);
+
+/* THE SHIPPED STATE, read from the config this suite loaded rather than from a literal here.
+ * `same()` compares NUMBERS only, so a boolean identity goes through `check()`. */
+const shippedKo = ST.configGet('laplace.rollKoBranch.enabled', 'missing');
+check('the tier ships OFF', shippedKo === false, String(shippedKo));
+same('...so the shipped engine takes the scalar path', SHIPPED._koTransition(100, { avgPercent: 101 }), 0);
+
+/* The damage result's SHAPE is a contract the other suites read, so the exact-roll fields may only
+ * appear while the tier is on — off, this has to be the byte-identical object it always was.
+ * Proven on a STUBBED damage engine rather than on a live call: what is under test here is the
+ * PASSTHROUGH, and a real board would only be re-testing calc_engine. */
+const stubbed = function (engine, payload) {
+  const real = engine.damage.calculateDamage;
+  engine.damage.calculateDamage = function () { return payload; };
+  try { return engine._damageOf(mon('Great Tusk'), mon('Blissey'), 'Headlong Rush', {}, true); }
+  finally { engine.damage.calculateDamage = real; }
+};
+const KO_PAYLOAD = {
+  minPercent: 95, maxPercent: 105, avgPercent: 101, isOHKO: false, is2HKO: false,
+  koChanceExact: 62.5, koChancePct: 62.5, rolls: new Array(16).fill(101)
+};
+const offShape = stubbed(KO_OFF, KO_PAYLOAD);
+const onShape = stubbed(KO_ON, KO_PAYLOAD);
+check('OFF carries no exact-roll field at all (the shipped shape is unchanged)',
+  !!offShape && !('koChanceExact' in offShape) && !('koChancePct' in offShape) && !('rollCount' in offShape),
+  JSON.stringify(offShape && Object.keys(offShape)));
+check('ON surfaces the exact share of rolls that reach, plus the roll count it came from',
+  !!onShape && onShape.koChanceExact === 62.5 && onShape.rollCount === 16, JSON.stringify(onShape));
+check('...while every pre-existing field is identical between the two arms',
+  !!onShape && !!offShape && ['move', 'minPercent', 'maxPercent', 'avgPercent', 'isOHKO', 'is2HKO']
+    .every(function (k) { return onShape[k] === offShape[k]; }),
+  JSON.stringify([offShape, onShape]));
+/* `calc_engine` returns a NULL exact chance when the roll set cannot answer. That has to stay null
+ * rather than becoming 0, because 0 means "no roll reaches" and would silently disable the tier on
+ * exactly the cells it cannot price. */
+const nullShape = stubbed(KO_ON, Object.assign({}, KO_PAYLOAD, { koChanceExact: null, rolls: null }));
+check('a roll set that cannot answer keeps a NULL exact chance, never a 0',
+  !!nullShape && nullShape.koChanceExact === null && nullShape.rollCount === 0, JSON.stringify(nullShape));
+same('...and the transition falls back to the scalar path for it',
+  KO_ON._koTransition(100, { avgPercent: 101, koChanceExact: null }), 0);
+/* A failing damage call is still null, not a partial object. */
+check('a failed damage call is still null',
+  stubbed(KO_ON, { failed: true }) === null);
 
 /* ------------------------------------------------------------------ report */
 

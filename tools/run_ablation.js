@@ -406,6 +406,36 @@ const FEATURES = [
       'bought (§L1).'
   },
   {
+    id: 'rollkobranch',
+    label: 'KO branching on the exact 16 rolls (on)',
+    tier: 'laplace',
+    direction: 'on',
+    patch: { 'laplace.rollKoBranch.enabled': true },
+    expect: 'helps',
+    note: 'SHIPS OFF. `_payoff` moved the target by `avgPercent` — the MEAN of the 16 damage rolls — ' +
+      'and clamped at 0, so a move whose mean is 101 % was priced as a CERTAIN OHKO the target never ' +
+      'answers from, while a mean of 97 % left it at 3 % with its reply landing in full. That step is ' +
+      'an artefact of collapsing sixteen outcomes into one number: 10 of 16 rolls may reach in the ' +
+      'first case and 6 of 16 in the second. On, `_koTransition` replaces it with the EXPECTATION ' +
+      'over the two outcomes, `(1 - p) * survives`, with p read from `koChanceExact` (the exact share ' +
+      'of rolls that reach the current HP) and the surviving branch floored so a 15-of-16 roll does ' +
+      'not read as a KO. Where the roll set cannot answer exactly, or `p` is 0 or 1, the scalar path ' +
+      'is kept — so the two arms are bit-identical on every cell that was never ambiguous.',
+    caveat: 'SHIPS OFF ON A WIN-RATE GATE — UNRUN, so the expectation above is a PRIOR. ITS ' +
+      'COUNTERFACTUAL IS ALSO PARTIAL BY CONSTRUCTION and that has to be read before any number is: ' +
+      'the formula it implements is deliberately NOT `p * V_KO + (1 - p) * V_survive`. That form ' +
+      'needs its KO branch to mean "the target never answers", which needs to know we move FIRST, and ' +
+      '`_payoff` does not model move order at all — only `_pivotPayoff` does, and the in-code comment ' +
+      'on the symmetric reply treatment says exactly that. Inventing a zero-counterattack branch here ' +
+      'would put a speed assumption into the cell every row flows through, so the reply stays ' +
+      'symmetric and only the HP side of the cliff is removed; a positive reading is therefore a ' +
+      'LOWER bound on the correction and the ordering half needs its own tier. What it does remove is ' +
+      'measurable without a battle: the discontinuity itself, pinned in ' +
+      '`tests/quiescence_check.js` §KO. Not modelled either: accuracy (a 90 % move and a 60 % one ' +
+      'both use their own roll set, but a MISS is not a roll), and the secondary riders of the same ' +
+      'move.'
+  },
+  {
     id: 'threatspeedgate',
     label: 'threat matrix speed gate, softened (on)',
     tier: 'evaluator',

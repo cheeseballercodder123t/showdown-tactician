@@ -350,6 +350,9 @@
       this.priceMyMoveProtect = Object.assign({
         enabled: cfgGet('laplace.priceMyMoveProtect.enabled', false)
       }, options.priceMyMoveProtect || {});
+      this.rollKoBranch = Object.assign({
+        enabled: cfgGet('laplace.rollKoBranch.enabled', false)
+      }, options.rollKoBranch || {});
       // Comeback mode (prospect theory on the risk dial). A 100-turn tie is a loss, and so is a
       // safe grind when you are already behind: with the board scored by the evaluator, the SAME
       // miss charge is scaled up when we are winning (minimum variance) and down when we are losing
@@ -1813,13 +1816,54 @@
       return sim;
     }
 
+    /**
+     * The exact-roll fields ride along ONLY when `laplace.rollKoBranch` is on. That is not tidiness:
+     * the shipped result object's SHAPE is a contract other suites read, and the tier ships `false`,
+     * so with it off this returns the byte-identical object it always did and no existing reading
+     * can move. `calculateDamage` already computes the roll set — this only stops throwing it away.
+     */
     _damageOf(attacker, defender, moveName, field, outgoing, opts) {
       if (!this.damage || !moveName) return null;
       try {
         const res = this.damage.calculateDamage(attacker, defender, moveName, field, opts);
         if (!res || res.failed) return null;
-        return { move: moveName, minPercent: res.minPercent || 0, maxPercent: res.maxPercent || 0, avgPercent: res.avgPercent || 0, isOHKO: !!res.isOHKO, is2HKO: !!res.is2HKO };
+        const out = { move: moveName, minPercent: res.minPercent || 0, maxPercent: res.maxPercent || 0, avgPercent: res.avgPercent || 0, isOHKO: !!res.isOHKO, is2HKO: !!res.is2HKO };
+        if (this.rollKoBranch && this.rollKoBranch.enabled === true) {
+          out.koChanceExact = (typeof res.koChanceExact === 'number' && isFinite(res.koChanceExact)) ? res.koChanceExact : null;
+          out.koChancePct = (typeof res.koChancePct === 'number' && isFinite(res.koChancePct)) ? res.koChancePct : null;
+          out.rollCount = Array.isArray(res.rolls) ? res.rolls.length : 0;
+        }
+        return out;
       } catch (e) { return null; }
+    }
+
+    /**
+     * _koTransition(oppHp, dmg) -> the target's HP after our hit, as a percentage
+     *
+     * OFF (the shipped default) is exactly the historical line: `clamp(oppHp - avgPercent, 0, 100)`,
+     * one mean used as if it were a certainty.
+     *
+     * ON, when the roll set can answer exactly, the transition is the EXPECTATION over the two
+     * outcomes rather than a mean pretending to be one: the target faints on the share `p` of rolls
+     * that reach its current HP, and otherwise sits at what a surviving roll leaves. A `p` of 0 or 1
+     * is not a special case invented here — it falls out of the formula (a certain hit leaves 0, a
+     * hit that never KOs leaves the mean), which is why the OFF and ON arms agree on every cell that
+     * was never ambiguous.
+     *
+     * The floor matters at the far end: as `p` approaches 1 the surviving branch still has to be a
+     * live body, or a 15-of-16 roll would read as a KO and reintroduce the cliff it removes.
+     */
+    _koTransition(oppHp, dmg) {
+      const scalar = U.clamp(oppHp - dmg.avgPercent, 0, 100);
+      const ko = this.rollKoBranch;
+      if (!ko || ko.enabled !== true) return scalar;
+      const exact = (typeof dmg.koChanceExact === 'number') ? dmg.koChanceExact : dmg.koChancePct;
+      if (typeof exact !== 'number' || !isFinite(exact)) return scalar;
+      const p = U.clamp(exact / 100, 0, 1);
+      if (p <= 0) return scalar;
+      if (p >= 1) return 0;
+      const survives = Math.max(oppHp - dmg.avgPercent, 1);
+      return U.clamp((1 - p) * survives, 0, 100);
     }
 
     /**
@@ -1962,7 +2006,9 @@
         } else {
           const dmg = this._damageOf(myActive, oppSideMon, myAction.name, field, true);
           if (dmg) {
-            oppHp = U.clamp(oppHp - dmg.avgPercent, 0, 100);
+            /* The KO cliff. OFF this is the historical `clamp(oppHp - avgPercent, 0, 100)`, so the
+             * two arms are bit-identical on every cell whose mean does not straddle 100 %. */
+            oppHp = this._koTransition(oppHp, dmg);
             events.push(dmg);
           }
         }

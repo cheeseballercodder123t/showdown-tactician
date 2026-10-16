@@ -11,6 +11,36 @@ reaches a verdict.
 
 ## Unreleased
 
+### Added — the KO cliff: the mean of sixteen rolls stops standing in for all sixteen (ships OFF)
+
+`_payoff` moved the target by `avgPercent` — the MEAN of the 16 damage rolls — and clamped at 0, so a
+move whose mean landed 1 % past the target was priced as a **certain OHKO the target never answered
+from**, while a mean 3 % short left it alive with its reply landing in full. Those are one
+distribution, not two: 10 of 16 rolls may reach the target in the first case and 6 of 16 in the
+second, and the difference between the two cells was the shape of a mean rather than anything about
+the game.
+
+`laplace.rollKoBranch` (`src/config.js`, `enabled: false`) replaces the transition with the
+expectation over the two outcomes, `(1 - p) x survives`, where `p` is the exact share of rolls that
+reach the current HP (`koChanceExact`, which `calc_engine` already computed and `_payoff` threw
+away). The surviving branch is floored so a 15-of-16 roll is not read as a KO, and a roll set that
+cannot answer exactly keeps the scalar path — so the two arms are bit-identical on every cell that
+was never ambiguous, which is what `tests/quiescence_check.js` §8 checks as identities rather than
+as magic constants (monotonicity in `p`, both endpoints, the null-chance refusal, and the shipped
+shape of the damage result).
+
+**WHAT IT IS NOT, and this bounds any reading of it.** The formula it implements is deliberately
+not the textbook `p x V_KO + (1 - p) x V_survive`. That form needs its KO branch to mean "the target
+never answers", which needs to know we move FIRST — and `_payoff` does not model move order at all
+(only `_pivotPayoff` does, and the in-code comment on the symmetric reply treatment says so).
+Putting a zero-counterattack branch there would smuggle a speed assumption into the cell every row
+flows through, so the reply stays symmetric and only the HP half of the cliff is removed. A positive
+reading is therefore a LOWER bound on this correction, and the ordering half would need its own
+tier.
+
+Its gate is UNRUN, so the flag ships `false`. Registered in `ATTEMPTS.md` §C5, with the ablation row
+`rollkobranch` and its input channel classified in `tools/harness_inputs.js`.
+
 ### Measured — the two leaf channels' gate reads `[identical]`, and the ARENA cannot carry the flag
 
 `pricemymovestatus` and `pricemymoveprotect` shipped OFF with a fidelity reading and no win-rate

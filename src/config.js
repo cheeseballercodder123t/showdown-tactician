@@ -250,6 +250,25 @@
       priceMyMoveProtect: {
         enabled: false
       },
+      // KO BRANCHING ON THE EXACT 16 ROLLS (`laplace_core._koTransition`). `_payoff` moves the
+      // target's HP by `avgPercent` — the MEAN of the 16 damage rolls — and clamps at 0, so a move
+      // whose mean is 101 % is priced as a CERTAIN OHKO on which the target never answers, while a
+      // mean of 97 % leaves it at 3 % and its reply lands in full. That step is an artefact of
+      // collapsing sixteen discrete outcomes into one number, not a property of the game: 10 of 16
+      // rolls may reach the target in the first case and 6 of 16 in the second. On, the transition
+      // becomes the EXPECTED HP over the two outcomes, `(1 - p) * survives`, with p read from the
+      // exact share of rolls that reach the current HP (`koChanceExact`, null when the roll set
+      // cannot answer exactly — then the scalar path is kept).
+      //
+      // IT IS DELIBERATELY NOT the full `p * V_KO + (1 - p) * V_survive`. That form needs its KO
+      // branch to mean "the target never answers", which needs to know we move FIRST, and `_payoff`
+      // does not model move order at all — only `_pivotPayoff` does, and the comment on the
+      // symmetric reply treatment says so. Claiming a zero-counterattack branch here would invent a
+      // speed assumption for every row that flows through this cell, so the reply stays symmetric
+      // and that half is NOT modelled. Ships OFF.
+      rollKoBranch: {
+        enabled: false
+      },
       // Comeback mode (prospect theory on the risk dial — see laplace_core._comebackScale). Scales
       // the volatility charge by where the 128D evaluator puts the board: sharpened when we are
       // ahead (minimum variance), softened when we are behind (we need the swing). Ships OFF; the

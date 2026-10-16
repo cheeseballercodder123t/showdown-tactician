@@ -193,6 +193,7 @@ const FLAG_INPUTS = [
   { match: 'laplace.priceMyMoveEffects', needs: [], note: 'writes our own setup boosts and hazard changes to the leaf sim; supplied by the position, not the harness' },
   { match: 'laplace.priceMyMoveStatus', needs: [], note: 'writes our own status move\'s condition onto their leaf body; supplied by the position, not the harness' },
   { match: 'laplace.priceMyMoveProtect', needs: [], note: 'prices our own shield against their reply; supplied by the position, not the harness' },
+  { match: 'laplace.rollKoBranch', needs: [], note: 'reads the roll set the damage engine already computed for the hit it is pricing; supplied by the position, not the harness' },
   { match: 'laplace.urgency', needs: [], note: 'reads the turn number and the rows, both always supplied' },
   { match: 'evaluator.threatSpeedGate', needs: [], note: 'replaces a binary speed comparison with a ramp over the same two Speeds, which the engine computes from the board it was handed — there is no channel here for a harness to supply' },
   { match: 'pruner.damageEvidence', needs: [], note: 'reads damage observed in the log, which every battle supplies' },

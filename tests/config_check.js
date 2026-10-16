@@ -135,6 +135,8 @@ const INVENTORY = [
   'laplace.priceMyMoveEffects.enabled',
   // the other two leaf-transition tiers (each `enabled: false` until a win-rate gate adopts it)
   'laplace.priceMyMoveStatus.enabled', 'laplace.priceMyMoveProtect.enabled',
+  // the KO-cliff correction (ships `false`; the expected-HP transition over the exact 16 rolls)
+  'laplace.rollKoBranch.enabled',
   // comeback mode (ships off) + turn urgency (ADOPTED, ships on; adopted on the 60-battle sweep)
   'laplace.comeback.enabled', 'laplace.comeback.winMargin', 'laplace.comeback.lossMargin',
   'laplace.comeback.winChargeScale', 'laplace.comeback.lossChargeScale',
