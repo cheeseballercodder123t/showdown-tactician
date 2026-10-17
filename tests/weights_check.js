@@ -49,6 +49,9 @@ const extractor = require('../tools/extract_training_data.js');
 const fitter = require('../tools/fit_weights.js');
 const fetcher = require('../tools/fetch_replays.js');
 const refit = require('../tools/refit_weights.js');
+const prefData = require('../tools/extract_preference_data.js');
+const prefFit = require('../tools/fit_preference_weights.js');
+const slicer = require('../tools/report_auc_slices.js');
 
 const ST = H.loadAll().ST;
 
@@ -1498,6 +1501,336 @@ section('11. exact linear duplicates are dropped, and the refit tool refuses an 
   check('--dry fits and reports without writing the artifact', dryCode === 0 && !fs.existsSync(dryOut),
     'exit ' + dryCode + ', wrote ' + fs.existsSync(dryOut));
   try { fs.unlinkSync(fixture); } catch (e) { /* best effort */ }
+}
+
+/* ================== 12. within-turn preference learning (Bradley-Terry on choice differences) */
+
+section('12. the preference fit learns the human\u2019s CHOICE, not the winner label');
+{
+  /* A PLANTED CHOICE MODEL. The pairs are built the way the extractor builds them: two candidate
+   * vectors u and v, the planted direction decides which one the "human" picked, and the pair is
+   * u - v so the label is always "the first one was chosen". A fitter that could not recover that
+   * direction would be fitting noise. */
+  const rng = mulberry32(20260103);
+  const planted = new Array(128).fill(0);
+  planted[3] = 2; planted[50] = -1.5; planted[116] = 1;
+  const pairs = [];
+  for (let i = 0; i < 2400; i++) {
+    const u = [], v = [];
+    for (let j = 0; j < 128; j++) { u.push(rng() * 2 - 1); v.push(rng() * 2 - 1); }
+    let zu = 0, zv = 0;
+    for (let j = 0; j < 128; j++) { zu += planted[j] * u[j]; zv += planted[j] * v[j]; }
+    const d = [];
+    for (let j = 0; j < 128; j++) d.push(zu >= zv ? u[j] - v[j] : v[j] - u[j]);
+    pairs.push({ d: d, battle: Math.floor(i / 12) });
+  }
+  const fit = prefFit.fitPreference(pairs.map(function (p) { return p.d; }), { lambda: 0.01, maxIter: 30 });
+  const cosP = cosine(fit.w, planted);
+  check('the fitter recovers the planted choice direction (cosine >= 0.9)', cosP >= 0.9, cosP.toFixed(4));
+  check('...and ranks those pairs above chance by a wide margin',
+    prefFit.pairwiseAccuracy(fit.w, pairs.map(function (p) { return p.d; })) > 0.9,
+    String(prefFit.pairwiseAccuracy(fit.w, pairs.map(function (p) { return p.d; }))));
+  const flipped = fit.w.map(function (v) { return -v; });
+  close('flipping the vector flips the accuracy to 1 - a',
+    prefFit.pairwiseAccuracy(flipped, pairs.map(function (p) { return p.d; })),
+    1 - prefFit.pairwiseAccuracy(fit.w, pairs.map(function (p) { return p.d; })), 1e-12);
+  close('an all-zero vector scores exactly chance',
+    prefFit.pairwiseAccuracy(new Array(128).fill(0), pairs.map(function (p) { return p.d; })), 0.5, 0);
+
+  /* THE EXTRACTOR'S PAIR SHAPING: the chosen action is never its own negative, the negatives are
+   * the ones the CURRENT evaluator likes most (hard negatives), and `--all-negatives` emits the
+   * rest. `d` is always chosen minus rejected in the same dim order. */
+  const vec = function (fill) { return new Array(128).fill(fill); };
+  const chosen = { key: 'move:a', kind: 'move', vec: vec(3), score: 10 };
+  const pool = [
+    { key: 'move:b', kind: 'move', vec: vec(1), score: 99 },
+    { key: 'switch:c', kind: 'switch', vec: vec(2), score: 50 },
+    { key: 'move:a', kind: 'move', vec: vec(3), score: 10 },
+    { key: 'move:d', kind: 'move', vec: vec(0), score: -5 }
+  ];
+  const two = prefData.pairDifferences(chosen, pool, { negatives: 2 });
+  eq('the hard negatives are taken in the current score\u2019s order',
+    two.map(function (p) { return p.rejectedKey; }), ['move:b', 'switch:c']);
+  check('the chosen action is never its own negative',
+    two.every(function (p) { return p.rejectedKey !== 'move:a'; }), JSON.stringify(two.map(function (p) { return p.rejectedKey; })));
+  close('d is chosen minus rejected, dim by dim', two[0].d[0], 3 - 1, 0);
+  close('...including the switch column\u2019s own scale', two[1].d[5], 3 - 2, 0);
+  eq('the pair is labelled with both sides and their kinds',
+    [two[0].chosenKey, two[0].kind], ['move:a', 'move>move']);
+  eq('--all-negatives emits every non-chosen line',
+    prefData.pairDifferences(chosen, pool, { allNegatives: true }).length, 3);
+  eq('a menu with no alternative produces no pair',
+    prefData.pairDifferences(chosen, [chosen], { negatives: 2 }).length, 0);
+  eq('...and so does a menu whose vectors are the wrong length',
+    prefData.pairDifferences(chosen, [{ key: 'x', kind: 'move', vec: [1, 2], score: 1 }], {}).length, 0);
+  eq('--negatives is clamped to at least one negative', prefData.parseArgs(['--negatives', '0']).negatives, 1);
+  eq('--battles 0 means every battle, and is carried as 0 (the extractor expands it)',
+    prefData.parseArgs(['--battles', '0']).battles, 0);
+
+  /* THE REFUSALS. A ragged or non-finite pair file must be a named error, never a NaN fit. */
+  throwsWith('a payload with no pairs is refused', function () { prefFit.pairsOf({ pairs: [] }); }, /no pairs/);
+  throwsWith('a pair with the wrong dimension is refused',
+    function () { prefFit.pairsOf({ pairs: [{ d: [1, 2, 3] }] }); }, /dims/);
+  throwsWith('a non-finite difference is refused',
+    function () {
+      const d = new Array(128).fill(0);
+      d[7] = NaN;
+      prefFit.pairsOf({ pairs: [{ d: d }] });
+    }, /not finite/);
+  throwsWith('an empty difference set cannot be fitted',
+    function () { prefFit.fitPreference([], {}); }, /no pairs/);
+
+  /* AND THE BASELINE LINE the tool prints: the shipped vector, scored on the same pairs. It has to
+   * be a real 128-vector from the live evaluator, or the comparison would be against nothing. */
+  const shipped = prefFit.shippedVector(ST);
+  check('the shipped vector is available to score the same pairs',
+    Array.isArray(shipped) && shipped.length === 128 && shipped.some(function (v) { return v !== 0; }),
+    shipped && String(shipped.length));
+  const shippedAcc = prefFit.pairwiseAccuracy(shipped, pairs.map(function (p) { return p.d; }));
+  check('...and it is scored as a fraction in [0, 1]',
+    typeof shippedAcc === 'number' && shippedAcc >= 0 && shippedAcc <= 1, String(shippedAcc));
+
+  /* THE BUG THE FIRST VERSION SHIPPED, ON A REAL BATTLE. `simulate(...).state` is a prototype
+   * overlay whose HP lives in `_sim`, and `extractVector` never reads `_sim` — so reading the vector
+   * off it returns the SAME 128 numbers for every action, every difference is exactly zero, and the
+   * fit collapses to zero at chance. The vector has to come from the engine's own payoff leaf. */
+  prefData.resetLeafStats();
+  const realLog = fs.readFileSync(path.join(__dirname, '..', 'test_log.txt'), 'utf8');
+  const real = prefData.pairsForBattle(ST, ST.util, { log: realLog }, ['p1', 'p2'], {
+    buildEngine: require('../tools/benchmark_human_match.js').buildEngine,
+    format: null, negatives: 2, randomNegative: true, battleIndex: 0
+  });
+  check('a real 30-turn battle yields scored decisions and pairs',
+    real.decisions > 20 && real.pairs.length > 20, real.decisions + ' decisions, ' + real.pairs.length + ' pairs');
+  check('every leaf vector came from the engine\u2019s payoff leaf, none from the fallback',
+    prefData.leafStats.exact > 0 && prefData.leafStats.fallback === 0 && prefData.leafStats.none === 0,
+    JSON.stringify(prefData.leafStats));
+  const zeroPairs = real.pairs.filter(function (p) {
+    return p.d.every(function (v) { return v === 0; });
+  });
+  check('...so the pairs are NOT exact zero differences (the overlay bug)',
+    zeroPairs.length < real.pairs.length * 0.25,
+    zeroPairs.length + ' of ' + real.pairs.length + ' pairs are all-zero');
+  const realSlices = {};
+  real.pairs.forEach(function (p) { realSlices[p.slice] = (realSlices[p.slice] || 0) + 1; });
+  check('each pair carries the board slice it was decided on',
+    Object.keys(realSlices).every(function (k) { return ['early', 'crucible', 'late'].indexOf(k) !== -1; }) &&
+    Object.keys(realSlices).length >= 2, JSON.stringify(realSlices));
+  check('...and both negative kinds are emitted, tagged',
+    real.pairs.some(function (p) { return p.source === 'hard'; }) &&
+    real.pairs.some(function (p) { return p.source === 'random'; }), '');
+
+  /* A TIED PAIR (two clicks leaving the same board) is dropped by the fitter, counted: it labels a
+   * coin flip as a preference and could only add noise to every accuracy in the report. */
+  const tied = new Array(128).fill(0);
+  const informative = new Array(128).fill(0);
+  informative[6] = -0.25;
+  const mixed = prefFit.pairsOf({ pairs: [{ d: tied, slice: 'early' }, { d: informative, slice: 'crucible' }] });
+  eq('a tied pair is dropped, not fitted', mixed.D.length, 1);
+  eq('...and the count says how many', mixed.ties, 1);
+  throwsWith('a payload of nothing but ties cannot be fitted',
+    function () { prefFit.pairsOf({ pairs: [{ d: tied }] }); }, /tie/);
+  eq('the slice travels with the pair', mixed.slices[0], 'crucible');
+  eq('the negative kind travels too', prefFit.pairsOf({ pairs: [{ d: informative, source: 'random' }] }).sources[0], 'random');
+
+  /* THE CLI WRITES THE PAYLOAD AS A STREAM. A full-corpus run is hundreds of thousands of pairs and
+   * accumulating them before stringifying ran node out of heap on the real corpus, writing NOTHING.
+   * So the file has to be valid JSON with the pairs present and the counters in `summary`, produced
+   * one battle at a time. Pinned end to end on the repo's own battle. */
+  const tmpDir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'st-pref-'));
+  const corpusPath = path.join(tmpDir, 'corpus.json');
+  fs.writeFileSync(corpusPath, JSON.stringify({
+    format: 'gen9nationaldex', replays: [{ id: 'test_log', rating: 1800, winner: 'p1', log: realLog }]
+  }));
+  const outPath = path.join(tmpDir, 'pairs.json');
+  const rc = prefData.main(['--input', corpusPath, '--out', outPath, '--battles', '0', '--quiet', '--random-negative']);
+  eq('the extractor CLI exits clean', rc, 0);
+  const streamed = JSON.parse(fs.readFileSync(outPath, 'utf8'));
+  check('the streamed payload is valid JSON with its pairs', Array.isArray(streamed.pairs) && streamed.pairs.length > 0,
+    String(streamed.pairs && streamed.pairs.length));
+  eq('...and a trailing summary carrying the counters',
+    [streamed.summary.samples, streamed.summary.decisions, streamed.pairs.length],
+    [streamed.pairs.length, streamed.summary.decisions, streamed.pairs.length]);
+  check('...including how each vector was built', streamed.summary.leafPaths.exact > 0 &&
+    streamed.summary.leafPaths.fallback === 0, JSON.stringify(streamed.summary.leafPaths));
+  check('...with every pair labelled by its slice and its negative kind',
+    streamed.pairs.every(function (p) {
+      return ['early', 'crucible', 'late'].indexOf(p.slice) !== -1 &&
+        ['hard', 'random'].indexOf(p.source) !== -1;
+    }), JSON.stringify(streamed.pairs.slice(0, 1)));
+  try { fs.unlinkSync(corpusPath); fs.unlinkSync(outPath); } catch (e) { /* best effort */ }
+  try { fs.rmdirSync(tmpDir); } catch (e) { /* best effort */ }
+
+  /* THE SLICE FILTER AND THE PER-SLICE READING (`--slice crucible` is the "only contested mid-game
+   * decisions" experiment; it is a filter, not a weight, because a pair either is contested or not). */
+  const slicesFixture = ['early', 'crucible', 'crucible', 'late'];
+  eq('keepIndices all keeps everything', prefFit.keepIndices(slicesFixture, 'all').length, 4);
+  eq('...and a named slice keeps exactly its own', prefFit.keepIndices(slicesFixture, 'crucible'), [1, 2]);
+  const wUp = new Array(128).fill(0); wUp[6] = -1;      // prefers the chosen side when their HP is lower
+  const bySlice = prefFit.pairwiseAccuracyBySlice(wUp, [informative, informative.map(function (v) { return -v; })],
+    ['crucible', 'early']);
+  close('the per-slice reading scores each bucket on its own pairs', bySlice.crucible.accuracy, 1, 0);
+  close('...and the other bucket can be the mirror image', bySlice.early.accuracy, 0, 0);
+  eq('...with the counts it was computed on', [bySlice.crucible.n, bySlice.early.n, bySlice.late.n], [1, 1, 0]);
+  eq('an empty bucket reports a null accuracy, not 0.5', bySlice.late.accuracy, null);
+}
+
+/* =========== 13. the pooled AUC cut into opening / crucible / cleanup, and the crucible weight */
+
+section('13. mid-game slices, the crucible weight, and the sliced hold-out report');
+{
+  /* Boards built the way the extractor writes them: dims 0..5 my HP fractions, 6..11 theirs,
+   * 12..17 / 18..23 the faint flags. */
+  const boardRow = function (aliveMy, aliveOpp, myHpPct, oppHpPct) {
+    const x = new Array(128).fill(0);
+    for (let i = 0; i < 6; i++) {
+      x[i] = i < aliveMy ? myHpPct / 100 : 0;
+      x[6 + i] = i < aliveOpp ? oppHpPct / 100 : 0;
+      x[12 + i] = i < aliveMy ? 0 : 1;
+      x[18 + i] = i < aliveOpp ? 0 : 1;
+    }
+    return x;
+  };
+
+  /* THE PARTITION, with the precedence stated in the code: the opening qualifies as "both sides
+   * >= 3 alive and |delta| <= 1" too, so early wins the tie and the crucible is the rest of the
+   * LEVEL mid-game. */
+  eq('6v6 at full HP is the opening', fitter.sliceOf(boardRow(6, 6, 100, 100)), 'early');
+  eq('6v6 well below full HP is not: the opening slice is HP-gated',
+    fitter.sliceOf(boardRow(6, 6, 80, 80)), 'crucible');
+  eq('a level 4v4 is the crucible', fitter.sliceOf(boardRow(4, 4, 50, 50)), 'crucible');
+  eq('a level 3v3 is still the crucible', fitter.sliceOf(boardRow(3, 3, 40, 40)), 'crucible');
+  eq('one body up (4v3) is still the crucible', fitter.sliceOf(boardRow(4, 3, 40, 40)), 'crucible');
+  eq('two bodies up (5v3) is cleanup, not the crucible', fitter.sliceOf(boardRow(5, 3, 40, 40)), 'late');
+  eq('a side down to two bodies is cleanup whatever the other side has',
+    fitter.sliceOf(boardRow(6, 2, 40, 40)), 'late');
+  eq('...and so is a 2v2', fitter.sliceOf(boardRow(2, 2, 50, 50)), 'late');
+  const b = fitter.boardOf(boardRow(5, 3, 40, 60));
+  eq('the board reading counts lives from the FAINT flags, not the HP column',
+    [b.aliveMy, b.aliveOpp, b.aliveDiff, b.minAlive], [5, 3, 2, 3]);
+  close('...and sums total HP as a fraction of twelve bodies', b.hpTotal, 5 * 0.4 + 3 * 0.6, 1e-12);
+
+  /* THE SLICED AUC. Counts have to add up to the whole hold-out, and each bucket's number has to
+   * equal the same statistic computed on that bucket alone. */
+  const rows = [
+    { x: boardRow(6, 6, 100, 100) }, { x: boardRow(6, 6, 100, 100) },
+    { x: boardRow(4, 4, 60, 60) }, { x: boardRow(4, 4, 60, 60) },
+    { x: boardRow(6, 2, 40, 40) }, { x: boardRow(6, 2, 40, 40) }
+  ];
+  const labels = [1, 0, 1, 0, 1, 0];
+  const scores = [3, 1, 2.5, 2.4, 5, 4];
+  const cut = fitter.slicedAuc(scores, labels, rows);
+  eq('the three slices partition the rows',
+    [cut.early.n + cut.crucible.n + cut.late.n, cut.all.n], [6, 6]);
+  close('the opening slice is scored on its own rows', cut.early.auc, fitter.auc([3, 1], [1, 0]), 1e-12);
+  close('...the crucible on its own', cut.crucible.auc, fitter.auc([2.5, 2.4], [1, 0]), 1e-12);
+  close('...and the cleanup on its own', cut.late.auc, fitter.auc([5, 4], [1, 0]), 1e-12);
+  const single = fitter.slicedAuc([1, 2, 3, 4], [1, 1, 0, 0], rows.slice(0, 4));
+  eq('a bucket with only one class reports null, never 0.5', single.early.auc, null);
+  eq('a bucket with no rows reports n = 0', fitter.slicedAuc([1], [1], [rows[0]]).late.n, 0);
+
+  /* THE CRUCIBLE SCHEDULE: a three-value step, with the weight share it actually buys reported. */
+  const schedRows = [
+    { x: boardRow(6, 6, 100, 100) },   // opening
+    { x: boardRow(4, 4, 50, 50) },     // crucible
+    { x: boardRow(3, 3, 30, 30) },     // crucible
+    { x: boardRow(5, 3, 30, 30) },     // late cleanup, but a two-body edge: not lopsided
+    { x: boardRow(5, 2, 30, 30) }      // lopsided cleanup (three bodies up)
+  ];
+  const sched = fitter.crucibleWeights(schedRows, {});
+  eq('the opening rows carry the early weight', sched.weights[0], 0.15);
+  eq('the contested rows carry 1', [sched.weights[1], sched.weights[2]], [1, 1]);
+  eq('cleanup carries the late weight', sched.weights[3], 0.15);
+  eq('a lopsided cleanup carries the smallest', sched.weights[4], 0.08);
+  close('the crucible share of total weight is reported, not assumed',
+    sched.share.crucible, 2 / (2 + 0.15 + 0.15 + 0.08), 1e-12);
+  eq('...with the row counts behind it', [sched.counts.early, sched.counts.crucible, sched.counts.late, sched.counts.lopsided],
+    [1, 2, 1, 1]);
+  const custom = fitter.crucibleWeights(schedRows, { early: 0.5, late: 0.4, lopsided: 0.1 });
+  eq('the three step weights are tunable', [custom.weights[0], custom.weights[3], custom.weights[4]], [0.5, 0.4, 0.1]);
+
+  /* THE WEIGHTED FIT. All-ones must be the old fit bit for bit; a schedule that zeroes the opening
+   * must actually move the coefficients; a malformed schedule is a named error. */
+  const rngW = mulberry32(777001);
+  const Xw = [], yw = [];
+  for (let i = 0; i < 400; i++) {
+    const row = new Array(128).fill(0);
+    row[0] = rngW();
+    row[6] = rngW();
+    Xw.push(row);
+    yw.push(row[0] > 0.5 ? 1 : 0);
+  }
+  const ones = new Array(400).fill(1);
+  const plain = fitter.fitLogistic(Xw, yw, { lambda: 0.5 });
+  const weightedOnes = fitter.fitLogistic(Xw, yw, { lambda: 0.5, weights: ones });
+  let maxDiff = 0;
+  for (let j = 0; j < 128; j++) maxDiff = Math.max(maxDiff, Math.abs(plain.coef[j] - weightedOnes.coef[j]));
+  check('a weight vector of all ones reproduces the unweighted fit', maxDiff < 1e-9, String(maxDiff));
+  check('...including the intercept', Math.abs(plain.intercept - weightedOnes.intercept) < 1e-9,
+    String(plain.intercept) + ' vs ' + String(weightedOnes.intercept));
+  const halfOff = ones.map(function (w, i) { return i % 2 ? 0 : 1; });
+  const halfModel = fitter.fitLogistic(Xw, yw, { lambda: 0.5, weights: halfOff });
+  check('zeroing half the rows changes the fit', Math.abs(halfModel.coef[0] - plain.coef[0]) > 1e-6,
+    String(halfModel.coef[0]) + ' vs ' + String(plain.coef[0]));
+  throwsWith('a negative weight is refused',
+    function () { fitter.fitLogistic(Xw, yw, { lambda: 0.5, weights: ones.map(function (w, i) { return i === 3 ? -1 : 1; }) }); },
+    /non-negative/);
+  throwsWith('a weight vector of the wrong length is refused',
+    function () { fitter.fitLogistic(Xw, yw, { lambda: 0.5, weights: [1, 1] }); }, /weights/);
+  throwsWith('a schedule that zeroes every row is refused',
+    function () { fitter.fitLogistic(Xw, yw, { lambda: 0.5, weights: new Array(400).fill(0) }); }, /zero weight/);
+
+  /* `run()` REPORTS THE SLICES AND THE SCHEDULE. Built from the same rng rows, with half the boards
+   * early and half crucible, and a one-battle-per-two-rows provenance so the grouped split runs. */
+  const payloadRows = [];
+  for (let i = 0; i < 240; i++) {
+    const row = new Array(128).fill(0);
+    const earlyBoard = i % 2 === 0;
+    const alive = 6;
+    const hpPct = earlyBoard ? 100 : 55;
+    const base = boardRow(alive, alive, hpPct, hpPct);
+    // The signal goes in dims the SLICE never reads (100/101), or the random value would move the
+    // HP that decides whether the board is an opening — the fixture would stop being one half early.
+    base[100] = rngW();
+    base[101] = rngW();
+    payloadRows.push({ x: base, y: base[100] > 0.5 ? 1 : 0 });
+  }
+  const payload = {
+    dimensions: 128, rows: payloadRows,
+    replays: []
+  };
+  for (let i = 0; i < 120; i++) payload.replays.push({ rows: 2 });
+  const weightedReport = fitter.run(payload, { lambda: 1, holdout: 5, dropCollinear: false, crucibleWeight: {} });
+  check('run() reports a sliced hold-out AUC alongside the pooled one',
+    !!weightedReport.aucTestSlices && weightedReport.aucTestSlices.all.n === weightedReport.testSamples,
+    JSON.stringify(weightedReport.aucTestSlices && weightedReport.aucTestSlices.all));
+  eq('the slices still partition the hold-out',
+    weightedReport.aucTestSlices.early.n + weightedReport.aucTestSlices.crucible.n + weightedReport.aucTestSlices.late.n,
+    weightedReport.testSamples);
+  check('the pooled AUC is the all-slice number',
+    Math.abs(weightedReport.aucTestSlices.all.auc - weightedReport.aucTest) < 1e-12, '');
+  check('the schedule is recorded with its achieved share, never as a bare flag',
+    weightedReport.crucibleWeight && weightedReport.crucibleWeight.enabled === true &&
+    weightedReport.crucibleWeight.crucibleShareOfWeight > 0.5 &&
+    weightedReport.crucibleWeight.counts.early === 120, JSON.stringify(weightedReport.crucibleWeight));
+  const unweighted = fitter.run(payload, { lambda: 1, holdout: 5, dropCollinear: false });
+  eq('an unweighted fit records no schedule at all', unweighted.crucibleWeight, undefined);
+  check('...and still reports its slices', !!unweighted.aucTestSlices && unweighted.aucTestSlices.all.n > 0, '');
+
+  /* THE SLICED REPORT TOOL scores a stored vector on the same hold-out, and reads a row either as
+   * the `{x,y}` object the fitter hands around or as a bare x array. */
+  const wTiny = new Array(128).fill(0); wTiny[0] = 1; wTiny[6] = -1;
+  const asObjects = slicer.aucOf(wTiny, payloadRows.map(function (r) { return { x: r.x }; }),
+    payloadRows.map(function (r) { return r.y; }));
+  const asArrays = slicer.aucOf(wTiny, payloadRows.map(function (r) { return r.x; }),
+    payloadRows.map(function (r) { return r.y; }));
+  close('the report scores row objects and bare vectors identically',
+    asObjects.all.auc, asArrays.all.auc, 1e-12);
+  check('...and it slices them too', asObjects.early.n > 0 && asObjects.crucible.n > 0,
+    JSON.stringify([asObjects.early.n, asObjects.crucible.n]));
+  const shippedW = slicer.shippedVector();
+  check('the shipped vector is loadable for the baseline row',
+    Array.isArray(shippedW) && shippedW.length === 128, shippedW && String(shippedW.length));
 }
 
 function summarize() {

@@ -296,7 +296,23 @@ tools/fit_weights.js       IRLS logistic regression over those rows -> weights +
                            taken over whole battles, not over turns of one battle; `--crosses`
                            appends interaction terms to the fitted matrix (measured, not adopted);
                            an EXACT linear duplicate among the 128 columns is detected from the
-                           data and dropped (`--keep-collinear-macro` keeps it)
+                           data and dropped (`--keep-collinear-macro` keeps it); the hold-out is
+                           ALSO reported in three slices (opening / contested mid-game / cleanup)
+                           and `--crucible-weight` down-weights the opening and lopsided turns
+                           so the gradient is mostly the level mid-game (opt-in: a weighted fit
+                           is a different model and never lands in an artifact by accident)
+tools/extract_preference_data.js  a replay corpus -> WITHIN-TURN preference pairs:
+                           x(s, a_human) - x(s, a_rejected), each vector read off the engine's own
+                           payoff leaf (`trace.leaf`), with hard negatives (the lines the current
+                           evaluator likes most) plus one random negative per decision as an
+                           unbiased evaluation subset, each pair stamped with its board slice
+tools/fit_preference_weights.js   Bradley-Terry / Plackett-Luce on those differences; reports
+                           pairwise accuracy on held-out BATTLES, the same number for the shipped
+                           vector on the same pairs, the random-negative (unbiased) reading, the
+                           per-slice split, and `--slice crucible` to fit only the level mid-game
+tools/report_auc_slices.js      scores any stored 128-vector on the fitter's own battle-grouped
+                           hold-out and prints the pooled AUC beside the three slices, so a pooled
+                           number cannot hide where it comes from
 tools/refit_weights.js     the one-command refit: probe the corpus (or take `--input`), extract
                            with any `--set` flags, fit, report the hold-out AUC and the dropped
                            columns; refuses with exit 2 rather than fitting over nothing
@@ -1074,6 +1090,29 @@ the only difference, instead of from a hand-edited copy of `config.js` that coul
 own diff. A 200-replay subset re-extracted that way is row-for-row and provenance-for-provenance
 identical to the single largest arm used below, which is what makes the §P8 refit reproducible from
 a checkout (`tests/weights_check.js` §5c pins the flag's contract).
+
+The pooled hold-out is not one number, and the pipeline now says so. `tools/fit_weights.js` reports
+its hold-out in three slices — the opening (6v6, total HP over 1050 %), the **crucible** (both sides
+still on three or more bodies with the material level) and the cleanup (a two-body edge, or a side
+down to two) — and `tools/report_auc_slices.js` scores any stored vector on the same grouped split.
+The shipped artifact reads **72.6 pooled / 57.3 early / 69.8 crucible / 86.4 late**: most of the
+pooled figure is the cleanup, so a change has to be read at the crucible to know whether it
+understands a LEVEL board. `--crucible-weight` is the matching opt-in: a three-value row schedule
+(early x0.15, lopsided cleanup x0.08, other cleanup x0.15, crucible x1) that puts ~90 % of the fit's
+weight in the contested mid-game and reports the share it achieved. It buys +0.4 crucible, which is
+real and small; it is a different model, so it never lands in an artifact by accident.
+
+A second objective lives beside the winner fit and is deliberately NOT interchangeable with it.
+`tools/extract_preference_data.js` records the human's own click as a preference —
+`x(s, a_human) - x(s, a_rejected)`, both vectors read off the engine's payoff leaf — and
+`tools/fit_preference_weights.js` fits a Bradley-Terry ranking on those differences, reported as
+pairwise accuracy on held-out battles. It is the better POLICY instrument: **70.9 % vs the shipped
+vector's 64.1 %** on 31,599 held-out pairs where 50 % is chance (random negatives; the hard-negative
+subset is chosen by the vector under correction, so its accuracy is not a chance line and the fit
+that trains on it generalises WORSE, 63.8 %). It is the worse STATE evaluator — 54.6 at the crucible
+against 69.8 — because the dimensions that are constant within one turn carry no gradient in a
+difference fit, and those are exactly the level terms that rank boards. A preference vector is a
+policy direction; `weights128` is a value direction.
 
 The last question asked of that pipeline was whether it pays to add interaction terms. A single
 dot product cannot say "Kingambit is only worth this once its allies have fainted and no

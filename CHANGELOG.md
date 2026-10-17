@@ -11,6 +11,54 @@ reaches a verdict.
 
 ## Unreleased
 
+### Added — the pooled AUC is cut into opening / crucible / cleanup, and the fit can be weighted
+
+The single hold-out number hid where it came from. `tools/fit_weights.js` now reports the hold-out in
+three slices — **early** (6v6, total HP > 1050 %), **crucible** (both sides >= 3 bodies, |alive delta|
+<= 1, not early) and **late** (a material edge of 2+, or a side down to 2) — as a PARTITION, because the
+natural definitions overlap. `tools/report_auc_slices.js` scores any stored 128-vector on the same
+grouped hold-out and prints the pooled number beside all three. On this corpus (2,913 battles / 107,024
+rows; 22,047 held-out rows over 704 whole battles) the shipped artifact reads **72.6 pooled, 57.3 early,
+69.8 crucible, 86.4 late**: the pooled figure is mostly the cleanup, and the crucible is where the
+headroom is.
+
+Two findings follow from the slicing, and neither was visible pooled. **The deployed config vector is
+1.9 points worse at the crucible than the artifact it came from** (67.9 vs 69.8) — that is the adoption
+step, not the fit: `mapToSpec` folds the 36 threat cells into two scalars, and the threat matrix is
+what tells two LEVEL boards apart. Not adopted (it changes every ranking and the win-rate gate is
+unrun). And **`--crucible-weight`** — an opt-in per-row schedule (early x0.15, lopsided cleanup x0.08,
+late x0.15, crucible x1, putting 90.4 % of the weight in 56.5 % of the rows, and reporting that share
+rather than asserting it) — buys **+0.4 crucible / +0.3 pooled** (67.7 -> 68.1, 71.2 -> 71.6) but does
+not close the gap to the artifact. A weighted fit is a different model, so it never lands in an
+artifact by accident; all-ones weights are bit-identical to the old fit, pinned.
+
+### Added — contrastive WITHIN-TURN preference learning, and why it is an instrument, not a replacement
+
+New: `tools/extract_preference_data.js` turns a replay corpus into pairs
+`d = x(s, a_human) - x(s, a_rejected)` — two hard negatives (the lines the current vector likes most)
+plus one uniformly random negative per decision — and `tools/fit_preference_weights.js` fits `w` by
+Bradley-Terry on those differences, reporting pairwise accuracy on held-out BATTLES, the same number
+for the shipped vector on the same pairs, the unbiased random-negative reading, and a per-slice split.
+`x` is read off the engine's own payoff leaf via `_payoff`'s `trace.leaf` (one added assignment), so
+the training target is the board the deployed ranking actually scores.
+
+**The result is that the objective matters more than the label does.** 2,913 elite battles -> 164,963
+decisions / 489,805 pairs, every vector from the payoff leaf (0 fallbacks): on the unbiased
+random-negative instrument (31,599 held-out pairs, 50 % = chance) the preference fit ranks the human's
+click **70.9 % against the shipped vector's 64.1 % (+6.8 pp)** — but as a 128-dim STATE scorer it
+scores **54.6 at the crucible against the artifact's 69.8**, because the dimensions that are constant
+within a turn (both sides' HP, status, hazards, boosts) carry no gradient in a difference fit, and
+those are exactly the level terms that rank boards. It is a better policy ranker and a worse evaluator;
+not a drop-in replacement for `weights128`, and not adopted.
+
+Two traps found and pinned. Reading `x` off `simulate(...).state` returns the SAME vector for every
+action — its HP lives in `_sim`, which `extractVector` never reads — so the first version emitted 200
+pairs of exact zeros and fitted to zero at chance; `tests/weights_check.js` §12 now pins real pairs,
+non-zero differences and the payoff-leaf path. And **hard negatives generalise worse than random ones**
+(63.8 % vs 70.9 % on the unbiased instrument): the hard set is selected by the vector under correction,
+so the fit learns that vector's boundary instead of the human's direction — which is why the extractor
+emits both kinds and the report prints both.
+
 ### Added — Future Sight, Doom Desire and Wish resolve a turn later (and are priced that way)
 
 The leaf priced a delayed move as an immediate one. It is not: the sim parks a slot condition

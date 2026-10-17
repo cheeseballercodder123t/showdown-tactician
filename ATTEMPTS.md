@@ -91,6 +91,7 @@ wins** (16 of the 17) by making progress outrank passivity late in a game.
 | C5 | **The KO cliff on the exact 16 rolls** (`laplace.rollKoBranch`, id `rollkobranch`) | `_payoff` moved the target by `avgPercent`, the MEAN of the 16 rolls, and clamped at 0 — so a mean 1 % past the target was priced as a certain OHKO nothing answered from, while a mean 3 % short left it alive with its reply landing in full. On, the transition becomes the expectation over the two outcomes, `(1 - p) x survives`, with `p` the exact share of rolls that reach (`koChanceExact`, already computed by `calc_engine` and thrown away by `_payoff` before this), the surviving branch floored so 15-of-16 is not a KO | **no reading yet — the flag ships `false` on an UNRUN gate.** What IS established without a battle is the property the tier exists for: the discontinuity is gone, the transition is monotone in `p`, and both endpoints (`p` 0 and 1) reproduce the shipped scalar exactly, pinned as identities in `tests/quiescence_check.js` §8 (127 checks) rather than as constants. The damage result's SHAPE is unchanged while the tier is off, which is what keeps the shipped behaviour bit-identical | **UNRESOLVED, and its ceiling is bounded by construction**: the flag now carries BOTH halves. The HP half is `(1 - p) x survives`; the ordering half adds the `p x V_KO` branch, and it does not invent a speed assumption to get it — `_payoff` asks `_turnOrder` (priority, then Speed through Trick Room) and, only when the faster side's hit has a FRACTIONAL exact chance `p` of fainting the slower one before it moves, scales the slower side's damage by `(1 - p)`. An undecidable order (a tie) and the endpoints `p` 0 and 1 keep the symmetric pricing, so no cell claims a turn the board cannot establish, and every cell that was never ambiguous is bit-identical. A positive reading is therefore no longer a lower bound on the correction — but it is still UNRUN, so it is a prior. Not modelled either: accuracy (a MISS is not a roll) |
 | C7 | **Choice-lock physics, both directions** (`laplace.choiceLock`, ids `choicephysics`, `choicephysics-opplock`, `choicephysics-risk`) | a Choice-locked opponent was priced as if their whole list were legal, so the matrix offered replies the game will refuse; and on our side clicking a move while holding Choice commits us to it against the switch that punishes it (a living bench body that is `0x` immune, by type or a confirmed ability), which was priced at zero | **no reading yet — ships ON as a game rule (the opponent half) and as a rule about our own commitment (the risk half).** Established without a battle: `tests/upgrades_check.js` §7 pins the lock to a world with a known Choice item AND a revealed stint move, pins that a fresh stint (no revealed move) is NOT locked, that `oppLock: false` restores the full column set, and that the risk charge fires only for a LIVING, non-active, `0x`-immune bench body while switching, a status move, a pivot, an already-locked body, a non-Choice item, `cannotBeChoice`, and `enabled: false` all charge 0 | **the win-rate gate is UNRUN for all three rows.** The opponent half cannot be tested on a board whose item is unknown — `isChoiceItem` reads the revealed item, so a hidden Scarf is out of scope by construction rather than half-priced. The risk half is deliberately a FLAT charge (`riskPenalty`), not a probability over what they bring in: the leaf has a bench but no distribution over which body they choose, and inventing one would put a guess into every row. Substitution moves (Trick, Switcheroo) and item-removal restoring the choice are not modelled |
 | C9 | **Delayed moves** (`laplace.delayedMoves`, id `delayed-moves`) | `Future Sight` / `Doom Desire` and `Wish` resolve from a SLOT CONDITION at the residual of the NEXT turn (`endingTurn = turn + 1` in the sim; `|-start|<CASTER>|move: Future Sight`, and the hit lands on whoever stands in the slot by then, from the caster's own stats). The leaf priced the click as an immediate 120 BP hit, so it credited damage the target had a whole turn to switch out of, Protect against or heal, and it never charged the landing to the body that was actually there | **ships ON, as a rules correction rather than a preference** — the same argument as C6: a move that deals nothing this turn cannot be credited with an immediate hit. Established without a battle in `tests/upgrades_check.js` §11: the parser frame and its CASTER slot, the one-turn clock, `|-end|` and the heal frame both clearing the pending entry, the discounted click as an identity against `_damageOf`, a second click into a pending one priced exactly as a failed action, the landing charged to us on its turn but not a turn early, and the Wish heal (+50 on a 40 % body, a no-op at full HP). The ablation row exists so the judgement can be priced on a team that carries the moves | **the human-match instrument is FLAT** — 60 paired battles, shipped vs `delayedMoves.enabled=false`: top-1 **37.2 % → 37.1 %**, contested **30.6 % → 30.5 %**, move-vs-move **37.2 % → 37.0 %**, all inside the ±1.7 CI. That is the expected reading for a rare move: the corpus's human decisions rarely turn on a Future Sight click, so the instrument cannot carry the fix either way. The mirror gate is UNRUN (the team the engine seat is hard-wired to may not carry the move — the row's own caveat says so). NOT modelled: Doom Desire's Steel type is priced by the same path but has no corpus, the caster's stat CHANGES between cast and landing (only its set is used), and a Future Sight whose caster fainted still lands (the sim charges it to the source object, which persists) |
+| C10 | **Contrastive within-turn preference learning** (`tools/extract_preference_data.js`, `tools/fit_preference_weights.js`) | fit `w` on `x(s,a_human) - x(s,a_rejected)` per decision (Bradley-Terry, no intercept) instead of regressing a turn's board onto who won forty turns later; vectors read off the engine's own payoff leaf (`trace.leaf`), hard negatives = the lines the current vector likes most, plus one uniformly random negative per decision as an unbiased subset | **IT WORKS AS A CHOICE MODEL AND FAILS AS A STATE MODEL.** 2,913 elite battles -> 164,963 decisions / 489,805 pairs, every vector from `_payoff`'s own leaf (0 fallbacks). Battle-grouped hold-out (2,905 battles, 581 held out): on the **unbiased** random-negative pairs (31,599 held-out pairs, 50 % = chance) the preference fit trained on random negatives ranks the human's click **70.9 % vs the shipped vector's 64.1 %** — **+6.8 pp**. Trained on HARD negatives it only reaches **63.8 %** on that same instrument, i.e. slightly WORSE than not training (the hard set is selected by the vector being corrected, and the fit learns that selection: 74.1 % on the hard pairs themselves vs the shipped 46.0 %, which is the selection bias, not skill). As a 128-dim STATE scorer on the winner-fit hold-out it is far below the artifact: pooled **54.9** / early 52.5 / crucible **54.6** / late 71.7 against the artifact's 72.6 / 57.3 / 69.8 / 86.4 — because the dims that are CONSTANT within a turn (both sides' HP, status, hazards, boosts) carry no gradient in a difference fit, so exactly the level terms that rank boards are the ones it cannot identify | **OPEN — not adopted, and the objective is the finding.** The brief that motivated it ("winner fitting has hit its ceiling at 0.7260") conflates two different questions: a within-turn preference vector is a better *policy* ranker and a much worse *state* evaluator, so it is not a drop-in replacement for `weights128`. What it IS good for is a separate, cheap instrument for policy work (it scored +6.8 pp where human-match agreement is flat within +/-1.7). The two traps it found, both pinned in `tests/weights_check.js` §12: reading `x` off `simulate(...).state` returns the SAME vector for every action (the HP lives in `_sim`, which `extractVector` never reads — 200 pairs of exact zeros, fitting to zero at chance), and hard negatives selected by the model under correction generalise worse than random ones. Not modelled: their reply is held fixed at their strongest move (a max over their action set is `evaluateTurn`'s job and is 10x the cost), a tied pair is dropped rather than fitted, and the fit is linear with no residual head |
 | C8 | **Team-preview synergy prior** (`pruner.synergy`, id `pruner-synergy`) and **the win-con chip bounty** (`laplace.wincon.maxBounty`) | `|poke|` carried their six names and the pruner ignored them; and the win-con ledger credited only `faintedIds`, so chipping a roadblock from 90 % to 40 % — exactly how a wall stops answering our sweeper — was worth nothing | **the synergy prior ships ON as a PRIOR, not a proof**: it multiplies a candidate set's BASE weight (a Drizzle body lifts their Rain sets, Drought the Sun sets, `U.TR_SETTERS` plus slow breakers the Trick Room sets, otherwise 1.35 / 1.25 / 0.25 lever factors), and it is applied only to candidates that survived every hard deduction — pinned in `tests/scout_check.js` §7b, including that a factor can never resurrect a dropped set and that a second call rebases instead of compounding. The chip bounty pays in proportion to the share of the gap to the sweeper's OHKO break point a hit closes, pinned in `tests/wincon_check.js` | **UNMEASURED for the prior** (`pruner-synergy` is a `neutral`-expectation row with an explicit UNMEASURED caveat: a delta means the pool was already wide enough for the prior to re-rank, zero means the corpus never disagreed). The chip bounty has no row of its own — it is a magnitude inside the `wincon` tier, whose own gate is still unrun. Not modelled in the prior: their EV spreads, their Tera types, and the case where the synergy body is revealed *after* team preview |
 
 ---
@@ -1821,3 +1822,144 @@ number that decides it. On this corpus that number says keep the shipped vector.
 ---
 
 
+## Q. Where the pooled 0.7260 actually comes from, and what a preference fit can and cannot replace (2026-10-17)
+
+The brief for this pass had one premise and one proposal. The premise: *"standard end-of-game winner
+fitting has hit its ceiling at 0.7260 AUC."* The proposal: train the same 128 weights on the human's
+turn-by-turn CHOICE — `w · (x(s, a_human) - x(s, a_rejected))` — instead of on who won forty turns
+later. It also asked for the 0.7260 to be cut by board state (opening / equal-material mid-game /
+cleanup), and for a weight schedule that puts most of the fit's gradient on the contested mid-game.
+
+The proposal is BUILT and MEASURED. It does not do what the premise wanted, and the reason is the
+useful part: **a within-turn preference vector is a better policy ranker and a much worse state
+evaluator.** Both halves are measured below, on battle-grouped hold-outs, and the register row is
+§C10.
+
+### Q1. The pooled AUC is mostly cleanup, and the deployed vector is not the artifact
+
+`tools/report_auc_slices.js` scores any stored 128-vector on the fitter's own grouped hold-out
+(`corpus/training_data.json`, 107,024 rows; 22,047 held-out rows over 704 whole battles) and cuts it
+three ways. The slices are a PARTITION, in this precedence, because the natural definitions overlap
+(a 6v6 at full HP also satisfies "both sides ≥ 3 alive, |Δalive| ≤ 1"):
+
+* **early** — 6v6 and total HP over 1050 % (87.5 % average across twelve bodies)
+* **crucible** — not early, both sides ≥ 3 alive, `|alive_my − alive_opp| ≤ 1`
+* **late** — everything else: a material edge of 2+ bodies, or a side down to ≤ 2
+
+| model | pooled | early (n=4,492) | **crucible (n=12,532)** | late (n=5,023) |
+|---|---|---|---|---|
+| shipped **artifact** (`lib/trained-weights.json`, 128 dims) | **72.6** | 57.3 | **69.8** | 86.4 |
+| shipped **config** vector (`DenseStateEvaluator.defaultWeights()`, what actually scores) | 71.5 | 57.0 | 67.9 | 85.9 |
+| fresh refit, λ 0.5, collinearity projection | 71.2 | 55.9 | 67.7 | 85.9 |
+| fresh refit **with the crucible weight** (90.4 % of the weight in the crucible) | 71.6 | 56.8 | 68.1 | 86.1 |
+| preference fit, hard negatives | 47.7 | 50.7 | 47.7 | 46.0 |
+| preference fit, crucible-only decisions | 47.2 | 50.4 | 47.3 | 43.9 |
+| preference fit, random negatives | 54.9 | 52.5 | 54.6 | 71.7 |
+
+Three readings, in order of how much they change anything:
+
+1. **The crucible is where the numbers differ, and the shipped artifact wins it.** 69.8 against 68.1
+   (weighted refit) and 67.7 (plain refit). The hypothesis that the refit would win on equal-material
+   mid-game boards is not supported: it loses there too, by the same order it loses pooled.
+2. **The deployed vector is 1.9 points WORSE at the crucible than the artifact it was derived from**
+   (67.9 vs 69.8), and 1.1 points worse pooled. That is not a refit question — it is the ADOPTION
+   path: `mapToSpec` folds the 36 threat cells (dims 76..111) into two scalars (`threat` = the mean of
+   the 30 off-diagonal cells, `threatActive` = the mean of the 6 diagonal ones), and the threat matrix
+   is precisely the positional information the crucible slice is asking about. The refit's +0.4
+   crucible gain is smaller than the 1.9 the folding costs. **Not adopted** (it changes every ranking
+   and needs the win-rate gate: ~22 s/battle on this machine, so 60 paired battles is ~45 min of
+   arena), but it is the one row here with a concrete, already-built candidate behind it.
+3. **The early slice is 57, not 0.5.** It is not a leak: at 6v6 full HP the evaluator still reads team
+   composition and matchup threat, which genuinely predicts the winner better than chance and has
+   nothing to do with the position. The noise-check reading the brief expected was too strong; what
+   the slice does establish is that the opening carries 6 points of signal, the crucible 20, and the
+   cleanup 36.
+
+The 0.7260 reproduces exactly on this split, so §P9's number and this one are the same measurement on
+the same corpus (the row counts differ between passes because the extraction that produced
+`training_data.json` keeps 107,024 rows where the §P9 probe reported 91,315).
+
+### Q2. `--crucible-weight`: a three-value step, and what it bought
+
+`tools/fit_weights.js` now accepts per-row weights in the IRLS (`opts.weights`; all-ones is
+bit-identical to the old fit, pinned) and can build them from the board: `early ×0.15`, late-but-not-
+lopsided `×0.15`, lopsided (`|Δalive| ≥ 3` or a side on its last body) `×0.08`, crucible `×1`. On this
+corpus that puts **90.4 % of the total weight** in 56.5 % of the rows, and the report says so
+(`crucibleShareOfWeight`) rather than asserting the schedule worked.
+
+It bought **+0.4 crucible** (67.7 → 68.1) and **+0.3 pooled** (71.2 → 71.6), with the opening slice
+moving the wrong way (+0.9 at the early slice is not a gain: the early number is not supposed to be
+high). That is a real but small effect, an order of magnitude below the artifact's lead, and it is
+**not adopted**: a weighted fit is a different model, so it stays opt-in.
+
+### Q3. The preference fit: what it proves, what it does not
+
+**The pipeline.** `tools/extract_preference_data.js` replays the corpus, and at every `|turn|` header
+builds the menu, simulates each candidate through the engine, and records
+`difference = x(human's click) - x(rejected line)`. `tools/fit_preference_weights.js` fits
+`P = sigmoid(w · d)` by Newton-Raphson with an L2 ridge, standardizing over the training half. The
+number that decides it is pairwise accuracy on held-out BATTLES, printed beside the shipped vector's
+accuracy on the same pairs.
+
+**The transition is the engine's own.** `x` is read off `_payoff`'s leaf (`trace.leaf`, one assignment
+added to the payload's out-parameter), not off `simulate(...).state`. That distinction is not
+cosmetic: `simulate`'s `state` is a prototype overlay whose HP lives in `_sim`, and `extractVector`
+never reads `_sim` — the first version of the extractor read the vector off it and produced 200 pairs
+of **exact zeros**, which fit to a zero vector at chance. The pinned regression in
+`tests/weights_check.js` §12 is that a real 30-turn battle's pairs are NOT zero differences and that
+every vector came from the payoff leaf (0 fallbacks on the full corpus: 996,560 vectors).
+
+**Result: +6.8 points as a choice model, −15 points as a state model.**
+
+The corpus: 2,913 elite battles → 164,963 decisions → 489,805 pairs (two hard negatives plus one
+uniformly random negative per decision). Held-out by battle (581 of 2,905).
+
+| instrument (held-out, 50 % = chance) | shipped vector | preference fit | Δ |
+|---|---|---|---|
+| **random-negative pairs** (unbiased, n = 31,599), fit trained on random negatives | 64.1 % | **70.9 %** | **+6.8 pp** |
+| same instrument, fit trained on HARD negatives | 64.1 % | 63.8 % | −0.3 pp |
+| hard-negative pairs (n = 62,635), fit trained on hard negatives | 46.0 % | 74.1 % | +28.1 pp |
+| same instrument, fit trained on CRUCIBLE decisions only | 64.1 % | 62.3 % | −1.8 pp |
+
+Two of those rows are traps that the tooling now makes visible rather than invisible:
+
+* **The 46 % is selection, not weakness.** Hard negatives are the lines the CURRENT vector scores
+  highest among the ones the human did not take, so asking that same vector to beat them can only
+  score below chance — the pair was chosen because it likes the wrong side. The honest instrument is
+  the uniformly random negative, where nothing was selected and 50 % is chance. The extractor emits
+  one per decision (`--random-negative`) precisely so the report can print both.
+* **Hard negatives generalise WORSE than random ones** (63.8 vs 70.9 on the unbiased instrument), even
+  though they look 10 points better on their own pairs. The set is chosen by the model under
+  correction, so the fit learns that model's boundary — the fine HP/boost tradeoff between its top two
+  lines — rather than the human's general direction. This was the pass's most confidently held prior
+  and the measurement goes the other way.
+* **Restricting training to the crucible does not help either** (62.3 on the unbiased instrument): the
+  level boards supply fewer, harder pairs, and the fit is worse for it.
+
+**Why it cannot replace the state weights.** On the winner-fit hold-out the preference vector scores
+72.6 → **54.9** pooled, and 69.8 → **54.6** at the crucible. The mechanism is structural, not a
+tuning failure: in a difference fit, a dimension that is CONSTANT within a turn contributes nothing to
+the gradient, and the dims that are constant within a turn are exactly the level terms — both sides'
+HP, status, hazards, boosts — which are what tell the evaluator who is winning. The fit is also
+intercept-free by construction (the intercept cancels in the difference), so it has no base rate to
+score a single board with. A vector fitted this way is a policy direction; a state evaluator needs a
+value direction.
+
+### Q4. What this pass did NOT establish
+
+* **No win-rate reading of anything.** The mirror gate is unrun: `run_arena.js` costs ~22 s/battle on
+  this machine, so 60 paired battles × 5 arms is ~2 h. The candidate with a number behind it (deploy
+  the raw 128 artifact instead of its folded spec, +1.9 crucible) still needs that run before it ships.
+* **The preference vector's own strength is unmeasured**, and the AUC table says it should not be
+  deployed as a board scorer at all. Its +6.8 pp is a policy-agreement result — §0's rule applies:
+  it can motivate, it cannot adopt.
+* **Their reply is held fixed** at their strongest move when the leaf is built, and a max over their
+  whole action set (what `evaluateTurn` does) is an order of magnitude slower per decision. The
+  induced bias is a reweighting of the reply, not of our click, but it is unmeasured.
+* **Tied pairs are dropped, not modelled** — two clicks that leave the same 128-dim board (6.8 % of
+  the pairs on `test_log.txt`) carry no signal either way; the extractor keeps them as a fact about
+  the menu and the fitter drops them, counted (`tiedPairsDropped`).
+* **The 0.7260 was not beaten by any method tried here.** The ceiling is real for this linear model on
+  this corpus; what the pass adds is that the ceiling belongs to the state objective, that the
+  crucible is where the headroom sits (69.8 of the artifact's 72.6 is not cleanup), and that 1.9
+  points of it are sitting in a lossy adoption step rather than in the fit.

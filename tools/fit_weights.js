@@ -81,6 +81,125 @@ const DIM = 128;
  * whether to prune them is the adoption's decision, not the fitter's. */
 const LOW_SUPPORT_ROWS = 20;
 
+/* ====================================================== mid-game slices and the crucible weight
+ *
+ * A pooled hold-out AUC mixes three different questions. On the opening board (6v6, everyone at
+ * full HP) there is almost nothing to rank — the number can only be noise, and if it is not ~0.5
+ * the evaluator is leaking something it should not know. In a 5v1 it is a material counter, which is
+ * trivial and which dominates the pooled figure because those boards are the ones the fit can
+ * separate. THE ONLY SLICE THAT MEASURES POSITIONAL UNDERSTANDING is the contested mid-game: both
+ * sides still have three or more bodies and the material is level, so hazards, status, boosts and
+ * matchup threat are the only things left that can tell the two teams apart.
+ *
+ * The three slices are a PARTITION, in this precedence, because the user-facing definitions overlap
+ * (6v6 at full HP satisfies "both sides have >= 3 alive and |delta| <= 1" as well):
+ *   early    — 6v6 and total HP over 1050 % (i.e. 87.5 % average across the twelve bodies)
+ *   crucible — not early, both sides >= 3 alive and |alive_my - alive_opp| <= 1
+ *   late     — everything else: a material edge of 2+ bodies, or a side down to 2 or fewer
+ */
+const TEAM = 6;
+const SLICE_EARLY = 'early';
+const SLICE_CRUCIBLE = 'crucible';
+const SLICE_LATE = 'late';
+
+/** boardOf(x) -> { hpMy, hpOpp, hpTotal, aliveMy, aliveOpp, aliveDiff, minAlive } from dims 0..23. */
+function boardOf(x) {
+  let hpMy = 0, hpOpp = 0, aliveMy = 0, aliveOpp = 0;
+  for (let i = 0; i < TEAM; i++) {
+    const a = x[i], b = x[TEAM + i];
+    if (typeof a === 'number' && isFinite(a)) hpMy += a;
+    if (typeof b === 'number' && isFinite(b)) hpOpp += b;
+    // Dims 12..17 / 18..23 are the FAINTED flags, and they — not the HP column — are what the
+    // extractor writes when a body is gone. An unrevealed body reads as alive in both, which is
+    // exactly the information state the evaluator scores.
+    aliveMy += x[TEAM * 2 + i] ? 0 : 1;
+    aliveOpp += x[TEAM * 3 + i] ? 0 : 1;
+  }
+  return {
+    hpMy: hpMy, hpOpp: hpOpp, hpTotal: hpMy + hpOpp,
+    aliveMy: aliveMy, aliveOpp: aliveOpp,
+    aliveDiff: Math.abs(aliveMy - aliveOpp), minAlive: Math.min(aliveMy, aliveOpp)
+  };
+}
+
+/** sliceOf(x) -> SLICE_EARLY | SLICE_CRUCIBLE | SLICE_LATE (see the precedence note above). */
+function sliceOf(x) {
+  const b = boardOf(x);
+  if (b.aliveMy === TEAM && b.aliveOpp === TEAM && b.hpTotal > 10.5) return SLICE_EARLY;
+  if (b.aliveMy >= 3 && b.aliveOpp >= 3 && b.aliveDiff <= 1) return SLICE_CRUCIBLE;
+  return SLICE_LATE;
+}
+
+/**
+ * slicedAuc(scores, labels, rows) -> { all, early, crucible, late }, each { auc, n, pos }
+ * `auc` is null for an empty slice or a single-class one — a statistic that is undefined there, not
+ * a 0.5 to be averaged in.
+ */
+function slicedAuc(scores, labels, rows) {
+  const buckets = { all: [], early: [], crucible: [], late: [] };
+  for (let i = 0; i < scores.length; i++) {
+    const slice = sliceOf(rows[i].x || rows[i]);
+    buckets.all.push(i);
+    buckets[slice].push(i);
+  }
+  const out = {};
+  const names = ['all', SLICE_EARLY, SLICE_CRUCIBLE, SLICE_LATE];
+  for (let k = 0; k < names.length; k++) {
+    const name = names[k];
+    const idx = buckets[name];
+    let pos = 0;
+    for (let i = 0; i < idx.length; i++) if (labels[idx[i]]) pos++;
+    out[name] = {
+      n: idx.length, pos: pos,
+      auc: idx.length ? auc(idx.map(function (i) { return scores[i]; }), idx.map(function (i) { return labels[i]; })) : null
+    };
+  }
+  return out;
+}
+
+/**
+ * crucibleWeights(rows, opts) -> { weights, share, counts }
+ *
+ * Turn 1-3 on an untouched board and a 5v1 in the last three turns are not the same question as a
+ * 4v4 with hazards up, and the row count is dominated by both. This down-weights them so the
+ * gradient is mostly the contested mid-game. The schedule is a THREE-value step function (not a
+ * smooth bell) on purpose: the slices are already defined by hard edges, and a weight that fades
+ * with HP would put half the corpus at 0.6 and make the effective sample size impossible to state.
+ *
+ * `share.crucible` is the fraction of TOTAL weight that falls in the contested slice — the number
+ * the schedule exists to buy, reported rather than assumed. With the defaults it is ~0.90 on the
+ * shipped corpus; a schedule that does not reach the target is the caller's to reject.
+ */
+function crucibleWeights(rows, options) {
+  const o = options || {};
+  const earlyWeight = typeof o.early === 'number' && o.early >= 0 ? o.early : 0.15;
+  const lateWeight = typeof o.late === 'number' && o.late >= 0 ? o.late : 0.15;
+  const lopsidedWeight = typeof o.lopsided === 'number' && o.lopsided >= 0 ? o.lopsided : 0.08;
+  const weights = new Array(rows.length);
+  const counts = { early: 0, crucible: 0, late: 0, lopsided: 0 };
+  let total = 0, crucible = 0;
+  for (let i = 0; i < rows.length; i++) {
+    const x = rows[i].x || rows[i];
+    const b = boardOf(x);
+    const slice = sliceOf(x);
+    // A body count of three levels or a side down to its last body is a cleanup, whatever the
+    // other side's count says: those boards are decided by what is left, not by where it stands.
+    const lopsided = slice === SLICE_LATE && (b.aliveDiff >= 3 || b.minAlive <= 1);
+    let w;
+    if (slice === SLICE_EARLY) { w = earlyWeight; counts.early++; }
+    else if (lopsided) { w = lopsidedWeight; counts.lopsided++; }
+    else if (slice === SLICE_CRUCIBLE) { w = 1; counts.crucible++; }
+    else { w = lateWeight; counts.late++; }
+    weights[i] = w;
+    total += w;
+    if (slice === SLICE_CRUCIBLE) crucible += w;
+  }
+  return {
+    weights: weights, counts: counts,
+    share: { crucible: total > 0 ? crucible / total : 0, total: total }
+  };
+}
+
 /* ============================================================== numeric core */
 
 function sigmoid(z) {
@@ -163,6 +282,12 @@ function fitLogistic(X, y, options) {
   const maxIter = typeof opts.maxIter === 'number' && opts.maxIter > 0 ? opts.maxIter : 25;
   const tol = typeof opts.tol === 'number' && opts.tol > 0 ? opts.tol : 1e-7;
   const standardize = opts.standardize !== false;
+  /* OPTIONAL PER-ROW WEIGHTS (the crucible schedule). A missing weight is 1, and a weight vector of
+   * all ones is bit-identical to the unweighted fit, so every existing caller keeps its number.
+   * Standardization deliberately stays UNWEIGHTED: it is a reparameterization of the inputs, and
+   * letting the weight schedule move the column scales would make the ridge penalty mean a
+   * different thing run to run for reasons unrelated to the fit. */
+  const weights = opts.weights || null;
 
   const n = X.length;
   if (!n) throw new Error('fitLogistic: the dataset is empty');
@@ -175,9 +300,23 @@ function fitLogistic(X, y, options) {
     }
   }
   if (y.length !== n) throw new Error('fitLogistic: ' + n + ' rows but ' + y.length + ' labels');
+  if (weights) {
+    if (weights.length !== n) throw new Error('fitLogistic: ' + n + ' rows but ' + weights.length + ' weights');
+    for (let i = 0; i < n; i++) {
+      if (typeof weights[i] !== 'number' || !isFinite(weights[i]) || weights[i] < 0) {
+        throw new Error('fitLogistic: weight ' + i + ' is not a finite non-negative number');
+      }
+    }
+  }
 
-  let pos = 0;
-  for (let i = 0; i < n; i++) if (y[i]) pos++;
+  let pos = 0, weightSum = 0, posWeight = 0;
+  for (let i = 0; i < n; i++) {
+    if (y[i]) pos++;
+    const wt = weights ? weights[i] : 1;
+    weightSum += wt;
+    if (y[i]) posWeight += wt;
+  }
+  if (!(weightSum > 0)) throw new Error('fitLogistic: every row has zero weight');
   if (pos === 0 || pos === n) {
     throw new Error('fitLogistic: the dataset has a single class (all ' + (pos ? 'positive' : 'negative') +
       ') — there is nothing to separate');
@@ -195,7 +334,9 @@ function fitLogistic(X, y, options) {
   }
 
   const w = new Float64Array(d);
-  let b = Math.log(pos / (n - pos));                 // the intercept starts at the base rate
+  // The intercept starts at the (weighted) base rate; with no weights that is the row base rate.
+  const baseRate = weights ? posWeight / weightSum : pos / n;
+  let b = Math.log(baseRate / (1 - baseRate));
   let iterations = 0, converged = false, lastStep = Infinity;
 
   for (let it = 0; it < maxIter; it++) {
@@ -210,8 +351,10 @@ function fitLogistic(X, y, options) {
       let z = b;
       for (let j = 0; j < d; j++) z += row[j] * w[j];
       const p = sigmoid(z);
-      const wgt = Math.max(p * (1 - p), 1e-9);       // the Fisher weight, floored for safety
-      const resid = y[i] - p;
+      const rw = weights ? weights[i] : 1;
+      if (rw === 0) continue;
+      const wgt = rw * Math.max(p * (1 - p), 1e-9);  // the Fisher weight, floored for safety
+      const resid = rw * (y[i] - p);
       gb += resid;
       sTotal += wgt;
       for (let a = 0; a < d; a++) {
@@ -590,22 +733,40 @@ function run(payload, options) {
   const usableGroups = (groupRows > 0 && groupRows === data.X.length) ? groups : null;
   const split = splitIndices(data.X.length, opts.holdout, usableGroups);
 
+  /* THE CRUCIBLE SCHEDULE. Opt-in (`--crucible-weight` / `opts.crucibleWeight`), because a weighted
+   * fit is a DIFFERENT model and must never land in the artifact by accident. The schedule is built
+   * over every row and then split with the rows, so a held-out battle's turns carry the same weights
+   * they would in training — the weights are a property of the board, not of the split. */
+  let schedule = null;
+  if (opts.crucibleWeight) {
+    const cfg = typeof opts.crucibleWeight === 'object' ? opts.crucibleWeight : {};
+    schedule = crucibleWeights(data.X, cfg);
+  }
+
   const trainX = split.train.map(function (i) { return appendCrosses(data.X[i], crosses); });
   const trainY = split.train.map(function (i) { return data.y[i]; });
+  const trainW = schedule ? split.train.map(function (i) { return schedule.weights[i]; }) : null;
   const testX = split.test.map(function (i) { return appendCrosses(data.X[i], crosses); });
   const testY = split.test.map(function (i) { return data.y[i]; });
   if (!testX.length) throw new Error('fit_weights: the hold-out split left no test rows (need at least 2 samples)');
 
   let model;
   try {
-    model = fitLogistic(trainX, trainY, { lambda: lambda, maxIter: opts.maxIter, tol: opts.tol });
+    model = fitLogistic(trainX, trainY, {
+      lambda: lambda, maxIter: opts.maxIter, tol: opts.tol, weights: trainW
+    });
   } catch (err) {
     throw new Error('fit_weights: the training half could not be fitted — ' + ((err && err.message) || err));
   }
 
   const score = function (X) { return X.map(function (x) { return scoreOf(model, x); }); };
   const aucTrain = auc(score(trainX), trainY);
-  const aucTest = auc(score(testX), testY);
+  const testScores = score(testX);
+  const aucTest = auc(testScores, testY);
+  // The pooled number says what the whole hold-out looks like; these three say WHERE it comes from.
+  // `testX` carries the 128 base dims first, so the slice is read off the board columns exactly as
+  // in the extractor, whether or not crosses were fitted.
+  const aucTestSlices = slicedAuc(testScores, testY, testX);
   // `spec` is derived AFTER the support clamp below: it has to summarise the coefficients this run
   // EXPORTS, not the raw fit, or the artifact ships a spec that disagrees with its own weights128.
 
@@ -661,6 +822,7 @@ function run(payload, options) {
     features: dim + crosses.length,
     aucTrain: aucTrain,
     aucTest: aucTest,
+    aucTestSlices: aucTestSlices,
     intercept: model.intercept,
     weights128: coefExport.slice(0, DIM),
     weightsFull: [model.intercept].concat(coefExport),
@@ -673,6 +835,19 @@ function run(payload, options) {
   if (crosses.length) {
     report.crossPairs = crosses;
     report.weightsCross = coefExport.slice(DIM);
+  }
+  // The weighting is recorded only when it was used, and never as a bare boolean: the counts and the
+  // achieved crucible share are what make the model reproducible AND reviewable.
+  if (schedule) {
+    report.crucibleWeight = {
+      enabled: true,
+      weights: { early: (opts.crucibleWeight && opts.crucibleWeight.early) || 0.15,
+        late: (opts.crucibleWeight && opts.crucibleWeight.late) || 0.15,
+        lopsided: (opts.crucibleWeight && opts.crucibleWeight.lopsided) || 0.08 },
+      counts: schedule.counts,
+      crucibleShareOfWeight: Math.round(schedule.share.crucible * 10000) / 10000,
+      weightedSamples: Math.round(schedule.share.total * 100) / 100
+    };
   }
   return report;
 }
@@ -714,8 +889,21 @@ function clampReport(report) {
 
 /* ---------------------------------------------------------------------------- CLI */
 
+/** One line per hold-out slice, with the sample count it was computed on. */
+function sliceLines(slices) {
+  if (!slices) return '  slices: (not computed)';
+  const names = ['early', 'crucible', 'late'];
+  const parts = [];
+  for (let i = 0; i < names.length; i++) {
+    const s = slices[names[i]];
+    if (!s) continue;
+    parts.push(names[i] + ' n=' + s.n + ' auc ' + fmt(s.auc));
+  }
+  return '  slices (hold-out): ' + (parts.length ? parts.join(' | ') : '(no rows)');
+}
+
 function parseArgs(argv) {
-  const out = { input: null, out: 'lib/trained-weights.json', lambda: 0.5, holdout: 5, maxIter: 25, quiet: false, crosses: null, clamp: null, dropCollinear: true };
+  const out = { input: null, out: 'lib/trained-weights.json', lambda: 0.5, holdout: 5, maxIter: 25, quiet: false, crosses: null, clamp: null, dropCollinear: true, crucibleWeight: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--input' || a === '-i') out.input = argv[++i];
@@ -728,6 +916,15 @@ function parseArgs(argv) {
     else if (a === '--clamp') out.clamp = argv[++i];
     else if (a === '--drop-collinear-macro') out.dropCollinear = true;
     else if (a === '--keep-collinear-macro') out.dropCollinear = false;
+    else if (a === '--crucible-weight') {
+      // Optionally `--crucible-weight early,late,lopsided` overrides the three step weights.
+      const spec = String(argv[i + 1] || '');
+      if (/^[0-9]+(\.[0-9]+)?,[0-9]+(\.[0-9]+)?,[0-9]+(\.[0-9]+)?$/.test(spec)) {
+        i++;
+        const parts = spec.split(',').map(function (v) { return parseFloat(v); });
+        out.crucibleWeight = { early: parts[0], late: parts[1], lopsided: parts[2] };
+      } else out.crucibleWeight = {};
+    }
     else if (a === '--help' || a === '-h') out.help = true;
     else throw new Error('unknown argument: ' + a);
   }
@@ -739,7 +936,8 @@ function main(argv) {
   if (opts.help) {
     console.log('usage: node tools/fit_weights.js --input training_data.json [--crosses crosses.json] ' +
       '[--lambda 0.5] [--holdout 5] [--max-iter 25] [--out lib/trained-weights.json]\n' +
-      '       [--drop-collinear-macro | --keep-collinear-macro]');
+      '       [--drop-collinear-macro | --keep-collinear-macro]\n' +
+      '       [--crucible-weight [early,late,lopsided]]');
     console.log('       node tools/fit_weights.js --clamp lib/trained-weights.json [--out <file>]');
     return 0;
   }
@@ -768,7 +966,7 @@ function main(argv) {
   // fit to dim + N features and the report to one that carries weightsCross. Absent, nothing about
   // the 128-dim artifact changes.
   const crosses = opts.crosses ? pairsOf(JSON.parse(fs.readFileSync(path.resolve(ROOT, opts.crosses), 'utf8'))) : null;
-  const report = run(payload, { lambda: opts.lambda, holdout: opts.holdout, maxIter: opts.maxIter, crosses: crosses, dropCollinear: opts.dropCollinear });
+  const report = run(payload, { lambda: opts.lambda, holdout: opts.holdout, maxIter: opts.maxIter, crosses: crosses, dropCollinear: opts.dropCollinear, crucibleWeight: opts.crucibleWeight });
   const target = path.resolve(ROOT, opts.out);
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, JSON.stringify(report, null, 2) + '\n');
@@ -777,9 +975,15 @@ function main(argv) {
       report.testSamples + ' test), positives ' + report.positives + ', lambda ' + report.lambda +
       ', iterations ' + report.iterations + (report.converged ? ' (converged)' : ' (hit the cap)'));
     console.log('  AUC train ' + fmt(report.aucTrain) + ' | AUC test ' + fmt(report.aucTest));
+    console.log(sliceLines(report.aucTestSlices));
     if (report.crossPairs) {
       console.log('  features ' + report.features + ' = 128 base + ' + report.crossPairs.length + ' crosses: ' +
         report.crossPairs.map(function (p) { return p[0] + 'x' + p[1]; }).join(' '));
+    }
+    if (report.crucibleWeight) {
+      console.log('  crucible weighting: early x' + report.crucibleWeight.weights.early +
+        ', late x' + report.crucibleWeight.weights.late + ', lopsided x' + report.crucibleWeight.weights.lopsided +
+        ' -> ' + (report.crucibleWeight.crucibleShareOfWeight * 100).toFixed(1) + '% of the weight in the crucible');
     }
     console.log('  low-support dims (<' + LOW_SUPPORT_ROWS + ' non-zero rows): ' +
       (report.lowSupport.length
@@ -802,7 +1006,10 @@ function fmt(v) {
 }
 
 module.exports = {
-  DIM: DIM, sigmoid: sigmoid, meanOf: meanOf, solveLinearSystem: solveLinearSystem,
+  DIM: DIM, sliceOf: sliceOf, boardOf: boardOf, slicedAuc: slicedAuc,
+  crucibleWeights: crucibleWeights, SLICE_EARLY: SLICE_EARLY, SLICE_CRUCIBLE: SLICE_CRUCIBLE, SLICE_LATE: SLICE_LATE,
+  sliceLines: sliceLines,
+  sigmoid: sigmoid, meanOf: meanOf, solveLinearSystem: solveLinearSystem,
   columnStats: columnStats, fitLogistic: fitLogistic, scoreOf: scoreOf, auc: auc,
   splitIndices: splitIndices, mapToSpec: mapToSpec, specSnippet: specSnippet, round: round,
   rowsOf: rowsOf, matrixOf: matrixOf, appendCrosses: appendCrosses, validatePairs: validatePairs,

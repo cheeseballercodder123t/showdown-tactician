@@ -2525,6 +2525,12 @@
         trace.mySideMon = mySideMon;
         trace.oppSideMon = oppSideMon;
         trace.score = score;
+        /* THE BOARD ITSELF, not just its two HP numbers. `sim` already exists on this line, so this
+         * is one assignment and no behaviour change (every other caller passes no trace). It is what
+         * lets an offline consumer ask "what board did this click leave" and get the SAME state the
+         * engine just scored — boosts, status, hazards, the pivot's outgoing body and all — instead
+         * of rebuilding an approximation of it. */
+        trace.leaf = sim;
       }
       return score;
     }
