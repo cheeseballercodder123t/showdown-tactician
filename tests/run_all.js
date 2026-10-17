@@ -22,6 +22,9 @@ const ROOT = path.resolve(__dirname, '..');
 const SUITES = [
   'tests/harness_inputs_check.js',
   'tests/util_smoke.js',
+  // The installed artifact: the two manifests, the build that assembles them, and the refusals that
+  // stop a folder from being shipped that a browser would reject at load time.
+  'tests/extension_check.js',
   'tests/injected_bridge.js',
   'tests/rule_checks.js',
   'tests/config_check.js',

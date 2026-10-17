@@ -1,0 +1,78 @@
+{
+  "manifest_version": 3,
+  "name": "Showdown Tactician - Laplace NatDex Engine",
+  "version": "1.0.0",
+  "description": "Client-side Laplace engine for [Gen 9] National Dex OU: determinized world sampling, blunder vetoes, Trick Room lifecycle and a 128D/10D evaluation stack rendered as a touch HUD.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "showdown-tactician@local",
+      "strict_min_version": "109.0"
+    },
+    "gecko_android": {
+      "strict_min_version": "120.0"
+    }
+  },
+  "permissions": ["storage", "activeTab"],
+  "host_permissions": [
+    "*://play.pokemonshowdown.com/*",
+    "https://generativelanguage.googleapis.com/*",
+    "https://openrouter.ai/*"
+  ],
+  "background": {
+    "scripts": ["src/background.js"]
+  },
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": true
+  },
+  "action": {
+    "default_title": "Showdown Tactician",
+    "default_popup": "options/options.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://play.pokemonshowdown.com/*"],
+      "run_at": "document_start",
+      "all_frames": false,
+      "js": [
+        "lib/calc-data.min.js",
+        "lib/calc.min.js",
+        "lib/species-abilities.js",
+        "lib/species-aliases.js",
+        "lib/mlp-residual.js",
+        "src/config.js",
+        "src/util.js",
+        "src/sets_usage.js",
+        "src/scout_prior.js",
+        "src/sets_db.js",
+        "src/team_parser.js",
+        "src/protocol_parser.js",
+        "src/state_manager.js",
+        "src/set_pruner.js",
+        "src/calc_engine.js",
+        "src/trick_room.js",
+        "src/mlp_residual.js",
+        "src/evaluator_128d.js",
+        "src/tempo_vector.js",
+        "src/opponent_clock.js",
+        "src/information_gain.js",
+        "src/opponent_profile.js",
+        "src/wincon_bounty.js",
+        "src/endgame_solver.js",
+        "src/veto_guard.js",
+        "src/world_sampler.js",
+        "src/laplace_core.js",
+        "src/llm_client.js",
+        "src/ui_overlay.js",
+        "src/content.js"
+      ],
+      "css": ["styles/overlay.css"]
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["src/injected.js", "lib/calc.min.js", "lib/calc-data.min.js"],
+      "matches": ["*://play.pokemonshowdown.com/*"]
+    }
+  ]
+}

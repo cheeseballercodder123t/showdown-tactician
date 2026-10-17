@@ -107,43 +107,49 @@ of the worst case). An isolated `delta()` loop reports 3.8 µs a call, i.e. a +1
 cache-hot. It is not enabled because it did not clear its accuracy gate — see the weight-pipeline
 section.
 
-## Install (desktop Chromium, for development)
+## Install (Chrome, Edge, Brave, other Chromium — desktop and Android)
 
-1. `chrome://extensions` → enable **Developer mode** → **Load unpacked** → select this folder.
+Two manifests ship, because Chrome and Firefox disagree about how an MV3 extension runs in the
+background (below). **Chrome gets its own, and the Chrome one is the repository root.**
+
+1. `chrome://extensions` → enable **Developer mode** → **Load unpacked** → select **the folder
+   that contains `manifest.json` directly** (the repository root, or `dist/chrome` after a build).
+   Selecting its PARENT is the single most common mistake: Chrome then reports *"Manifest file is
+   missing or unreadable"*, which is exactly what a folder with no manifest at its root looks like.
 2. Open a battle on `play.pokemonshowdown.com`.
 3. Click the extension icon (or **Details → Extension options**) and paste your team as a
    Pokepaste export. Save.
 
-## Install (Lemur Browser / Kiwi on Android)
+On Chromium for Android (Lemur Browser, Kiwi) there is no `chrome://extensions` UI, so pack a
+folder — the repository root or `dist/chrome` — as a `.zip` and use the browser's **Load unpacked /
+Install from file**. `npm run build:ext` produces exactly such a folder, with no repository files
+(dist is a clean copy of `src/`, `lib/`, `options/` and `styles/` plus its manifest).
 
-Chromium for Android has no `chrome://extensions` UI, so use the browser's extension manager:
+## Install (Firefox, desktop and Android)
 
-1. Pack the folder as a `.zip` (the folder itself must contain `manifest.json` at its root).
-2. Lemur Browser → **Extensions** → **Load unpacked / Install from file** → pick the zip.
-3. Set up the team paste through the extension options page or straight from the in-page
-   **TAC** drawer button.
+Firefox has no background service worker: it runs `background.scripts` as an event page, and a
+manifest that only names a `service_worker` leaves it with no background at all. So the Firefox
+manifest is a separate file, `manifest.firefox.json`, and the build step assembles it into its own
+folder:
 
-## Install (Firefox for Android)
+1. `npm run build:ext` (writes `dist/firefox/`; needs Node 20+, no install required).
+2. `about:debugging#/runtime/this-firefox` (or `about:debugging` on Android) → **Load Temporary
+   Add-on** → pick **`dist/firefox/manifest.json`**.
+3. Set up the team paste through the extension options page or the in-page **TAC** drawer button.
 
-The same folder is a Manifest V3 add-on for Firefox: `about:debugging` → **This Firefox/Android**
-→ **Load Temporary Add-on** → pick `manifest.json` (unsigned, for development); a signed build
-needs the `browser_specific_settings.gecko.id` the manifest already carries, because Mozilla
-requires an id to sign an MV3 add-on.
+A permanent install needs the add-on signed, which is why the Firefox manifest carries
+`browser_specific_settings.gecko.id` (Mozilla refuses to sign an MV3 add-on without one).
 
-Firefox runs background *scripts* (an event page) where Chrome runs a service worker, so the
-manifest declares both `background.scripts` and `background.service_worker`, plus
-`browser_specific_settings` with a Gecko floor and an Android one (`gecko_android`):
-
-* Chrome 121 and later **ignores** the `background.scripts` entry and keeps using the service
-  worker. Chrome *before* 121 refuses to load an MV3 manifest that contains it at all, which is
-  why `minimum_chrome_version` is 121 rather than 102 — a manifest claiming 102 while carrying
-  that key would not load on the versions it claims.
-* Firefox before 121 does not start the background page when `service_worker` is present, so
-  `gecko.strict_min_version` is 121.0. (Mozilla's own MV3 floor is 109.0, and Firefox for
-  Android opened up to extensions during the 120 cycle.)
-
-There is no Chromium build older than 121 in the supported set as a result, and the extension has
-only been exercised in Chromium here — see the limitations below.
+**Why two manifests.** Chrome requires `background.service_worker`; an MV3 manifest that also
+carries `background.scripts` is a warning on current Chrome and was a hard load failure on older
+ones, and Chrome surfaces that class of failure as *"Manifest file is missing or unreadable"* — the
+same message as a wrong folder, which is why the split is worth the second file. Firefox ignores
+`service_worker` entirely. The two manifests are therefore identical except for the background
+mode and the Gecko keys, and `tools/build_extension.js` REFUSES to build if they drift apart on
+anything else, if either declares the wrong background mode, or if a file either one names is
+missing. There is no Chromium version floor any more (the old `minimum_chrome_version: 121`
+existed only to dodge the dual-key problem), and the Gecko floor is Firefox **109**, Mozilla's own
+MV3 floor.
 
 ## Using the HUD
 
@@ -162,7 +168,10 @@ engine's answer is already on screen without it.
 ## Files
 
 ```
-manifest.json              MV3 manifest; loads the module chain in dependency order
+manifest.json              MV3 manifest for CHROME/Chromium (service worker); loads the module
+                           chain in dependency order
+manifest.firefox.json      the same for Firefox (event page + Gecko id); `npm run build:ext`
+                           assembles either into dist/chrome and dist/firefox
 lib/calc-data.min.js       vendored @smogon/calc dex (1406 species incl. Megas, 942 moves)
 lib/calc.min.js            vendored @smogon/calc mechanics (exposes window.calc)
 lib/species-abilities.js   GENERATED: restores the hidden/secondary abilities the calc bundle drops
@@ -200,6 +209,8 @@ tests/run_tests.js         end-to-end verification suite (247 checks)
 tests/rule_checks.js       deduction-rule checks driven through real protocol lines (23 checks)
 tests/util_smoke.js        util.js in isolation: dex access, item naming, type math, Speed maths,
                            the move-lookup cache (55 checks)
+tests/extension_check.js   the installed artifact: both manifests, the two-manifest build, and every
+                           way it refuses to ship a folder a browser would reject (24 checks)
 tests/injected_bridge.js   the MAIN-world WebSocket bridge against a fake WebSocket/DOM, including
                            the poll dedupe and one-frame-one-forward capture (23 checks)
 tests/config_check.js      RULE 4: the config inventory, the frozen 128D layout, live mutation (85 checks)
@@ -262,14 +273,17 @@ test_engine.js             RULE 2: five canonical ground-truth damage scenarios 
 test_log.txt               the 30-turn ExtramePatriot vs LUIZ_LFN battle as a raw protocol stream
 bench/bench.html           standalone on-device benchmark page (loads the engine, times a turn,
                            prints the device's own numbers) — the ground truth for Performance
-package.json               npm scripts: `test`, `test:fast`, `e2e`, `e2e:headed`, `bench`,
-                           `bench:json`, `bench:serve`
+package.json               npm scripts: `test`, `test:fast`, `build:ext`, `e2e`, `e2e:headed`,
+                           `bench`, `bench:json`, `bench:serve`
 .github/workflows/ci.yml   runs `npm test` + the benchmark on every push and PR, plus a separate
                            `e2e` job that installs Chromium and runs the browser suite
 .github/workflows/chaos-sync.yml  the monthly usage-overlay cron
 CHANGELOG.md               how the engine got here, newest first
 ATTEMPTS.md                every improvement that was tried and where it led, plus a similarity
                            index — read it before building a scoring change
+tools/build_extension.js   assembles `dist/chrome` and `dist/firefox` from the two manifests, and
+                           refuses to ship one whose background mode, file list or shared keys are
+                           wrong (`--check` validates without writing; `npm run build:ext` builds)
 tools/gen_abilities.js     regenerates lib/species-abilities.js from tools/pokedex.json
 tools/gen_aliases.js       regenerates lib/species-aliases.js (needs the vendored calc bundle)
 tools/pokedex.json         Showdown's dex snapshot the two generators read
@@ -363,6 +377,7 @@ node tests/harness_inputs_check.js # 57 checks: the input-population assertion e
                               #   surfaced, not refused, so the rule is enforced where the table is decided)
 node tests/rule_checks.js     #  23 checks: the deductions, replayed from raw protocol lines
 node tests/util_smoke.js      #  55 checks: dex access, item naming, type math, Speed maths, the lookup caches
+node tests/extension_check.js #  24 checks: both manifests, the two-manifest build, and its refusals
 node tests/injected_bridge.js #  23 checks: the MAIN-world WebSocket bridge (fake WebSocket/DOM)
 node tests/config_check.js    #  85 checks: RULE 4 — the config is the only home for a heuristic
 node tests/blackbox_guard.js  #  28 checks: RULE 1 — no handwritten math, 50,616 stats diffed
@@ -1466,12 +1481,12 @@ the current turn, so it says which line to click now, not how the stall resolves
 * The library-only policy has no fallback: if `lib/calc.min.js` is missing, `U.libraryReady()`
   is false and stat lookups return 0 rather than a fabricated number — the engine reports
   nothing instead of guessing.
-* Firefox for Android is declared but unverified. The manifest carries both background keys and a
-  gecko id, and nothing in this repository has been loaded in a Gecko browser; the Chrome floor
-  moved from 102 to 121 in the same change, so the supported Chromium range is narrower than it
-  was. Chrome ≥ 121 ignores `background.scripts` (it uses the service worker); Chrome < 121 refuses
-  to load an MV3 manifest that has it. A separate Firefox-only manifest would keep the old Chrome
-  floor, at the cost of two manifests to maintain.
+* **Firefox is packaged and validated, but has not been RUN in a Gecko browser.** `dist/firefox`
+  is assembled from `manifest.firefox.json` (an event page, a Gecko id, an MV3 floor of 109) and
+  the manifests are pinned by `tests/extension_check.js`, but no test here boots Firefox —
+  Playwright's Firefox cannot side-load an extension — so the first Gecko load is a user's. The
+  Chrome side has no such gap: `tests/e2e/00-package.spec.js` builds `dist/chrome` into a temp
+  folder and boots the extension from it, which is what "Load unpacked" does.
 * The empirical-weight numbers are not reproducible from a checkout: the corpus is 3,712
   third-party logs that are not shipped, and the pipeline's own network step is what produced it.
   The artifact records only the fit — the format, rating band and search that produced the corpus

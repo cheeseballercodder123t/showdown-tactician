@@ -11,6 +11,30 @@ reaches a verdict.
 
 ## Unreleased
 
+### Fixed — the extension loads in Chrome again, and Firefox gets its own manifest
+
+One manifest carried BOTH `background.service_worker` and `background.scripts`, on the theory that
+Chrome would use the worker and ignore the script list. An MV3 manifest is not required to be
+"loadable" by both browsers at once: Chrome's own error for a manifest it will not accept is the
+generic *"Manifest file is missing or unreadable"*, so a dual-key manifest and a wrong folder are
+indistinguishable to the person clicking **Load unpacked**. The scheme also cost a Chromium floor
+(`minimum_chrome_version: 121`) it did not need.
+
+The manifests are split. `manifest.json` is now strictly the Chrome one — `background.service_worker`,
+no Gecko keys, no version floor — and `manifest.firefox.json` is strictly the Firefox one
+(`background.scripts` as an event page, `browser_specific_settings.gecko.id` for signing, an MV3
+floor of 109). `tools/build_extension.js` (and `npm run build:ext`) assembles either into
+`dist/chrome` and `dist/firefox`, and REFUSES to build if a manifest declares the wrong background
+mode, names a file that does not exist, or the two manifests disagree on anything except the
+per-browser keys — the drift that would otherwise make the Firefox build a different extension with
+the same version number. `--check` validates without writing.
+
+The install is now tested as an install. `tests/extension_check.js` pins both manifests and all of
+those refusals (24 checks), and `tests/e2e/00-package.spec.js` builds `dist/chrome` into a temp
+folder and BOOTS Chromium from it — the service worker registers and the options page opens — which
+is the one claim a manifest's shape cannot make. The README's Firefox paragraph no longer says the
+manifest carries both keys; it says which folder to point each browser at.
+
 ### Added — the pooled AUC is cut into opening / crucible / cleanup, and the fit can be weighted
 
 The single hold-out number hid where it came from. `tools/fit_weights.js` now reports the hold-out in

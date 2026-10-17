@@ -140,19 +140,24 @@ function buildRequest(opts) {
 /**
  * Launch a persistent Chromium with this extension loaded.
  * Returns { ctx, sw, close }.
+ *
+ * `opts.dir` loads a DIFFERENT folder — the packaged build tests use it to prove that the folder
+ * `npm run build:ext` writes is loadable, which is the artifact a user actually points Chrome at.
+ * Default: the repository root (the Chrome manifest lives there).
  */
 async function launchExtension(opts) {
   opts = opts || {};
+  const dir = opts.dir || ROOT;
   const args = [
-    '--disable-extensions-except=' + ROOT,
-    '--load-extension=' + ROOT
+    '--disable-extensions-except=' + dir,
+    '--load-extension=' + dir
   ];
   /* GitHub's Linux runners cannot use the Chromium sandbox (no usable user namespaces), and
    * `--headless=new` still refuses to start without it. Only added on CI so a local run keeps
    * the sandbox. */
   if (process.env.CI) args.push('--no-sandbox', '--disable-dev-shm-usage');
 
-  const ctx = await chromium.launchPersistentContext('', {
+  const ctx = await chromium.launchPersistentContext(opts.userDataDir || '', {
     headless: opts.headless !== false,
     channel: 'chromium',
     viewport: opts.viewport || { width: 412, height: 915 },
