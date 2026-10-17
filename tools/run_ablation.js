@@ -498,6 +498,28 @@ const FEATURES = [
       'move.'
   },
   {
+    id: 'delayed-moves',
+    label: 'Future Sight / Doom Desire / Wish land a turn later (off)',
+    tier: 'laplace',
+    direction: 'off',
+    patch: { 'laplace.delayedMoves.enabled': false },
+    expect: 'helps',
+    note: 'SHIPS ON (a rules correction, not a preference). Off prices a Future Sight click as an ' +
+      'immediate 120 BP hit: the sim parks a slot condition and lands it at the residual of the ' +
+      'NEXT turn instead, against whoever stands in the slot by then, from the CASTER\'s stats — so ' +
+      'the old price credited a hit the target had a whole turn to switch out of, Protect against ' +
+      '(the sim strips the shield before the landing hit, which is why that one really does land), ' +
+      'or heal. On, the click is worth `setupDiscount` of that hit, a second pending one fails, the ' +
+      'landing is charged at its own residual, and Wish heals the body in the slot for half the ' +
+      'caster\'s max HP.',
+    caveat: 'UNMEASURED as a win rate, so the expectation above is a PRIOR. What IS verified is the ' +
+      'mechanism, off-battle: the parser frame, the one-turn clock, the cast-side bookkeeping, the ' +
+      'discounted click, the failed second click, the landing against a switch-in and the Wish heal ' +
+      'are all pinned in `tests/upgrades_check.js` §11 with identities built from the damage ' +
+      'engine\'s own numbers. The row can still read flat: only the sample teams that actually ' +
+      'carry Future Sight (Slowking-Galar, Slowbro) or Wish exercise it.'
+  },
+  {
     id: 'choicephysics',
     label: 'Choice lock physics, both directions (off)',
     tier: 'laplace',

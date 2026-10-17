@@ -847,6 +847,156 @@ eq('a mirror with no boost does not move first', paradoxOrdering(false, null), f
 eq('...the same mirror WITH a Speed boost does move first', paradoxOrdering(true, 'spe'), true);
 eq('...but an ATTACK boost does not pretend to be Speed', paradoxOrdering(true, 'atk'), false);
 
+/* ==================================== 11. delayed slot conditions (Future Sight / Wish) */
+
+section('11. Future Sight / Doom Desire / Wish: the parser, the clock, and the price');
+{
+  /* THE PIPELINE FIRST. The sim announces the cast with `|-start|<CASTER>|move: Future Sight`
+   * (`data/moves.js`: `this.add('-start', source, 'move: Future Sight')`), parks the condition on the
+   * OPPOSING side, and resolves it at the residual of the NEXT turn (`endingTurn = turn + 1`). Wish
+   * is the same one-turn delay for a heal. Every one of those facts is what the state manager has
+   * to carry, or the engine can only guess. */
+  const dm = pipeline([
+    '|switch|p1a: Slowking|Slowking, L50, M|100/100',
+    '|switch|p2a: Great Tusk|Great Tusk, L50, M|100/100',
+    '|turn|1',
+    '|move|p1a: Slowking|Future Sight|p2a: Great Tusk',
+    '|-start|p1a: Slowking|move: Future Sight'
+  ]);
+  const fs = dm.battle.field.delayedMoves;
+  check('the cast is recorded on the side that will be HIT, not the caster\u2019s', fs.p2 && !fs.p1,
+    JSON.stringify(fs));
+  eq('...with the caster\u2019s own identity (its stats price the hit)', fs.p2 && fs.p2.attackerId, 'slowking');
+  eq('...and the move it will land as', fs.p2 && fs.p2.moveName, 'Future Sight');
+  eq('...scheduled for the residual of the NEXT turn', fs.p2 && fs.p2.landingTurn, 2);
+  dm.parser.feedAll('|turn|2');
+  eq('the landing turn ticks the countdown to 0 (it lands at ITS end)', dm.battle.field.delayedMoves.p2.turnsLeft, 0);
+  dm.parser.feedAll('|-end|p2a: Great Tusk|move: Future Sight');
+  eq('the sim\u2019s own |-end| clears the pending hit', dm.battle.field.delayedMoves.p2, null);
+
+  const wishRun = pipeline([
+    '|switch|p1a: Slowking|Slowking, L50, M|100/100',
+    '|switch|p2a: Great Tusk|Great Tusk, L50, M|100/100',
+    '|turn|1', '|move|p1a: Slowking|Wish|p1a: Slowking'
+  ]);
+  eq('Wish is recorded on the caster\u2019s own side', wishRun.battle.field.wish.p1 && wishRun.battle.field.wish.p1.casterId, 'slowking');
+  eq('...for the residual of the next turn', wishRun.battle.field.wish.p1.landingTurn, 2);
+  wishRun.parser.feedAll('|-heal|p1a: Slowking|100/100|[from] move: Wish|[wisher] Slowking');
+  eq('...and the heal frame clears it', wishRun.battle.field.wish.p1, null);
+
+  /* THE PRICE. A hand-built board, so the identity below is computed from the damage engine\u2019s
+   * own numbers rather than a constant that a dex change could silently invalidate. */
+  function dmMon(species, side, extra) {
+    return Object.assign({
+      id: U.toID(species), species: species, side: side, hpPercent: 100, maxhp: 100,
+      fainted: false, status: '', level: 100, ability: '', item: '',
+      evs: { hp: 4, atk: 0, def: 0, spa: 252, spd: 0, spe: 252 }, ivs: U.DEFAULT_IVS,
+      nature: 'Timid', boosts: { atk: 0, def: 0, spa: 0, spd: 0, spe: 0, accuracy: 0, evasion: 0 },
+      setMoves: [], revealedMoves: [], isActive: true
+    }, extra || {});
+  }
+  function dmBoard(turn) {
+    const me = dmMon('Slowking', 'p1', { ability: 'Regenerator', setMoves: ['Future Sight', 'Psychic', 'Wish', 'Slack Off'], revealedMoves: ['Future Sight', 'Psychic'] });
+    const them = dmMon('Great Tusk', 'p2', { ability: 'Protosynthesis', nature: 'Jolly', evs: { hp: 4, atk: 252, def: 0, spa: 0, spd: 0, spe: 252 }, setMoves: ['Headlong Rush', 'Ice Spinner'], revealedMoves: ['Headlong Rush'] });
+    return {
+      turn: turn, mySide: 'p1', oppSide: 'p2', formatSupported: true,
+      myTeam: [me], oppTeam: [them], active: { my: me, opp: them }, bench: { my: [], opp: [] },
+      protect: { oppTurnsSinceLastProtect: 2, oppConsecutiveProtects: 0, myTurnsSinceLastProtect: 4, myConsecutiveProtects: 0 },
+      recoveryPP: {},
+      field: {
+        turn: turn, trickRoom: false, weather: '', terrain: '',
+        hazards: { p1: {}, p2: {} }, screens: {}, tailwind: {}, gravity: false,
+        delayedMoves: { p1: null, p2: null }, wish: { p1: null, p2: null }
+      }
+    };
+  }
+  const FUTURE = { kind: 'move', name: 'Future Sight', moveId: 'futuresight' };
+  const PASS = { kind: 'status', name: '' };
+  const THEIR_NOTHING = { kind: 'move', name: 'Stealth Rock', moveId: 'stealthrock' };
+  const eng = newEngine().engine;
+  const off = newEngine({ delayedMoves: { enabled: false } }).engine;
+
+  const t1 = dmBoard(1);
+  const me1 = t1.active.my, them1 = t1.active.opp;
+  const willHit = eng._damageOf(me1, them1, 'Future Sight', t1.field, true);
+  check('the fixture Future Sight really resolves (a failed calc would make this vacuous)',
+    !!willHit && willHit.avgPercent > 0, willHit && (willHit.avgPercent + '%'));
+  const discounted = U.clamp(100 - willHit.avgPercent * eng.delayedMoves.setupDiscount, 0, 100);
+  const passCell = eng._payoff(PASS, THEIR_NOTHING, t1, t1.field);
+  close('clicking Future Sight credits the DISCOUNTED hit, not an immediate 120 BP one',
+    eng._payoff(FUTURE, THEIR_NOTHING, t1, t1.field),
+    eng.evaluator.evaluate(eng._leafState(t1, me1, them1, 100, discounted)), 1e-6);
+  check('...so it beats passing, and by less than the full hit would be worth',
+    eng._payoff(FUTURE, THEIR_NOTHING, t1, t1.field) > passCell &&
+    eng._payoff(FUTURE, THEIR_NOTHING, t1, t1.field) <
+      eng.evaluator.evaluate(eng._leafState(t1, me1, them1, 100, U.clamp(100 - willHit.avgPercent, 0, 100))),
+    'click ' + eng._payoff(FUTURE, THEIR_NOTHING, t1, t1.field) + ' pass ' + passCell);
+  /* ...and OFF is the OLD price: the full hit, scored on the turn it is clicked. This fixture is a
+   * real OHKO (Slowking's Future Sight on Great Tusk), so the cell also earns the lethal bonus the
+   * payoff pays for a fainted target — the expected leaf carries it too, or the comparison would
+   * be off by exactly that term. */
+  const fullHp = U.clamp(100 - willHit.avgPercent, 0, 100);
+  close('with the tier OFF the click is the immediate full hit (the old price)',
+    off._payoff(FUTURE, THEIR_NOTHING, t1, t1.field),
+    off.evaluator.evaluate(off._leafState(t1, me1, them1, 100, fullHp)) +
+      (fullHp <= 0 ? off.lethalBonus : 0), 1e-6);
+
+  /* A second Future Sight cannot be parked on a side that already has one, so the click FAILS. The
+   * reference is a kind the payoff models as nothing at all (`PASS`), which is exactly what a
+   * failed click is worth; the pending entry is far in the future so it cannot land in this cell. */
+  const blocked = dmBoard(1);
+  blocked.field.delayedMoves.p2 = { moveName: 'Future Sight', moveId: 'futuresight', attackerSide: 'p1', attackerId: 'slowking', attackerSpecies: 'Slowking', startTurn: 0, landingTurn: 9, turnsLeft: 9 };
+  close('a second Future Sight into a pending one is priced as the failed click it is',
+    eng._payoff(FUTURE, THEIR_NOTHING, blocked, blocked.field),
+    eng._payoff(PASS, THEIR_NOTHING, blocked, blocked.field), 1e-6);
+  close('...and the tier OFF does not read the pending entry at all',
+    off._payoff(PASS, THEIR_NOTHING, blocked, blocked.field),
+    off._payoff(PASS, THEIR_NOTHING, dmBoard(1), dmBoard(1).field), 1e-6);
+
+  /* THE LANDING. Their Future Sight parked on US lands at the end of this turn, against the body
+   * standing here now, priced from THEIR caster. */
+  const t2 = dmBoard(2);
+  const them2 = t2.active.opp, me2 = t2.active.my;
+  t2.field.delayedMoves.p1 = { moveName: 'Future Sight', moveId: 'futuresight', attackerSide: 'p2', attackerId: 'greattusk', attackerSpecies: 'Great Tusk', startTurn: 1, landingTurn: 2, turnsLeft: 0 };
+  const incoming = eng._damageOf(them2, me2, 'Future Sight', t2.field, false);
+  check('the landing hit resolves too', !!incoming && incoming.avgPercent > 0, incoming && (incoming.avgPercent + '%'));
+  close('an in-flight Future Sight is charged to us at the end of its landing turn',
+    eng._payoff(PASS, THEIR_NOTHING, t2, t2.field),
+    eng.evaluator.evaluate(eng._leafState(t2, me2, them2, U.clamp(100 - incoming.avgPercent, 0, 100), 100)), 1e-6);
+  const notYet = dmBoard(2);
+  notYet.field.delayedMoves.p1 = Object.assign({}, t2.field.delayedMoves.p1, { landingTurn: 3, turnsLeft: 1 });
+  close('...but NOT a turn early (the countdown is the sim\u2019s, not a guess)',
+    eng._payoff(PASS, THEIR_NOTHING, notYet, notYet.field),
+    eng._payoff(PASS, THEIR_NOTHING, dmBoard(2), dmBoard(2).field), 1e-6);
+
+  /* The landed hit follows the SLOT, so a switch-in eats it — and it is the caster\u2019s stats that
+   * matter, not the body standing there. A switch-in is priced on the incoming body\u2019s own bulk. */
+  const switching = dmBoard(2);
+  switching.field.delayedMoves.p1 = Object.assign({}, t2.field.delayedMoves.p1);
+  const incomingMon = dmMon('Dragonite', 'p1', { ability: 'Inner Focus', nature: 'Adamant', evs: { hp: 4, atk: 252, def: 0, spa: 0, spd: 0, spe: 252 } });
+  switching.myTeam.push(incomingMon);
+  switching.bench.my.push(incomingMon);
+  switching.active = { my: switching.myTeam[0], opp: them2 };
+  const switchHit = eng._damageOf(them2, incomingMon, 'Future Sight', switching.field, false);
+  const switchCell = eng._payoff({ kind: 'switch', name: 'Dragonite', switchTo: 'dragonite' }, THEIR_NOTHING, switching, switching.field);
+  check('a body switching into the slot takes the delayed hit (the damage engine says so)',
+    !!switchHit && switchHit.avgPercent > 0 && switchCell !== undefined, switchHit && (switchHit.avgPercent + '%'));
+
+  /* WISH. The heal lands on whoever stands in the slot, for half the CASTER\u2019s max HP. */
+  const t3 = dmBoard(2);
+  t3.active.my.hpPercent = 40;
+  t3.field.wish.p1 = { casterId: 'slowking', casterSpecies: 'Slowking', startTurn: 1, landingTurn: 2, turnsLeft: 0, healPct: 50 };
+  const me3 = t3.active.my, them3 = t3.active.opp;
+  close('a landed Wish heals the standing body before the leaf is scored',
+    eng._payoff(PASS, THEIR_NOTHING, t3, t3.field),
+    eng.evaluator.evaluate(eng._leafState(t3, me3, them3, 90, 100)), 1e-6);
+  const fullWish = dmBoard(2);
+  fullWish.field.wish.p1 = Object.assign({}, t3.field.wish.p1);
+  close('...and a Wish on a full-HP body is a no-op, not an overheal',
+    eng._payoff(PASS, THEIR_NOTHING, fullWish, fullWish.field),
+    eng._payoff(PASS, THEIR_NOTHING, dmBoard(2), dmBoard(2).field), 1e-6);
+}
+
 /* ================================================================== summary */
 
 console.log('\n=== summary ===');

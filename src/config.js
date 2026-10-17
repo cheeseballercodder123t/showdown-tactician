@@ -313,6 +313,19 @@
       rollKoBranch: {
         enabled: false
       },
+      // DELAYED MOVES (see laplace_core._payoff, "WHEN A PENDING SLOT CONDITION LANDS"). Future
+      // Sight and Doom Desire deal NO damage on the turn they are clicked: the sim parks a slot
+      // condition and lands it at the residual of the NEXT turn, against whoever stands in the slot
+      // by then, using the CASTER's stats. Pricing the click as an immediate 120 BP hit was a plain
+      // rules error (the same class as Sucker Punch's), so this ships ON; `setupDiscount` is the
+      // share of that hit the engine credits to the click itself, because the target gets a whole
+      // turn to switch, Protect or heal before it arrives. Wish is tracked by the same section
+      // (`wishHealPct`): it heals the body standing in its slot for half the CASTER's max HP.
+      delayedMoves: {
+        enabled: true,
+        setupDiscount: 0.55,               // credit for clicking Future Sight / Doom Desire now
+        wishHealPct: 50                    // Wish's heal, as a share of the caster's max HP
+      },
       // Comeback mode (prospect theory on the risk dial — see laplace_core._comebackScale). Scales
       // the volatility charge by where the 128D evaluator puts the board: sharpened when we are
       // ahead (minimum variance), softened when we are behind (we need the swing). Ships OFF; the

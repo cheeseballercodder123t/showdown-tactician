@@ -142,6 +142,10 @@ const INVENTORY = [
   'laplace.priceMyMoveStatus.enabled', 'laplace.priceMyMoveProtect.enabled',
   // the KO-cliff correction (ships `false`; the expected-HP transition over the exact 16 rolls)
   'laplace.rollKoBranch.enabled',
+  // delayed slot conditions (shipped ON: Future Sight / Doom Desire deal nothing on the click,
+  // Wish heals a turn later — a rules correction, not a preference)
+  'laplace.delayedMoves.enabled', 'laplace.delayedMoves.setupDiscount',
+  'laplace.delayedMoves.wishHealPct',
   // comeback mode (ships off) + turn urgency (ADOPTED, ships on; adopted on the 60-battle sweep)
   'laplace.comeback.enabled', 'laplace.comeback.winMargin', 'laplace.comeback.lossMargin',
   'laplace.comeback.winChargeScale', 'laplace.comeback.lossChargeScale',

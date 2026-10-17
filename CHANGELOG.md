@@ -11,6 +11,40 @@ reaches a verdict.
 
 ## Unreleased
 
+### Added — Future Sight, Doom Desire and Wish resolve a turn later (and are priced that way)
+
+The leaf priced a delayed move as an immediate one. It is not: the sim parks a slot condition
+(`|-start|<CASTER>|move: Future Sight`) and lands it at the residual of the NEXT turn, against
+whoever STANDS in the slot by then, from the caster's own stats — and `Wish` heals that body for
+half the caster's maximum HP. So a Future Sight click is now worth `setupDiscount` (0.55) of the hit
+it will deal, not the whole thing; a second click into a slot that already has one pending is priced
+as the failed action the game makes it; the landing is charged at its own residual (and bypasses a
+Protect, as the sim does); and the Wish heal is credited to the body actually standing there. The
+state manager owns the clock (`field.delayedMoves` / `field.wish`, landing turn and countdown,
+cleared by the sim's own `|-end|` and `|[from] move: Wish` frames). Ships ON: this is a rules
+correction, the same class as Sucker Punch's, not a preference. Human-match agreement is flat (37.2 %
+-> 37.1 % with the tier off, inside the CI), which is what a rare move reads like on that instrument;
+the mirror gate is unrun and the ablation row exists for it.
+
+### Fixed — the weight fitter drops an exact linear duplicate, and the refit is one command
+
+`macro[4]` (dim 116, the hazard differential) is an exact linear combination of the eight hazard
+dims, so IRLS had to split one hazard effect between nine columns with arbitrary signs — the synthesis's
+-484.8 / +342.8 pair. `tools/fit_weights.js` now DETECTS such a column from the data (an affine fit on
+its source block, over rows where the value is not saturated at +/-1) and drops it before the split;
+dropping it costs 0.0004 AUC, i.e. nothing, which is what removing a duplicate should cost. Detection
+is data-driven rather than a hardcoded index list, and that mattered: dim 118 is NOT a duplicate (the
+boost sum includes accuracy and evasion, which the vector does not carry). `tools/refit_weights.js` is
+the missing single command — probe the corpus, extract with any `--set` flags the experiment needs, fit,
+report, and refuse (exit 2, with the paths it probed) rather than fit over nothing.
+
+**The shipped artifact is NOT replaced.** The refit was run and measured: on this checkout's corpus
+(2,913 battles / 91,315 rows), battle-grouped hold-out AUC **0.7260 for the shipped vector vs 0.7033
+for the fresh fit**, so adopting it would have been a 2.3-point regression. The artifact is stale in
+provenance, not in quality — recorded in ATTEMPTS.md §P9, with the refit one command away. The threat
+matrix's speed gate was re-measured on the same corpus (three splits, mean -0.15 pp, sign flipping) and
+stays off: it is not measurable at this size in either direction.
+
 ### Added — the two halves of Choice lock, a team-preview synergy prior, and chip credit toward the OHKO
 
 Four boards the leaf was pricing as if the opponent were a bag of independent damages.

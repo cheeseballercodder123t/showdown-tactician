@@ -739,6 +739,16 @@
   function isPivotMove(name) { return PIVOT_MOVES.has(toID(name)); }
   function isHazardMove(name) { return HAZARD_MOVES.has(toID(name)); }
 
+  /* ---- moves that resolve on a LATER turn from a slot condition.
+   * `|-start|<caster>|move: Future Sight` / `move: Doom Desire` only ANNOUNCE the click; the
+   * damage lands at the residual of the NEXT turn against whatever body stands in the opposing
+   * slot (`data/conditions.js: futuremove`). The dex entry is a 120 BP attack, which is exactly
+   * why a payoff that prices it as an ordinary move is wrong: the click deals nothing today. */
+  const DELAYED_MOVES = new Map([['futuresight', 'Future Sight'], ['doomdesire', 'Doom Desire']]);
+  function isDelayedMove(name) { return DELAYED_MOVES.has(toID(name)); }
+  function delayedMoveName(name) { return DELAYED_MOVES.get(toID(name)) || null; }
+  function isWishMove(name) { return toID(name) === 'wish'; }
+
   /** hazardLayersOf(hazards) -> the total number of layers sitting on one side. */
   function hazardLayersOf(hazards) {
     if (!hazards || typeof hazards !== 'object') return null;
@@ -1206,6 +1216,9 @@
     is8PPRecoveryMove: is8PPRecoveryMove,
     isPivotMove: isPivotMove,
     isHazardMove: isHazardMove,
+    isDelayedMove: isDelayedMove,
+    delayedMoveName: delayedMoveName,
+    isWishMove: isWishMove,
     hazardLayersOf: hazardLayersOf,
 
     typeMultiplier: typeMultiplier,

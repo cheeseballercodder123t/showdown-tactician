@@ -48,6 +48,7 @@ const H = require('./harness.js');
 const extractor = require('../tools/extract_training_data.js');
 const fitter = require('../tools/fit_weights.js');
 const fetcher = require('../tools/fetch_replays.js');
+const refit = require('../tools/refit_weights.js');
 
 const ST = H.loadAll().ST;
 
@@ -887,6 +888,21 @@ if (artifactAttempt.ok) {
     JSON.stringify(artifact.lowSupport));
   check('...under the threshold the fitter declares', artifact.lowSupportThreshold === 20,
     String(artifact.lowSupportThreshold));
+  /* THE SHIPPED ARTIFACT PREDATES THE COLLINEARITY PROJECTION, and that is recorded rather than
+   * quietly accepted: it still carries `macro[4]` (the hazard differential) as a free coefficient,
+   * i.e. the fit it came from split one hazard effect across nine columns. A refit that drops the
+   * duplicate scores WORSE on this checkout's corpus than this vector does (2026-10-17: 0.7033 vs
+   * 0.7260 on 19,123 held-out rows), so the refit is a recorded REJECT and the artifact is not
+   * replaced — see ATTEMPTS.md §P9. What must hold either way: if a report claims it dropped a
+   * column, that column is zero in the exported vector. */
+  if (Array.isArray(artifact.collinearDropped) && artifact.collinearDropped.length) {
+    check('every column a refit reports dropping is exported as zero',
+      artifact.collinearDropped.every(function (e) { return artifact.weights128[e.dim] === 0; }),
+      JSON.stringify(artifact.collinearDropped.map(function (e) { return [e.dim, artifact.weights128[e.dim]]; })));
+  } else {
+    check('the shipped artifact predates the projection, so its macro[4] is NOT a dropped column',
+      artifact.weights128[116] !== 0, String(artifact.weights128[116]));
+  }
   /* THE EXPORT CLAMP. An unidentifiable dim must not ship as a coefficient at all: this artifact
    * used to carry +54.72 at dim 41 and -50.34 at dim 47 while the ADOPTED spec (− and the live
    * evaluator vector) had them zeroed, so the same vector had two disagreeing views and only a
@@ -1419,6 +1435,70 @@ check('...and that split reports itself as row-level, over no battles',
  * A check that had to phone home would be worse than the gap it closes. */
 
 /* ================================================================== summary */
+
+/* ============================== 11. the collinearity projection + the one-command refit */
+
+section('11. exact linear duplicates are dropped, and the refit tool refuses an empty corpus');
+{
+  /* The duplicate is DETECTED, not assumed: the fitter regresses the candidate on its source
+   * block over the rows where the value is not saturated at +-1, so a dataset that fills dim 116
+   * with independent values is left alone. */
+  function collinearRows(n, independent) {
+    const rng = mulberry32(424242);
+    const rows = [];
+    for (let i = 0; i < n; i++) {
+      const x = new Array(128).fill(0);
+      for (let j = 48; j <= 55; j++) x[j] = rng() * 0.4;
+      // v[116] = (cost(theirs) - cost(mine)) / 37.5 with the evaluator's own chip constants.
+      const cost = function (base) {
+        return 12.5 * x[base] + 8.3 * 3 * x[base + 1] + 12.5 * 2 * x[base + 2] + 8 * x[base + 3];
+      };
+      const exact = (cost(52) - cost(48)) / 37.5;
+      x[116] = independent ? (rng() * 1.6 - 0.8) : exact;
+      const z = 2 * (exact - 0.1);
+      rows.push({ x: x, y: rng() < sigmoid(z) ? 1 : 0 });
+    }
+    return rows;
+  }
+  const SOURCES = [48, 49, 50, 51, 52, 53, 54, 55];
+  const exactRows = collinearRows(400, false);
+  const indepRows = collinearRows(400, true);
+  const exactResidual = fitter.affineResidual(exactRows.map(function (r) { return r.x; }), 116, SOURCES);
+  const indepResidual = fitter.affineResidual(indepRows.map(function (r) { return r.x; }), 116, SOURCES);
+  check('an exact linear duplicate is detected from the data (residual ~ 0)', exactResidual <= 1e-9,
+    String(exactResidual));
+  check('...and an INDEPENDENT column in the same slot is not', indepResidual > 1e-3, String(indepResidual));
+
+  const dropped = fitter.run({ rows: exactRows }, { lambda: 0.2, holdout: 4, maxIter: 30 });
+  check('a fit over a redundant column drops it and says which column it was',
+    dropped.collinearDropped.length === 1 && dropped.collinearDropped[0].dim === 116 &&
+    JSON.stringify(dropped.collinearDropped[0].sources) === JSON.stringify(SOURCES),
+    JSON.stringify(dropped.collinearDropped));
+  check('...so the exported coefficient is exactly zero, not a split of the effect',
+    dropped.weights128[116] === 0, String(dropped.weights128[116]));
+  const kept = fitter.run({ rows: exactRows }, { lambda: 0.2, holdout: 4, maxIter: 30, dropCollinear: false });
+  check('--keep-collinear-macro leaves the column in the fit', kept.collinearDropped.length === 0,
+    JSON.stringify(kept.collinearDropped));
+  check('...and the two arms rank the same states (dropping a duplicate loses no information)',
+    Math.abs(dropped.aucTest - kept.aucTest) < 0.02,
+    dropped.aucTest + ' vs ' + kept.aucTest);
+  const independentFit = fitter.run({ rows: indepRows }, { lambda: 0.2, holdout: 4, maxIter: 30 });
+  check('...while an independent column is kept (the projection is not a blanket zeroing)',
+    independentFit.collinearDropped.length === 0, JSON.stringify(independentFit.collinearDropped));
+
+  /* THE ONE COMMAND. Two contracts matter: a missing corpus is a REFUSAL (exit 2, never a fit over
+   * nothing), and --dry never writes the artifact. */
+  const refused = refit.main([], { probe: function () { return { path: null, probed: ['/definitely/not/here.json'] }; } });
+  check('with no corpus the refit tool refuses instead of fitting nothing (exit 2)', refused === 2, String(refused));
+  const dryOut = path.join(require('os').tmpdir(), 'st-refit-dry-' + process.pid + '.json');
+  try { fs.unlinkSync(dryOut); } catch (e) { /* not there */ }
+  const fixture = path.join(require('os').tmpdir(), 'st-refit-fixture-' + process.pid + '.json');
+  fs.writeFileSync(fixture, JSON.stringify({ rows: exactRows.slice(0, 200) }));
+  const dryCode = refit.main(['--input', fixture, '--dry', '--out', dryOut, '--quiet']);
+  check('--dry fits and reports without writing the artifact', dryCode === 0 && !fs.existsSync(dryOut),
+    'exit ' + dryCode + ', wrote ' + fs.existsSync(dryOut));
+  try { fs.unlinkSync(fixture); } catch (e) { /* best effort */ }
+}
 
 function summarize() {
   console.log('\n=== summary ===');

@@ -369,6 +369,14 @@
       this.rollKoBranch = Object.assign({
         enabled: cfgGet('laplace.rollKoBranch.enabled', false)
       }, options.rollKoBranch || {});
+      // Delayed slot conditions (see `_delayedCredit` / the landing block in `_payoff`). Future
+      // Sight / Doom Desire deal nothing on the click turn and land at the residual of the NEXT
+      // turn against whoever stands in the slot; Wish heals there for half the CASTER's max HP.
+      this.delayedMoves = Object.assign({
+        enabled: cfgGet('laplace.delayedMoves.enabled', true),
+        setupDiscount: cfgGet('laplace.delayedMoves.setupDiscount', 0.55),
+        wishHealPct: cfgGet('laplace.delayedMoves.wishHealPct', 50)
+      }, options.delayedMoves || {});
       // Comeback mode (prospect theory on the risk dial). A 100-turn tie is a loss, and so is a
       // safe grind when you are already behind: with the board scored by the evaluator, the SAME
       // miss charge is scaled up when we are winning (minimum variance) and down when we are losing
@@ -1961,6 +1969,103 @@
       return U.clamp((1 - p) * survives, 0, 100);
     }
 
+    /* ------------------------------------------------ delayed slot conditions
+     * Two moves park a condition on a SIDE and resolve it at the residual of the NEXT turn:
+     * Future Sight / Doom Desire (a hit, against whoever stands in the slot by then) and Wish (a
+     * heal, onto whoever stands in the slot by then). `_pendingDelayed` / `_pendingWish` read the
+     * state manager's own record; nothing here infers the countdown from the log.
+     */
+
+    /** The entry scheduled to land on `side`, or null. `side` is the side that will be HIT. */
+    _pendingDelayed(state, side) {
+      const f = state && state.field;
+      const d = f && f.delayedMoves && f.delayedMoves[side];
+      return (d && typeof d.landingTurn === 'number') ? d : null;
+    }
+
+    /** The Wish scheduled to heal `side`, or null. */
+    _pendingWish(state, side) {
+      const f = state && state.field;
+      const w = f && f.wish && f.wish[side];
+      return (w && typeof w.landingTurn === 'number') ? w : null;
+    }
+
+    /** Does this condition resolve at the END of the turn currently being priced? */
+    _delayedLandsNow(pending, state) {
+      if (!pending) return false;
+      const turn = (state && typeof state.turn === 'number') ? state.turn : 0;
+      return pending.landingTurn <= turn;
+    }
+
+    /**
+     * The body that CAST the pending condition, so the hit is priced from ITS set — EVs, nature,
+     * item, boosts — rather than from whatever stands in the slot now. The sampled world's roster
+     * is preferred for their side (it carries the candidate set the pruner believes), with the
+     * live roster as the fallback; a forme change between cast and landing can rename the id, so a
+     * species match is the second pass. Last resort is the body still standing in the caster's
+     * slot, which is the only answer when the log opened mid-battle.
+     */
+    _delayedCaster(state, world, pending) {
+      if (!pending) return null;
+      const mySide = (state && state.mySide) || 'p1';
+      const mine = pending.attackerSide === mySide;
+      const pools = mine ? [state && state.myTeam]
+        : [(world && world.team), (state && state.oppTeam)];
+      let i, p, team, m;
+      for (p = 0; p < pools.length; p++) {
+        team = pools[p];
+        if (!team) continue;
+        for (i = 0; i < team.length; i++) {
+          m = team[i];
+          if (m && pending.attackerId && m.id === pending.attackerId) return m;
+        }
+      }
+      const speciesId = U.toID(pending.attackerSpecies || '');
+      if (speciesId) {
+        for (p = 0; p < pools.length; p++) {
+          team = pools[p];
+          if (!team) continue;
+          for (i = 0; i < team.length; i++) {
+            m = team[i];
+            if (m && U.toID(m.species || '') === speciesId) return m;
+          }
+        }
+      }
+      const active = state && state.active && (mine ? state.active.my : state.active.opp);
+      return active || null;
+    }
+
+    /**
+     * The credit a CLICK of a delayed move is worth now: a share of the hit it will deal, with the
+     * exact-roll fields dropped. The target gets a whole turn to switch, Protect or heal before it
+     * arrives, so none of the immediate-hit precision survives — in particular the KO fields, which
+     * `_koTransition` must not read off a hit that does not land this turn.
+     */
+    _delayedCredit(dmg, discount) {
+      if (!dmg) return null;
+      const d = U.clamp(typeof discount === 'number' ? discount : 0.55, 0, 1);
+      return {
+        move: dmg.move,
+        minPercent: (dmg.minPercent || 0) * d,
+        maxPercent: (dmg.maxPercent || 0) * d,
+        avgPercent: (dmg.avgPercent || 0) * d,
+        isOHKO: false, is2HKO: false,
+        koChanceExact: null, koChancePct: null,
+        delayed: true
+      };
+    }
+
+    /** The hit a pending condition deals to `standing` at the end of this turn, or null. */
+    _delayedHit(state, world, field, hitSide, standing, outgoing) {
+      const pending = this._pendingDelayed(state, hitSide);
+      if (!standing || !this._delayedLandsNow(pending, state)) return null;
+      const caster = this._delayedCaster(state, world, pending);
+      if (!caster) return null;
+      const dmg = this._damageOf(caster, standing, pending.moveName, field, outgoing);
+      if (!dmg || !(dmg.avgPercent > 0)) return null;
+      return { name: pending.moveName, avgPercent: dmg.avgPercent, caster: caster };
+    }
+
     /**
      * Their best move AND the damage it does. `_bestMove` is the name-only view of this, kept so
      * the call sites that only want the label do not carry the result object around — and so the
@@ -2079,6 +2184,22 @@
       const myFlinchMove = !!(cmOn && cm.flinch !== false && myMoveId && U.guaranteedFlinch(myMoveId));
       const oppFlinchMove = !!(cmOn && cm.flinch !== false && oppMoveId && U.guaranteedFlinch(oppMoveId));
 
+      /* ---- DELAYED MOVES (`laplace.delayedMoves`). A Future Sight / Doom Desire click deals
+       * NOTHING on the turn it is made; it lands at the residual of the next turn. Two facts
+       * follow, and both are rules rather than prices: a second one cannot be parked on a side
+       * that already has one pending (the sim's `addSlotCondition` refuses, so the click FAILS),
+       * and the click itself is worth only a discounted share of the hit it will eventually deal.
+       * Their half is priced the same way — a reply column that clicks Future Sight is not an
+       * immediate 120 BP hit either. Inert when the tier is off. */
+      const dm = this.delayedMoves;
+      const dmOn = !!(dm && dm.enabled !== false);
+      const myDelayedClick = !!(dmOn && myAction.kind === 'move' && U.isDelayedMove(myMoveId));
+      const oppDelayedClick = !!(dmOn && oppAction.kind === 'move' && U.isDelayedMove(oppMoveId));
+      const dmMySide = (state && state.mySide) || 'p1';
+      const dmOppSide = (state && state.oppSide) || (dmMySide === 'p1' ? 'p2' : 'p1');
+      const myDelayedBlocked = !!(myDelayedClick && this._pendingDelayed(state, dmOppSide));
+      const oppDelayedBlocked = !!(oppDelayedClick && this._pendingDelayed(state, dmMySide));
+
       /* Is the chosen action an ATTACK, in the sense Sucker Punch cares about? A switch has no move
        * at all; Protect and every setup/status click are Status-category, which is exactly the set
        * the move fails against. An unidentifiable move name is left read as an attack rather than
@@ -2092,7 +2213,8 @@
       /* Our click does not happen: Sucker Punch into anything that is not an attack, or a Fake Out /
        * First Impression after the body has already acted once since it came in. */
       const myMoveFails = !!(myAction.kind === 'move' &&
-        ((myRequiresAttack && !oppAttacks) || (myFirstTurnRule && !this._firstTurnOut(myActive, state))));
+        ((myRequiresAttack && !oppAttacks) || (myFirstTurnRule && !this._firstTurnOut(myActive, state)) ||
+         myDelayedBlocked));
       /* Their Fake Out lands first (+3) and flinches US: our whole click is gone. What beats it is a
        * shield (+4 — it blocks the move and is priced on its own) or another priority-3 Fake Out,
        * which is a Speed tie and is left to the symmetric pricing below. */
@@ -2203,7 +2325,7 @@
          * is the complement of the share of their rolls that faints us. Their damage is priced here
          * (before our own) so that the factor is available when our hit is applied, and the object
          * is handed to the reply branch below rather than recomputed — one call, not two. */
-        replyPre = (order === 'them' && oppAction.name !== 'Struggle')
+        replyPre = (order === 'them' && oppAction.name !== 'Struggle' && !oppDelayedClick)
           ? this._damageOf(oppActive, mySideMon, oppAction.name, field, false,
               (myEffects && myEffects.myBoosts) ? { defender: { boosts: myEffects.myBoosts } } : undefined)
           : null;
@@ -2222,9 +2344,13 @@
           myHp = U.clamp(myHp + heal, 0, 100);
           events.push({ move: myAction.name, healed: heal });
         } else {
-          const raw = this._damageOf(myActive, oppSideMon, myAction.name, field, true);
+          const rawBase = this._damageOf(myActive, oppSideMon, myAction.name, field, true);
+          /* A delayed click is priced as the discounted hit it will land NEXT turn, not as an
+           * immediate one: it deals nothing today, and its exact-roll fields are meaningless at
+           * this horizon (see `_delayedCredit`). */
+          const raw = myDelayedClick ? this._delayedCredit(rawBase, dm.setupDiscount) : rawBase;
           if (raw) {
-            myKoExact = (typeof raw.koChanceExact === 'number') ? raw.koChanceExact : null;
+            myKoExact = (!raw.delayed && typeof raw.koChanceExact === 'number') ? raw.koChanceExact : null;
             /* Expected damage on the share of rolls where we live to act: scale the mean and drop
              * the exact-roll fields, because the KO probability of the REDUCED hit is a different
              * number and `_koTransition` must not read the old one off a shrunk mean. */
@@ -2286,9 +2412,11 @@
         /* A FLINCHED REPLY NEVER HAPPENS, and their own conditional move fails on the same rule
          * ours does (Sucker Punch into a switch or a status click). Both are a wasted turn for
          * them, not a miss — the cell scores the board they were left with. */
-        const dmg = replyPre || ((oppActionDenied || oppMoveFails) ? null : (oppAction.name === 'Struggle'
+        let dmg = replyPre || ((oppActionDenied || oppMoveFails || oppDelayedBlocked) ? null : (oppAction.name === 'Struggle'
           ? { avgPercent: this.struggleChipPercent, isOHKO: false }
           : this._damageOf(oppActive, mySideMon, oppAction.name, field, false, defOpts)));
+        /* ...and their delayed click is a discounted NEXT-turn hit for the same reason ours is. */
+        if (dmg && oppDelayedClick) dmg = this._delayedCredit(dmg, dm.setupDiscount);
         /* THE OTHER DIRECTION: when we moved first, their reply exists only on the rolls where our
          * hit did not finish them — `(1 - p)` of them. A p of 0 or 1 is left to the scalar path. */
         const replyPct = (dmg && order === 'me' && typeof myKoExact === 'number' &&
@@ -2296,6 +2424,37 @@
           ? dmg.avgPercent * (1 - myKoExact / 100) : (dmg ? dmg.avgPercent : 0);
         if (dmg && !shieldedNow) {
           myHp = U.clamp(myHp - replyPct, 0, 100);
+        }
+      }
+
+      /* ---- WHEN A PENDING SLOT CONDITION LANDS (see `_pendingDelayed`). This is the end-of-turn
+       * residual step the sim runs after both sides have acted, so it is priced AFTER the reply:
+       * the Future Sight parked a turn ago hits whoever stands in the slot NOW (the switch-in),
+       * from the CASTER's own set, and it bypasses Protect because the sim strips the shield before
+       * the hit. Wish heals the body standing in its slot for half the caster's max HP. Both
+       * channels are skipped on a fainted body, exactly as the sim skips them. This is what makes
+       * the click worth anything at all: without it the state manager recorded the condition and
+       * the payoff never paid it. */
+      if (dmOn) {
+        const incoming = this._delayedHit(state, world, field, dmOppSide, oppSideMon, true);
+        if (incoming && oppHp > 0) {
+          oppHp = U.clamp(oppHp - incoming.avgPercent, 0, 100);
+          events.push({ move: incoming.name, avgPercent: incoming.avgPercent, delayed: true });
+        }
+        const ours = this._delayedHit(state, world, field, dmMySide, mySideMon, false);
+        if (ours && myHp > 0) {
+          myHp = U.clamp(myHp - ours.avgPercent, 0, 100);
+          events.push({ move: ours.name, avgPercent: ours.avgPercent, delayed: true, onMe: true });
+        }
+        const theirWish = this._pendingWish(state, dmOppSide);
+        if (this._delayedLandsNow(theirWish, state) && oppHp > 0) {
+          const pct = typeof theirWish.healPct === 'number' ? theirWish.healPct : dm.wishHealPct;
+          oppHp = U.clamp(oppHp + pct, 0, 100);
+        }
+        const ourWish = this._pendingWish(state, dmMySide);
+        if (this._delayedLandsNow(ourWish, state) && myHp > 0) {
+          const pct = typeof ourWish.healPct === 'number' ? ourWish.healPct : dm.wishHealPct;
+          myHp = U.clamp(myHp + pct, 0, 100);
         }
       }
 

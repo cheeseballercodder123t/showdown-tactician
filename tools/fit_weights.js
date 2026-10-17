@@ -480,9 +480,77 @@ function matrixOf(payload, dim) {
   return { X: X, y: y };
 }
 
+/* ------------------------------------------------------- exact collinearity
+ *
+ * THE PROBLEM. Two of the 128 macro dims are linear combinations of slots the vector already
+ * carries (src/evaluator_128d.js):
+ *
+ *   dim 116  the hazard differential = a weighted sum of dims 48..55 (our/theirs rocks, spikes,
+ *            toxic spikes, web, each divided by a constant), and
+ *   dim 118  our boost sum / 18      = a sum of dims 36..41 (the active body's stat stages / 6).
+ *
+ * A column that is an exact combination of other columns carries NO information, but IRLS still has
+ * to split the effect between the duplicates — and it has no reason to split it evenly. On the
+ * shipped corpus that is how a hazard effect came out as a large negative coefficient on one slot and
+ * a large positive one on the other (the synthesis quotes -484.8 vs +342.8): the predictions are fine,
+ * the coefficients are unreviewable, and the pair says nothing about hazards. The cure is to DROP the
+ * duplicate column before fitting; the source block absorbs exactly the same effect, and nothing about
+ * the model's reach changes.
+ *
+ * DETECTION IS DATA-DRIVEN, not a hardcoded index list: the candidate is regressed on its source
+ * block (plus an intercept) over the rows where the target is not saturated at +-1, and it is dropped
+ * only when the affine fit reproduces it to 1e-6 relative — so a synthetic dataset that happens to
+ * fill those dims with independent noise is left alone. The saturation guard matters because both
+ * macros CLAMP: over a genuinely large hazard differential or boost sum the true value is the clamp,
+ * not the combination, and those rows are excluded from the test rather than allowed to veto it.
+ */
+const COLLINEAR_CANDIDATES = [
+  { dim: 116, sources: [48, 49, 50, 51, 52, 53, 54, 55] },
+  { dim: 118, sources: [36, 37, 38, 39, 40, 41] }
+];
+
+/** Relative max residual of the affine fit of x[dim] on x[sources], or Infinity. */
+function affineResidual(X, dim, sources) {
+  const p = sources.length + 1;
+  const A = [];
+  for (let i = 0; i < p; i++) A.push(new Float64Array(p));
+  const b = new Float64Array(p);
+  let used = 0;
+  for (let r = 0; r < X.length; r++) {
+    const row = X[r];
+    const y = row[dim];
+    // Saturated rows are the CLAMP, not the combination; they cannot test the identity.
+    if (!(Math.abs(y) < 0.999)) continue;
+    const z = new Float64Array(p);
+    z[0] = 1;
+    for (let k = 0; k < sources.length; k++) z[k + 1] = row[sources[k]];
+    for (let i = 0; i < p; i++) {
+      b[i] += z[i] * y;
+      for (let j = 0; j < p; j++) A[i][j] += z[i] * z[j];
+    }
+    used++;
+  }
+  if (used < Math.max(20, Math.floor(X.length * 0.05))) return Infinity;
+  const beta = solveLinearSystem(A, b);
+  if (!beta) return Infinity;
+  let maxAbs = 0, scale = 1;
+  for (let r = 0; r < X.length; r++) {
+    const row = X[r];
+    const y = row[dim];
+    if (!(Math.abs(y) < 0.999)) continue;
+    let pred = beta[0];
+    for (let k = 0; k < sources.length; k++) pred += beta[k + 1] * row[sources[k]];
+    const err = Math.abs(y - pred);
+    if (err > maxAbs) maxAbs = err;
+    if (Math.abs(y) > scale) scale = Math.abs(y);
+  }
+  return maxAbs / scale;
+}
+
 /**
  * run(payload, opts) -> report object (no file I/O: the test drives this directly).
  * Throws on an empty, ragged, non-finite, or single-class dataset.
+ * `opts.dropCollinear === false` keeps the duplicate macro columns (the historical fit).
  */
 function run(payload, options) {
   const opts = options || {};
@@ -492,6 +560,21 @@ function run(payload, options) {
     : [];
   const lambda = typeof opts.lambda === 'number' && opts.lambda >= 0 ? opts.lambda : 0.5;
   const data = matrixOf(payload, dim);
+  /* Drop the exactly-collinear macro duplicates BEFORE the split, so train and test see the same
+   * design (a column zeroed after the split would leave the hold-out scored on a different one). */
+  const collinearDropped = [];
+  if (opts.dropCollinear !== false) {
+    for (let c = 0; c < COLLINEAR_CANDIDATES.length; c++) {
+      const cand = COLLINEAR_CANDIDATES[c];
+      if (cand.dim >= data.X[0].length) continue;
+      const residual = affineResidual(data.X, cand.dim, cand.sources);
+      if (!(residual <= 1e-6)) continue;
+      for (let i = 0; i < data.X.length; i++) data.X[i][cand.dim] = 0;
+      collinearDropped.push({
+        dim: cand.dim, sources: cand.sources.slice(), residual: Math.round(residual * 1e12) / 1e12
+      });
+    }
+  }
   // The payload's provenance carries one entry per battle with its row count, in row order, so the
   // hold-out can be taken over whole battles rather than over turns of the same battle.
   const groups = Array.isArray(payload && payload.replays)
@@ -537,7 +620,8 @@ function run(payload, options) {
     for (let i = 0; i < allX.length; i++) {
       if (allX[i][j] !== 0) { nonzero++; if (allY[i]) positives++; }
     }
-    if (nonzero < LOW_SUPPORT_ROWS) lowSupport.push({ dim: j, nonzero: nonzero, positives: positives });
+    const dropped = collinearDropped.some(function (e) { return e.dim === j; });
+    if (!dropped && nonzero < LOW_SUPPORT_ROWS) lowSupport.push({ dim: j, nonzero: nonzero, positives: positives });
   }
 
   /* THE SUPPORT CLAMP. A coefficient fitted from a handful of non-zero rows is an extrapolation, not
@@ -581,7 +665,9 @@ function run(payload, options) {
     weights128: coefExport.slice(0, DIM),
     weightsFull: [model.intercept].concat(coefExport),
     spec: spec,
-    clampedDims: clampedDims
+    clampedDims: clampedDims,
+    // The duplicate macro columns this pass removed (empty when none was exactly collinear).
+    collinearDropped: collinearDropped
   };
   // Cross fields only exist when crosses were fitted, so a 128-dim artifact stays byte-identical.
   if (crosses.length) {
@@ -619,6 +705,7 @@ function clampReport(report) {
   if (crossW.length) out.weightsCross = full.slice(DIM);
   out.weightsFull = [out.intercept].concat(full);
   out.clampedDims = dims;
+  if (!Array.isArray(out.collinearDropped)) out.collinearDropped = [];
   // The spec is derived, so it is re-derived here rather than edited slot by slot: that is what keeps
   // "the stored spec is exactly what mapToSpec computes from the stored coefficients" true.
   if (out.features === full.length) out.spec = mapToSpec(full, pairs.length ? pairs : undefined);
@@ -628,7 +715,7 @@ function clampReport(report) {
 /* ---------------------------------------------------------------------------- CLI */
 
 function parseArgs(argv) {
-  const out = { input: null, out: 'lib/trained-weights.json', lambda: 0.5, holdout: 5, maxIter: 25, quiet: false, crosses: null, clamp: null };
+  const out = { input: null, out: 'lib/trained-weights.json', lambda: 0.5, holdout: 5, maxIter: 25, quiet: false, crosses: null, clamp: null, dropCollinear: true };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--input' || a === '-i') out.input = argv[++i];
@@ -639,6 +726,8 @@ function parseArgs(argv) {
     else if (a === '--max-iter') out.maxIter = parseInt(argv[++i], 10);
     else if (a === '--quiet') out.quiet = true;
     else if (a === '--clamp') out.clamp = argv[++i];
+    else if (a === '--drop-collinear-macro') out.dropCollinear = true;
+    else if (a === '--keep-collinear-macro') out.dropCollinear = false;
     else if (a === '--help' || a === '-h') out.help = true;
     else throw new Error('unknown argument: ' + a);
   }
@@ -649,7 +738,8 @@ function main(argv) {
   const opts = parseArgs(argv || process.argv.slice(2));
   if (opts.help) {
     console.log('usage: node tools/fit_weights.js --input training_data.json [--crosses crosses.json] ' +
-      '[--lambda 0.5] [--holdout 5] [--max-iter 25] [--out lib/trained-weights.json]');
+      '[--lambda 0.5] [--holdout 5] [--max-iter 25] [--out lib/trained-weights.json]\n' +
+      '       [--drop-collinear-macro | --keep-collinear-macro]');
     console.log('       node tools/fit_weights.js --clamp lib/trained-weights.json [--out <file>]');
     return 0;
   }
@@ -678,7 +768,7 @@ function main(argv) {
   // fit to dim + N features and the report to one that carries weightsCross. Absent, nothing about
   // the 128-dim artifact changes.
   const crosses = opts.crosses ? pairsOf(JSON.parse(fs.readFileSync(path.resolve(ROOT, opts.crosses), 'utf8'))) : null;
-  const report = run(payload, { lambda: opts.lambda, holdout: opts.holdout, maxIter: opts.maxIter, crosses: crosses });
+  const report = run(payload, { lambda: opts.lambda, holdout: opts.holdout, maxIter: opts.maxIter, crosses: crosses, dropCollinear: opts.dropCollinear });
   const target = path.resolve(ROOT, opts.out);
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, JSON.stringify(report, null, 2) + '\n');
@@ -697,6 +787,10 @@ function main(argv) {
         : 'none'));
     console.log('  zeroed on export (the support clamp): ' +
       (report.clampedDims.length ? report.clampedDims.join(' ') : 'none'));
+    console.log('  dropped as exact linear duplicates: ' +
+      (report.collinearDropped.length
+        ? report.collinearDropped.map(function (e) { return e.dim + '<-' + e.sources.join(','); }).join(' ')
+        : 'none'));
     console.log('wrote ' + path.relative(ROOT, target));
     console.log('\n' + specSnippet(report.spec));
   }
@@ -712,7 +806,8 @@ module.exports = {
   columnStats: columnStats, fitLogistic: fitLogistic, scoreOf: scoreOf, auc: auc,
   splitIndices: splitIndices, mapToSpec: mapToSpec, specSnippet: specSnippet, round: round,
   rowsOf: rowsOf, matrixOf: matrixOf, appendCrosses: appendCrosses, validatePairs: validatePairs,
-  pairsOf: pairsOf, run: run, clampReport: clampReport, parseArgs: parseArgs, main: main
+  pairsOf: pairsOf, run: run, clampReport: clampReport, parseArgs: parseArgs, main: main,
+  COLLINEAR_CANDIDATES: COLLINEAR_CANDIDATES, affineResidual: affineResidual
 };
 
 if (require.main === module) {

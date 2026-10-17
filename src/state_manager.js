@@ -210,7 +210,12 @@
           hazards: { p1: emptyHazards(), p2: emptyHazards() },
           screens: { p1: emptyScreens(), p2: emptyScreens() },
           tailwind: { p1: false, p2: false },
-          gravity: false
+          gravity: false,
+          // Slot conditions that land on a LATER turn, keyed by the side that will be HIT / HEALED.
+          // Future Sight / Doom Desire and Wish are the only two, and both are read by
+          // laplace_core's delayed-move tier; null means "nothing pending on that side".
+          delayedMoves: { p1: null, p2: null },
+          wish: { p1: null, p2: null }
         },
         formatLocks: {
           oppHasMegaEvolved: false,
@@ -1127,6 +1132,25 @@
         this.state.field.trickRoomTurnsLeft = 5;
         this.state._trSetOnTurn = this.state.turn;
       }
+      /* ---- WISH (`|move|<slot>|Wish|`). The sim's Wish slot condition heals at the residual of
+       * the NEXT turn (`startingTurn` + a strict `>`), and the amount is HALF THE CASTER's max HP
+       * — healed onto whoever stands in the slot at that moment, which may be a different body.
+       * Stored by the side it will heal. */
+      if (U.isWishMove(moveId)) {
+        const wishSide = side;
+        if (wishSide) {
+          this.state.field.wish[wishSide] = {
+            casterId: mon.id,
+            casterSpecies: mon.species,
+            casterSlot: slot || null,
+            startTurn: this.state.turn,
+            landingTurn: this.state.turn + 1,
+            turnsLeft: 1,
+            healPct: 50
+          };
+          debug('wish', wishSide, 'lands turn', this.state.turn + 1);
+        }
+      }
       debug('move', side, slot, moveName, 'stint=' + mon.activeStintCount);
     }
 
@@ -1233,6 +1257,18 @@
       }
       if (kind === 'heal' && /sys|item: leftovers|item: black sludge|item: shell bell/i.test(from)) {
         mon.turnedThisTurn = false;
+      }
+      /* The landing frames are the ground truth that a pending slot condition resolved, so they
+       * clear it even when the countdown was rebuilt from a partial log. A Wish heal names the
+       * WISHER, not the body healed, so it clears by side; the Future Sight damage line is already
+       * preceded by its `|-end|`, and is only a backstop here. */
+      if (/move:\s*wish/i.test(from)) {
+        const healSide = side || sideOf(event.slot);
+        if (healSide && this.state.field.wish) this.state.field.wish[healSide] = null;
+      }
+      if (kind === 'damage' && /move:\s*(future sight|doom desire)/i.test(from)) {
+        const hitSide = side || sideOf(event.slot);
+        if (hitSide && this.state.field.delayedMoves) this.state.field.delayedMoves[hitSide] = null;
       }
     }
 
@@ -1570,6 +1606,34 @@
         /* `Start of turn N: X is protected` handled through the move event */
       }
       if (/salt cure/i.test(effect)) mon.volatiles.saltcure = true;
+      /* ---- FUTURE SIGHT / DOOM DESIRE (`|-start|<caster>|move: Future Sight`).
+       *
+       * The sim puts the slot condition on the SIDE it was aimed at but names the CASTER here
+       * (`data/moves.js`: `this.add('-start', source, 'move: Future Sight')`), so the side that
+       * will be hit is the OTHER side. The countdown is the sim's own: `endingTurn` is
+       * `(turn - 1) + 2`, i.e. the residual of the NEXT turn, so a cast on turn N lands at the END
+       * of turn N+1 — against whatever body is standing in the slot by then, which is why the
+       * caster's identity is stored rather than the target's. */
+      if (U.isDelayedMove(event.effectId || event.effectName || '')) {
+        const casterSide = event.side || sideOf(event.slot);
+        const targetSide = otherSide(casterSide);
+        if (casterSide && targetSide) {
+          this.state.field.delayedMoves[targetSide] = {
+            moveName: U.delayedMoveName(event.effectId || event.effectName || ''),
+            moveId: U.toID(event.effectId || event.effectName || ''),
+            attackerSide: casterSide,
+            attackerId: mon.id,
+            attackerSpecies: mon.species,
+            casterSlot: event.slot || null,
+            startTurn: this.state.turn,
+            landingTurn: this.state.turn + 1,
+            turnsLeft: 1
+          };
+          debug('delayed move', targetSide, this.state.field.delayedMoves[targetSide].moveName,
+            'lands turn', this.state.turn + 1);
+          return;
+        }
+      }
       // The sim STATES which stat the boost moved: `|-start|p2a: Roaring Moon|protosynthesisatk`.
       // That suffix is the only evidence of a SPEED boost; `boosterActive` alone is not, because
       // an Attack- or Special-Attack-boosted body is no faster at all. See boosterStatOf.
@@ -1578,6 +1642,15 @@
     }
 
     _onEnd(event) {
+      /* `|-end|<target>|move: Future Sight` is the sim's "time's up" frame, emitted immediately
+       * before the damage lands. It names the slot being HIT, so it clears that side's pending
+       * entry — the countdown cannot be trusted to be the only clear, because a log replayed from
+       * the middle can open after the landing turn's header. */
+      if (U.isDelayedMove(event.effectId || event.effectName || '')) {
+        const hitSide = event.side || sideOf(event.slot);
+        if (hitSide && this.state.field.delayedMoves) this.state.field.delayedMoves[hitSide] = null;
+        return;
+      }
       const mon = this._findBySlot(event.slot);
       if (!mon) return;
       const effect = String(event.effect || '');
@@ -1762,6 +1835,7 @@
         st.field.terrainTurnsLeft = Math.max(0, st.field.terrainTurnsLeft - 1);
         if (st.field.terrainTurnsLeft === 0) st.field.terrain = '';
       }
+      this._tickDelayedMoves(n);
 
       // NOTE: ConsecutiveProtects is deliberately NOT reset here. It decays through rule 6:
       // a non-protect move (or a failed action) by that side resets its own counter, which is
@@ -1797,6 +1871,30 @@
       this.emit('turn', { turn: n });
       if (this.pruner && typeof this.pruner.onTurn === 'function') {
         try { this.pruner.onTurn(this.state); } catch (e) { debug('pruner.onTurn failed', e && e.message); }
+      }
+    }
+
+    /**
+     * The delayed-slot-condition clock: `turnsLeft` is the number of turn HEADERS still to come
+     * before the condition resolves, and it reaches 0 on the LANDING turn (the residual of the
+     * next turn), not before it. An entry whose landing turn has already passed is dropped rather
+     * than left to fire again — that is the only way a replayed log can double-count it.
+     */
+    _tickDelayedMoves(n) {
+      const f = this.state.field;
+      const sides = ['p1', 'p2'];
+      for (let i = 0; i < sides.length; i++) {
+        const side = sides[i];
+        const delayed = f.delayedMoves && f.delayedMoves[side];
+        if (delayed) {
+          if (n > delayed.landingTurn) f.delayedMoves[side] = null;
+          else delayed.turnsLeft = Math.max(0, delayed.landingTurn - n);
+        }
+        const wish = f.wish && f.wish[side];
+        if (wish) {
+          if (n > wish.landingTurn) f.wish[side] = null;
+          else wish.turnsLeft = Math.max(0, wish.landingTurn - n);
+        }
       }
     }
 

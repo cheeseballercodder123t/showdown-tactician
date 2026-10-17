@@ -294,7 +294,12 @@ tools/benchmark_human_match.js  a replay corpus -> POLICY fidelity (not win pred
                            before it is priced against a win rate
 tools/fit_weights.js       IRLS logistic regression over those rows -> weights + a hold-out AUC
                            taken over whole battles, not over turns of one battle; `--crosses`
-                           appends interaction terms to the fitted matrix (measured, not adopted)
+                           appends interaction terms to the fitted matrix (measured, not adopted);
+                           an EXACT linear duplicate among the 128 columns is detected from the
+                           data and dropped (`--keep-collinear-macro` keeps it)
+tools/refit_weights.js     the one-command refit: probe the corpus (or take `--input`), extract
+                           with any `--set` flags, fit, report the hold-out AUC and the dropped
+                           columns; refuses with exit 2 rather than fitting over nothing
 tools/select_cross_features.js  screens products of the aggregate dims on the TRAINING half and
                            writes the candidate list `--crosses` reads — a selector, not a verdict
 tools/train_mlp_residual.js     fits the optional residual head on the frozen linear model's own
@@ -816,19 +821,20 @@ attack beside it, and answers the question it was asked about a position that do
 boosts 36..47, the Protect rhythm 126/127), and it was being handed the pre-move board for all of
 them.
 
-Six switches own those writes. They are six and not one because each is a scope that was measured on
-its own (`ATTEMPTS.md` §J, §P6, §P7; `tests/tuning_check.js` §4d/§4e):
+Seven switches own those writes. They are seven and not one because each is a scope that was measured
+on its own (`ATTEMPTS.md` §J, §P6, §P7; `tests/tuning_check.js` §4d/§4e):
 
 | switch | ships | what it writes | evidence |
 |---|---|---|---|
 | `laplace.realOppSwitch` | ON | names the switch-in a pivot brings in, charges their entry hazards to it, and resets the body that left to 100 % | 60-battle mirror row, flat at this sample; kept ON as a correction (`ATTEMPTS.md` §J) |
 | `laplace.pricePivots` | ON | prices a pivot as a hit **plus** a switch, with Regenerator credit on the body leaving | same row family (+10.0, leaning the same way as `extendsetup`) |
 | `laplace.priceRecovery` | ON | credits the heal instead of reading the turn as wasted | same |
+| `laplace.delayedMoves` | ON | **Future Sight / Doom Desire deal NOTHING on the click** and land at the residual of the next turn, against whoever stands in the slot by then, from the caster's own stats; the click is worth `setupDiscount` (0.55) of that hit, a second pending one FAILS, and `Wish` heals the standing body for half the caster's max HP | a **rules correction**, so ON without a win gate: a click that deals no damage cannot be credited with an immediate 120 BP hit. Human-match is flat (37.2 % → 37.1 % with it off, inside the ±1.7 CI — the corpus rarely turns on the move); `tests/upgrades_check.js` §11 pins the clock, the discount, the failed second click, the landing on a switch-in and the Wish heal (`ATTEMPTS.md` §C9) |
 | `laplace.priceMyMoveEffects` | **OFF** | our 29 `SETUP_MOVES`' stat stages and HP price (Belly Drum 50, Clangorous Soul 33, refused below cost), the hazard setters' layer up to its cap, the removers' clear (Rapid Spin / Mortal Spin / Tidy Up on our side, Defog both sides, Court Change swapped), and our boosted Def/SpD inside that turn's reply | **fidelity:** top-1 **34.6 % → 36.9 %**, median regret share on MOVE clicks **0.008 → 0.001**, 30 %+ give-ups 35.3 % → 33.6 %, McNemar 240/136, p < 0.001. **win gate: a NULL on both instruments** — personas 83.3 % → 80.0 %, mirror 48.3 % → 46.7 %, both intervals straddling zero — which is why it ships OFF (§P6, §P7, `ATTEMPTS.md` §B8) |
 | `laplace.priceMyMoveStatus` | **OFF** | our status move's condition onto THEIR leaf body, refused wherever the board says it cannot land: already statused, type-nullified, `STATUS_TYPE_IMMUNITY` (Electric cannot be paralysed, Fire cannot burn), a powder into Grass, or a REVEALED immunity ability | **fidelity:** the status-infliction family **31.4 % → 41.8 %** top-1 (median gap 60.9 → 55.5), McNemar 90/22, p < 0.001. **win gate UNRUN** (§P7, `ATTEMPTS.md` §C4) |
 | `laplace.priceMyMoveProtect` | **OFF** | our own shield: their reply deals nothing inside the cell and the Protect rhythm follows; a CONSECUTIVE Protect FAILS (veto 9's rule, exempted when a Taunt/Encore means the last one never went off) and the piercers (Feint, Phantom Force, Shadow Force, Hyperspace Fury/Hole) are not blocked | **fidelity:** the Protect family **35.9 % → 47.3 %** top-1, median gap 83.5 → 65.0, gap population 143 → 119. **win gate UNRUN** (§P7, §C4) |
 
-The three ON rows were priced by switching them OFF; the three OFF rows were written after §P6 sliced
+The four ON rows were priced by switching them OFF; the three OFF rows were written after §P6 sliced
 the move-half gap by move family and found the hole was the leaf rather than a weight — the two
 families the evaluator cannot see are the two it ranks worst (status infliction is 24.7 points BELOW
 its own uniform floor, Protect holds 20.4 % of the summed gap). Both of the new channels' win-rate
@@ -843,7 +849,10 @@ with `faster = mySpeed >= oppSpeed ? 1 : 0`, so all 36 cells are exactly 0 the m
 strictly faster. Softening that cliff into a ramp is a **refit** (the coefficients were fitted on the
 gated column), the refit is a measured loss out of sample — hold-out AUC **0.7105 → 0.6971**, Δ
 **−0.0134 [−0.0262, −0.0012]** — and the gate without the refit is a decision-level null (top-1
-34.6 % → 35.0 %, McNemar 25/19, p ≥ 0.1). `ATTEMPTS.md` §B9, `tests/tuning_check.js` §11.
+34.6 % → 35.0 %, McNemar 25/19, p ≥ 0.1). **Re-measured 2026-10-17** on the checkout's own corpus,
+three hold-out splits, gate off vs on at `floor: 0.35`: **+0.0025 / −0.0063 / −0.0008** AUC, mean
+−0.15 pp with the sign flipping — not measurable at this corpus size in either direction, which is
+the same verdict from a second instrument. `ATTEMPTS.md` §B9 and §P9, `tests/tuning_check.js` §11.
 
 ## The four gated tiers
 
@@ -1131,6 +1140,16 @@ provenance is present (or when a provenance map does not add up — then `proven
 because the tests pin that path. The row-level figure on this pipeline was 0.7975, the battle-level
 figure for the shipped artifact is **0.7011**, and the first corpus's 0.9360 was measured the same
 leaked way — none of the three are comparable to each other.
+
+**The artifact was re-gated on 2026-10-17 and NOT replaced.** `tools/refit_weights.js` was run on
+the corpus in the checkout (2,913 battles / 91,315 rows): on the same battle-grouped hold-out the
+shipped vector scores **0.7260** and the fresh fit **0.7033**, so the refit is a recorded regression
+(ATTEMPTS.md §P9) and the numbers above still describe what ships. The fitter did change from that
+pass: `macro[4]` (the hazard differential) is an exact linear combination of the eight hazard dims,
+so IRLS was splitting one hazard effect across nine columns with arbitrary signs — it is now
+detected from the data and dropped before the fit, which costs 0.0004 AUC. Dim 118 is NOT a
+duplicate (the boost sum includes accuracy and evasion, which the vector does not carry), and
+data-driven detection is what kept the wrong half from being zeroed.
 
 What actually improved the model was elite **volume**; the diversity bands were nearly a rounding
 error at this size. With the battle-level hold-out: the 607-battle elite-only corpus scored
