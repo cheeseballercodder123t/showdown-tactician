@@ -1,213 +1,302 @@
 /* Showdown Tactician — styles/overlay.css
- * Portrait-first touch HUD: 1080x2340 (Galaxy S24 FE, Lemur Browser, Android).
- * Dark translucent theme, 48px minimum touch targets, no reliance on hover.
  *
- * Design tokens:
- *   panel      rgba(15, 23, 42, 0.94)
- *   border     1px solid rgba(255, 255, 255, 0.12)
- *   text       #f8fafc
- *   high       #22c55e   mid #eab308   low #64748b   veto #ef4444
+ * THE DESIGN LANGUAGE: "tactical broadcast telemetry".
+ *
+ *   This HUD is a *broadcast* on top of Pokémon Showdown's own page — not a co-design of it.
+ *   The references are F1 timing graphics, football scorebugs and the lower-thirds of a
+ *   fighting-game tournament cast: high-density, high-contrast, all on near-black, with a single
+ *   signature accent (ice teal) doing the work that gradients and drop-shadows usually do on
+ *   the web. The shape vocabulary is precise rectangles with small radii and color-coded left
+ *   rails — NOT pill-everything, NOT glassmorphism, NOT the generic AI-flat-illustration
+ *   purple-gradient.
+ *
+ *   Mobile (411x891, S24 FE) is the primary design; desktop docks a single console into the
+ *   640 px arena column (see the bottom of the file). Every desktop rule is scoped to
+ *   `[data-st-layout="desktop"]` so the mobile layout is the default and a real, complete one.
+ *
+ *   Geometry: every element's position, offset, z-index, pointer-events, min touch size, and
+ *   viewport-bound max-height are non-negotiable — they are the non-interference contract with
+ *   the tests. Only visual properties (color, background, border, shadow, font, transition)
+ *   are part of this design system.
  */
 
+/* ============================================================ design tokens */
+
 :root {
-  --st-panel: rgba(15, 23, 42, 0.94);
-  --st-panel-solid: #0f172a;
-  --st-border: 1px solid rgba(255, 255, 255, 0.12);
-  --st-text: #f8fafc;
-  --st-muted: #94a3b8;
-  --st-high: #22c55e;
-  --st-mid: #eab308;
-  --st-low: #64748b;
-  --st-veto: #ef4444;
-  --st-radius: 8px;
+  /* surfaces — layered ink, not flat, and *not* glassmorphism (too expensive on mid-range
+   * Android and it gives the generic "AI SaaS" look). The vertical gradient is the depth cue. */
+  --st-ink-1: rgba(8, 12, 22, 0.96);
+  --st-ink-2: rgba(14, 20, 34, 0.94);
+  --st-ink-3: rgba(20, 28, 44, 0.92);   /* lifted surfaces (drawer, receipt) */
+  --st-ink-strip: rgba(8, 12, 22, 0.55);/* translucent band surfaces */
+
+  /* hairlines — cool steel, not warm gray. This is the "broadcast" detail. */
+  --st-hairline:      rgba(148, 178, 212, 0.14);
+  --st-hairline-soft: rgba(148, 178, 212, 0.08);
+  --st-hairline-bold: rgba(148, 178, 212, 0.24);
+
+  /* the ONE signature accent: ice teal. Used on the active rail, focus rings, the optimal
+   * star and the Save button. Everything else is semantic (green/amber/red/slate). */
+  --st-rail:     #5eead4;
+  --st-rail-dim: rgba(94, 234, 212, 0.55);
+
+  /* semantic states — refined to feel designed, not "Tailwind defaults". */
+  --st-text:   #f1f5fb;
+  --st-muted:  #8aa0bd;
+  --st-quiet:  #5d6e8a;
+  --st-high:   #3ddc97;
+  --st-mid:    #ffc857;
+  --st-low:    #7a8ba6;
+  --st-veto:   #ff5d5d;
+  --st-gold:   #fbbf24;
+
+  /* type */
+  --st-font:     -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --st-font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --st-tnum:      "tnum" 1, "lnum" 1, "ss01" 1;
+
+  /* shape — small, precise, not pill-everything */
+  --st-r-sm: 4px;
+  --st-r-md: 6px;
+  --st-r-lg: 10px;
+  --st-r-pill: 999px;
+
+  /* shadows — layered. The inner top highlight reads as "physical card", the outer drop
+   * reads as "lifted off the page". The two together are what flat designs lack. */
+  --st-shadow-1: 0 1px 0 rgba(0, 0, 0, 0.45) inset, 0 1px 0 rgba(190, 215, 255, 0.06) inset,
+                 0 6px 18px rgba(0, 0, 0, 0.45), 0 2px 4px rgba(0, 0, 0, 0.3);
+  --st-shadow-2: 0 1px 0 rgba(0, 0, 0, 0.5) inset,  0 1px 0 rgba(190, 215, 255, 0.08) inset,
+                 0 12px 32px rgba(0, 0, 0, 0.55), 0 4px 10px rgba(0, 0, 0, 0.4);
+  --st-shadow-press: 0 1px 0 rgba(0, 0, 0, 0.5) inset, 0 4px 10px rgba(0, 0, 0, 0.45);
+
+  /* legacy aliases — keep the old names alive so a stray rule or a test probe that reads
+   * them still gets something sensible. */
+  --st-panel: var(--st-ink-2);
+  --st-panel-solid: #0c1322;
+  --st-border: 1px solid var(--st-hairline);
+  --st-radius: var(--st-r-md);
   --st-touch: 48px;
-  --st-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  --st-shadow: var(--st-shadow-1);
 }
 
-/* ------------------------------------------------------------------ buttons */
+/* =============================================================== base buttons */
 
-/* Anchors the absolutely positioned confidence badge inside Showdown's own button. */
+/* Anchors the absolutely positioned confidence badge inside Showdown's own button. The
+ * position rule is part of the non-interference contract. */
 button[data-move],
 .movebutton {
   position: relative;
   overflow: visible;
 }
 
-button[data-move].conf-high { border-color: var(--st-high) !important; }
-button[data-move].conf-mid { border-color: var(--st-mid) !important; }
-button[data-move].conf-low { border-color: var(--st-low) !important; }
+/* Confidence states — these are the engine's own semantics, so the colors are pinned. The
+ * look is sharpened, not changed: thicker outer ring + inner glow so a 2HKO/OHKO/etc verdict
+ * reads from a meter away. */
+button[data-move].conf-high { border-color: var(--st-high) !important; box-shadow: 0 0 0 1px var(--st-high) inset !important; }
+button[data-move].conf-mid  { border-color: var(--st-mid)  !important; box-shadow: 0 0 0 1px var(--st-mid)  inset !important; }
+button[data-move].conf-low  { border-color: var(--st-low)  !important; }
 button[data-move].conf-veto {
   border-color: var(--st-veto) !important;
   opacity: 0.5 !important;
+  background: rgba(255, 93, 93, 0.06) !important;
 }
 button[data-move].conf-veto .move-name,
 button[data-move].conf-veto .movebutton-name {
   text-decoration: line-through;
+  text-decoration-color: rgba(255, 93, 93, 0.7);
+  text-decoration-thickness: 1.5px;
 }
 button[data-move].st-optimal {
-  box-shadow: 0 0 0 2px var(--st-high) inset, 0 0 12px rgba(34, 197, 94, 0.35);
+  box-shadow:
+    0 0 0 2px var(--st-high) inset,
+    0 0 18px rgba(61, 220, 151, 0.45),
+    0 0 4px rgba(61, 220, 151, 0.6) !important;
 }
 
-/* Showdown fixes its own `.movebutton` at `height: 40px`, and the lethal bar below is
- * `display: block` INSIDE the button. With the box pinned at 40 px the bar cannot fit, so it
- * hangs below the button — measured 24 px of overspill on the classic client (scrollHeight 64
- * vs a 40 px box) and 16 px on the new one — and lands on top of the move button in the row
- * below, with a 141x19 px overlap onto the sibling. Let a button that carries one grow to
- * contain it. `min-height` keeps an undecorated button exactly Showdown's own size, so nothing
- * shifts when the HUD has no opinion to show. Specificity (0,1,1) beats `.movebutton` (0,1,0),
- * so no !important is needed. */
+/* Showdown fixes its own `.movebutton` at `height: 40px` and the lethal bar is a block child
+ * inside it. Let a button that carries one grow to contain it. Specificity (0,1,1) beats
+ * `.movebutton` (0,1,0), so no !important. The visual lift matches the rest of the design. */
 button[data-st-lethal] {
   height: auto;
   min-height: 40px;
+  box-shadow: 0 0 0 1px rgba(190, 215, 255, 0.10) inset, 0 0 12px rgba(0, 0, 0, 0.35);
 }
 
-/* ------------------------------------------------------------- move badges */
+/* ============================================================ move badge & reason */
 
+/* The confidence badge: a tight monospace pill in the top-right of the button. */
 .elo-helper-badge {
   position: absolute;
   top: 2px;
   right: 2px;
   z-index: 5;
-  display: inline-block;
-  min-width: 30px;
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: var(--st-r-sm);
+  font-family: var(--st-font-mono);
+  font-size: 10.5px;
   font-weight: 800;
-  line-height: 1.25;
+  line-height: 1;
   letter-spacing: 0.02em;
   text-align: center;
-  color: #0b1220;
+  color: #0a1224;
   background: var(--st-low);
   pointer-events: none;        /* never steal the tap from the real button */
   text-decoration: none;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.5) inset, 0 1px 3px rgba(0, 0, 0, 0.4);
+  font-variant-numeric: tabular-nums;
 }
-
-.elo-helper-badge.conf-high { background: var(--st-high); color: #052e16; }
-.elo-helper-badge.conf-mid { background: var(--st-mid); color: #3f2d00; }
-.elo-helper-badge.conf-low { background: var(--st-low); color: #f8fafc; }
+.elo-helper-badge.conf-high { background: var(--st-high); color: #062b1b; box-shadow: 0 1px 0 rgba(0,0,0,.4) inset, 0 0 0 1px rgba(61, 220, 151, 0.35), 0 0 8px rgba(61, 220, 151, 0.4); }
+.elo-helper-badge.conf-mid  { background: var(--st-mid);  color: #3a2700; box-shadow: 0 1px 0 rgba(0,0,0,.4) inset, 0 0 0 1px rgba(255, 200, 87, 0.35), 0 0 8px rgba(255, 200, 87, 0.4); }
+.elo-helper-badge.conf-low  { background: var(--st-low);  color: #0a1224; }
 .elo-helper-badge.conf-veto {
   background: transparent;
   color: var(--st-veto);
   border: 1px solid var(--st-veto);
-  /* The button already strikes its .move-name/.movebutton-name (see the rule above the badges
-   * block); striking the badge text too makes "VETO" read as a typo, not a veto. */
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-size: 9.5px;
+  height: 16px;
+  min-width: 36px;
 }
 .elo-helper-badge.st-optimal::after {
   content: "★";
-  margin-left: 3px;
+  margin-left: 4px;
   font-size: 10px;
-  color: #052e16;
+  color: inherit;
+  text-shadow: 0 0 6px currentColor;
 }
 
 /* The LLM's one-line justification, injected under the move name. */
 .elo-helper-reason {
   display: block;
-  margin-top: 2px;
+  margin-top: 3px;
+  font-family: var(--st-font-mono);
   font-size: 10px;
-  font-weight: 600;
-  line-height: 1.2;
+  font-weight: 500;
+  line-height: 1.3;
   color: var(--st-muted);
   white-space: normal;
+  letter-spacing: 0.01em;
 }
 
-/* ----------------------------------------------------------------- banner */
+/* ==================================================================== banner */
 
+/* The status strip. Lives just above the arena (--st-battle-top), pinned to the full width.
+ * Reads as a single broadcast line. The left accent rail + a live status pip (::before) are
+ * the only chrome: no glass, no border-radius bulge. */
 .tactician-banner {
   position: fixed;
-  /* The banner sits just above the arena, not at the viewport's `top: 0`. Showdown's mobile
-   * layout reserves 0..~56 px for the topbar + room-tab bar, and painting the status strip
-   * over that range hides the menu and the active-room tab. `_syncChipBand` publishes the
-   * measured top of `.battle` (the room's battle container) into `--st-battle-top`; on
-   * lobbies and in the test harness the var is unset and the banner falls back to 0 px. */
   top: var(--st-battle-top, 0px);
   left: 0;
   right: 0;
   z-index: 2147483000;
   box-sizing: border-box;
-  padding: 6px 10px;
-  background: var(--st-panel);
-  border: var(--st-border);
-  border-top: none;
-  border-radius: 0 0 var(--st-radius) var(--st-radius);
+  padding: 6px 12px 6px 16px;
+  background:
+    linear-gradient(180deg, rgba(10, 14, 26, 0.97) 0%, rgba(14, 20, 34, 0.94) 100%);
+  border: 0;
+  border-bottom: 1px solid var(--st-hairline);
+  border-left: 3px solid var(--st-rail);
   color: var(--st-text);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family: var(--st-font);
   font-size: 11px;
   font-weight: 600;
-  line-height: 1.35;
-  letter-spacing: 0.01em;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
-  box-shadow: var(--st-shadow);
+  line-height: 1.4;
+  letter-spacing: 0.02em;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.6);
+  box-shadow: 0 1px 0 rgba(190, 215, 255, 0.04) inset, 0 6px 18px rgba(0, 0, 0, 0.45);
   pointer-events: none;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+  font-variant-numeric: var(--st-tnum);
   padding-top: max(6px, env(safe-area-inset-top));
 }
+/* Live status pip on the left edge, before the rail: a single soft teal dot. */
+.tactician-banner::before {
+  content: "";
+  position: absolute;
+  left: 6px; top: 50%;
+  width: 4px; height: 4px;
+  margin-top: -2px;
+  background: var(--st-rail);
+  border-radius: 50%;
+  box-shadow: 0 0 6px var(--st-rail-dim);
+  pointer-events: none;
+  animation: st-live 2.4s ease-in-out infinite;
+}
+@keyframes st-live {
+  0%, 100% { box-shadow: 0 0 4px var(--st-rail-dim); }
+  50%      { box-shadow: 0 0 8px var(--st-rail); }
+}
 
-/* ----------------------------------------------------------------- TR chip */
+/* ==================================================================== TR chip */
 
+/* The trick-room alert. A focused "alert ribbon" that can be info/warn/danger/gold. The
+ * shape is a hard pill, the rail color does the talking. It stacks ABOVE the bench strip
+ * (strip height + a 6px gap) because it used to sit exactly on the pills — the chip's 33px
+ * body covered the lower two thirds of every pill text and its touch targets. */
 .tactician-tr-chip {
   position: fixed;
   left: 8px;
   right: 8px;
-  bottom: calc(var(--st-touch) + 18px + var(--st-band-lift, 0px));
+  bottom: calc(var(--st-touch, 44px) + 16px + var(--st-band-lift, 0px) + var(--st-strip-h, 61px) + 6px);
   z-index: 2147483001;
   box-sizing: border-box;
-  padding: 8px 12px;
-  border-radius: 999px;
-  background: var(--st-panel);
-  border: var(--st-border);
+  padding: 8px 14px 8px 18px;
+  border-radius: var(--st-r-md);
+  background:
+    linear-gradient(180deg, rgba(12, 18, 32, 0.96) 0%, rgba(18, 24, 40, 0.94) 100%);
+  border: 1px solid var(--st-hairline);
+  border-left: 3px solid var(--st-rail);
   color: var(--st-text);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family: var(--st-font);
   font-size: 12px;
   font-weight: 700;
   line-height: 1.3;
-  text-align: center;
-  box-shadow: var(--st-shadow);
+  text-align: left;
+  letter-spacing: 0.01em;
+  box-shadow: 0 1px 0 rgba(190, 215, 255, 0.05) inset, var(--st-shadow-1);
   pointer-events: none;
+  font-variant-numeric: var(--st-tnum);
 }
-
-.tactician-tr-chip.tr-info { border-color: rgba(148, 163, 184, 0.5); }
-.tactician-tr-chip.tr-warn {
-  border-color: var(--st-mid);
-  color: #fde68a;
-}
+.tactician-tr-chip.tr-info  { border-left-color: #7a8ba6; }
+.tactician-tr-chip.tr-warn  { border-left-color: var(--st-mid); color: #ffe2a3; }
 .tactician-tr-chip.tr-danger {
-  border-color: var(--st-veto);
-  color: #fecaca;
+  border-left-color: var(--st-veto);
+  color: #ffd2d2;
+  background:
+    linear-gradient(180deg, rgba(34, 10, 14, 0.96) 0%, rgba(20, 10, 14, 0.94) 100%);
   animation: st-pulse 1.6s ease-in-out infinite;
 }
-/* The last Trick Room turn: gold, and it breathes rather than blinks. It is the one chip that
-   is also announced by a haptic pulse (src/content.js _maybeAlertTR), so it has to read as a
-   reward for looking up, not as another red error. */
+/* The last Trick Room turn: gold, and it breathes rather than blinks. */
 .tactician-tr-chip.tr-gold {
-  border-color: #fbbf24;
-  color: #fde68a;
-  background: rgba(251, 191, 36, 0.16);
+  border-left-color: var(--st-gold);
+  color: #ffe7a3;
+  background:
+    linear-gradient(180deg, rgba(36, 26, 8, 0.96) 0%, rgba(22, 16, 6, 0.94) 100%);
   animation: st-glow 2.2s ease-in-out infinite;
 }
 
 @keyframes st-glow {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.0); }
-  50% { box-shadow: 0 0 0 5px rgba(251, 191, 36, 0.28); }
+  0%, 100% { box-shadow: 0 1px 0 rgba(190, 215, 255, 0.05) inset, 0 0 0 0 rgba(251, 191, 36, 0.0), 0 6px 18px rgba(0, 0, 0, 0.4); }
+  50%      { box-shadow: 0 1px 0 rgba(190, 215, 255, 0.05) inset, 0 0 0 5px rgba(251, 191, 36, 0.22), 0 6px 18px rgba(0, 0, 0, 0.4); }
 }
-
 @keyframes st-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.0); }
-  50% { box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.25); }
+  0%, 100% { box-shadow: 0 1px 0 rgba(190, 215, 255, 0.05) inset, 0 0 0 0 rgba(255, 93, 93, 0.0), 0 6px 18px rgba(0, 0, 0, 0.4); }
+  50%      { box-shadow: 0 1px 0 rgba(190, 215, 255, 0.05) inset, 0 0 0 4px rgba(255, 93, 93, 0.22), 0 6px 18px rgba(0, 0, 0, 0.4); }
 }
 
-/* ----------------------------------------------------------------- drawer */
+/* ==================================================================== drawer */
 
-/* The toggle is the only control that is always on screen, and toggleDrawer() gives it an
- * `.active` state, so it is meant to open AND close the sheet. It could only open it: the panel
- * below is one z-index higher (…003 vs …002) and spans left:0/right:0/bottom:0, so its box
- * contains the toggle's box and it swallowed every tap — `document.elementFromPoint` at the
- * toggle's centre returned .drawer-candidates, not the button. A control that disappears the
- * moment it works is worse than no control, so the toggle now paints above the panel. */
+/* The TAC toggle: a single, distinctive round action. Kept round on purpose — it is the one
+ * thing the player can find by feel in the dark, in the middle of a turn. The fill is the
+ * rail teal so the button reads as the HUD's own, not a PS control. */
 .team-drawer-toggle {
   position: fixed;
   left: 10px;
@@ -219,23 +308,33 @@ button[data-st-lethal] {
   min-height: var(--st-touch);
   padding: 0;
   border-radius: 50%;
-  border: var(--st-border);
-  background: var(--st-panel);
-  color: var(--st-text);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  font-size: 12px;
+  border: 1px solid var(--st-hairline-bold);
+  background:
+    radial-gradient(circle at 30% 28%, rgba(94, 234, 212, 0.22) 0%, rgba(94, 234, 212, 0) 55%),
+    linear-gradient(180deg, var(--st-ink-1) 0%, var(--st-ink-2) 100%);
+  color: var(--st-rail);
+  font-family: var(--st-font);
+  font-size: 12.5px;
   font-weight: 800;
-  letter-spacing: 0.04em;
-  box-shadow: var(--st-shadow);
+  letter-spacing: 0.1em;
+  box-shadow: 0 1px 0 rgba(190, 215, 255, 0.08) inset, var(--st-shadow-2);
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
+  transition: transform 140ms cubic-bezier(0.2, 0.7, 0.2, 1), box-shadow 140ms ease, border-color 140ms ease;
+  font-variant-numeric: var(--st-tnum);
 }
-
+.team-drawer-toggle:hover  { border-color: var(--st-rail-dim); }
+.team-drawer-toggle:active { transform: scale(0.96); box-shadow: var(--st-shadow-press); }
+.team-drawer-toggle:focus-visible { outline: 2px solid var(--st-rail); outline-offset: 2px; }
 .team-drawer-toggle.active {
   border-color: var(--st-high);
   color: var(--st-high);
+  box-shadow: 0 1px 0 rgba(190, 215, 255, 0.08) inset, 0 0 0 2px rgba(61, 220, 151, 0.18), 0 6px 18px rgba(0, 0, 0, 0.5);
 }
 
+/* The team-drawer sheet. Tabs to the bottom of the screen with safe-area padding, a hairline
+ * top divider and a "grab handle" painted on the top edge (::before) so the sheet is
+ * unambiguously a sheet (touch UX). The header has the rail on the left. */
 .team-drawer {
   position: fixed;
   left: 0;
@@ -246,22 +345,29 @@ button[data-st-lethal] {
   max-height: 68vh;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
-  /* The bottom padding reserves the toggle's corner. Without it, lifting the toggle above the
-   * panel would simply move the problem: the button would sit on top of whatever the sheet
-   * renders last (Save Team / Close), making THAT unreachable instead. */
-  padding: 14px 14px calc(14px + env(safe-area-inset-bottom) + var(--st-touch) + 8px);
-  background: var(--st-panel);
-  border: var(--st-border);
-  border-radius: 16px 16px 0 0;
+  padding: 18px 14px calc(14px + env(safe-area-inset-bottom) + var(--st-touch) + 8px);
+  background:
+    linear-gradient(180deg, rgba(10, 14, 26, 0.97) 0%, rgba(14, 20, 34, 0.96) 100%);
+  border: 0;
+  border-top: 1px solid var(--st-hairline);
+  border-radius: 14px 14px 0 0;
   color: var(--st-text);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family: var(--st-font);
   font-size: 13px;
-  line-height: 1.45;
-  box-shadow: var(--st-shadow);
+  line-height: 1.5;
+  box-shadow: 0 -12px 32px rgba(0, 0, 0, 0.55), 0 -2px 0 rgba(190, 215, 255, 0.04) inset;
   transform: translateY(0);
-  transition: transform 180ms ease-out;
+  transition: transform 200ms cubic-bezier(0.2, 0.7, 0.2, 1);
 }
-
+.team-drawer::before {
+  content: "";
+  position: absolute;
+  left: 50%; top: 7px;
+  width: 36px; height: 3px;
+  margin-left: -18px;
+  background: rgba(148, 178, 212, 0.35);
+  border-radius: 2px;
+}
 .team-drawer.tactician-hidden {
   transform: translateY(105%);
   pointer-events: none;
@@ -269,43 +375,59 @@ button[data-st-lethal] {
 }
 
 .drawer-header {
-  margin-bottom: 10px;
-  font-size: 14px;
+  position: relative;
+  margin: 6px 0 10px 0;
+  padding-left: 10px;
+  font-size: 13px;
   font-weight: 800;
-  letter-spacing: 0.02em;
-  color: var(--st-high);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--st-rail);
+}
+.drawer-header::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 2px; bottom: 2px;
+  width: 3px;
+  background: var(--st-rail);
+  border-radius: 2px;
 }
 
 .drawer-team-status {
-  margin-bottom: 10px;
+  margin: 0 0 10px 0;
   padding: 8px 10px;
-  border: var(--st-border);
-  border-radius: var(--st-radius);
-  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--st-hairline);
+  border-left: 3px solid var(--st-quiet);
+  border-radius: var(--st-r-sm);
+  background: rgba(148, 178, 212, 0.04);
   color: var(--st-muted);
-  font-size: 12px;
-  font-weight: 600;
+  font-family: var(--st-font-mono);
+  font-size: 11.5px;
+  font-weight: 500;
   white-space: pre-wrap;
+  font-variant-numeric: var(--st-tnum);
 }
 
 .drawer-team-input {
   box-sizing: border-box;
   width: 100%;
   min-height: 132px;
-  padding: 10px;
-  border: var(--st-border);
-  border-radius: var(--st-radius);
+  padding: 10px 12px;
+  border: 1px solid var(--st-hairline);
+  border-radius: var(--st-r-sm);
   background: rgba(2, 6, 23, 0.85);
   color: var(--st-text);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--st-font-mono);
   font-size: 12px;
-  line-height: 1.4;
+  line-height: 1.5;
   resize: vertical;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
 }
-
+.drawer-team-input::placeholder { color: var(--st-quiet); }
 .drawer-team-input:focus {
   outline: none;
-  border-color: var(--st-high);
+  border-color: var(--st-rail);
+  box-shadow: 0 0 0 3px rgba(94, 234, 212, 0.12);
 }
 
 .drawer-actions {
@@ -313,131 +435,138 @@ button[data-st-lethal] {
   gap: 10px;
   margin-top: 10px;
 }
-
 .drawer-save,
 .drawer-close {
   flex: 1 1 auto;
   min-height: var(--st-touch);
   padding: 0 14px;
-  border-radius: var(--st-radius);
-  border: var(--st-border);
-  background: rgba(255, 255, 255, 0.06);
+  border-radius: var(--st-r-sm);
+  border: 1px solid var(--st-hairline);
+  background: rgba(148, 178, 212, 0.06);
   color: var(--st-text);
-  font-size: 14px;
+  font-family: var(--st-font);
+  font-size: 13px;
   font-weight: 700;
+  letter-spacing: 0.04em;
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
+  transition: transform 120ms ease, background-color 120ms ease, border-color 120ms ease;
 }
-
+.drawer-save:active, .drawer-close:active { transform: scale(0.98); }
+.drawer-save:focus-visible, .drawer-close:focus-visible { outline: 2px solid var(--st-rail); outline-offset: 2px; }
 .drawer-save {
-  background: var(--st-high);
-  border-color: var(--st-high);
-  color: #052e16;
+  background: linear-gradient(180deg, var(--st-rail) 0%, #2dd4bf 100%);
+  border-color: transparent;
+  color: #062b29;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.2);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.15) inset, 0 4px 12px rgba(45, 212, 191, 0.25);
 }
+.drawer-save:hover { filter: brightness(1.05); }
 
 .drawer-candidates {
   margin-top: 12px;
-  padding: 10px;
-  border: var(--st-border);
-  border-radius: var(--st-radius);
-  background: rgba(255, 255, 255, 0.03);
+  padding: 10px 12px;
+  border: 1px solid var(--st-hairline);
+  border-radius: var(--st-r-sm);
+  background: rgba(148, 178, 212, 0.03);
   color: var(--st-muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--st-font-mono);
   font-size: 11px;
-  line-height: 1.5;
+  line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-word;
 }
 
-/* ----------------------------------------------------------------- utility */
+/* ==================================================================== utility */
+.tactician-hidden { display: none !important; }
 
-.tactician-hidden {
-  display: none !important;
-}
-
-/* Portrait phone: keep the banner to one readable line and the chip above the move bar. */
 @media (orientation: portrait) {
-  .tactician-banner { font-size: 10.5px; padding: 5px 8px; }
+  .tactician-banner { font-size: 10.5px; padding-left: 14px; }
   .tactician-tr-chip { font-size: 11.5px; }
-  .elo-helper-badge { font-size: 11px; padding: 2px 5px; }
+  .elo-helper-badge { font-size: 10.5px; }
 }
-
-/* Very tall screens (2340px class): give the drawer more room. */
 @media (min-height: 2000px) {
   .team-drawer { max-height: 58vh; }
   .drawer-team-input { min-height: 168px; }
 }
-
-/* Landscape / desktop debugging: dock the drawer to the left instead of full width. */
 @media (orientation: landscape) and (min-width: 900px) {
-  .team-drawer {
-    left: 12px;
-    right: auto;
-    bottom: 12px;
-    width: 420px;
-    border-radius: 16px;
-  }
+  .team-drawer { left: 12px; right: auto; bottom: 12px; width: 420px; border-radius: var(--st-r-lg); }
   .team-drawer.tactician-hidden { transform: translateY(105%); }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .team-drawer { transition: none; }
-  .tactician-tr-chip.tr-danger { animation: none; }
-}
+/* ============================================================== lethal gauges */
 
-/* ========================================================= lethal roll gauges */
-/* A thin colour-coded band inside each move button showing the KO odds for the TARGET being
- * previewed (the opponent's active mon, or a benched one after a bench tap). Deliberately in
- * normal flow rather than absolute: the confidence badge already owns the top-right corner. */
+/* The KO-odds gauge inside each move button. A two-element readout: the monospace range
+ * text on top, and a fill bar drawn with a CSS gradient that uses --st-lethal-fill (set
+ * by ui_overlay.js to the max roll percentage, clamped 0..100). The fill is the most
+ * important signal in the HUD — it turns a 4-button row of numbers into a glance. */
 .st-lethal-bar {
   display: block;
   margin-top: 4px;
-  padding: 2px 6px;
-  border-left: 4px solid var(--st-low);
-  border-radius: calc(var(--st-radius) - 2px);
-  background: rgba(255, 255, 255, 0.06);
+  padding: 4px 7px 5px;
+  border-left: 0;
+  border-radius: var(--st-r-sm);
+  background: rgba(148, 178, 212, 0.06);
   color: var(--st-text);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 11px;
-  line-height: 1.4;
+  font-family: var(--st-font-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1.3;
   text-align: center;
   font-variant-numeric: tabular-nums;
+  position: relative;
+  overflow: hidden;
+  letter-spacing: 0.02em;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.35) inset, 0 0 0 1px var(--st-hairline) inset;
+}
+.st-lethal-bar::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: var(--st-lethal-fill, 0%);
+  pointer-events: none;
+  transition: width 200ms cubic-bezier(0.2, 0.7, 0.2, 1);
+  background: rgba(94, 234, 212, 0.28);
+  box-shadow: 1px 0 0 var(--st-rail) inset;
+}
+.st-lethal-bar > * { position: relative; z-index: 1; }
+/* The text node of the bar is the flex item — a single text node. z-index 0 (the
+ * ::before's natural stack) vs the text's normal z keeps the text on top without a wrapper. */
+
+button[data-st-lethal="guaranteed"] .st-lethal-bar { color: #e3fbec; }
+button[data-st-lethal="guaranteed"] .st-lethal-bar::before {
+  background: linear-gradient(90deg, rgba(61, 220, 151, 0.10) 0%, rgba(61, 220, 151, 0.40) 100%);
+  box-shadow: 2px 0 0 var(--st-high) inset, 0 0 12px rgba(61, 220, 151, 0.4);
+}
+button[data-st-lethal="high"] .st-lethal-bar { color: #ffe2a3; }
+button[data-st-lethal="high"] .st-lethal-bar::before {
+  background: linear-gradient(90deg, rgba(255, 200, 87, 0.08) 0%, rgba(255, 200, 87, 0.34) 100%);
+  box-shadow: 2px 0 0 var(--st-mid) inset, 0 0 10px rgba(255, 200, 87, 0.3);
+}
+button[data-st-lethal="mid"] .st-lethal-bar { color: #d3dceb; }
+button[data-st-lethal="mid"] .st-lethal-bar::before {
+  background: linear-gradient(90deg, rgba(122, 139, 166, 0.06) 0%, rgba(122, 139, 166, 0.30) 100%);
+  box-shadow: 2px 0 0 var(--st-low) inset;
+}
+button[data-st-lethal="none"] .st-lethal-bar { color: var(--st-muted); }
+button[data-st-lethal="none"] .st-lethal-bar::before {
+  background: transparent;
+  box-shadow: none;
 }
 
-button[data-st-lethal="guaranteed"] .st-lethal-bar {
-  background: rgba(34, 197, 94, 0.18);
-  border-left-color: var(--st-high);
-}
-button[data-st-lethal="high"] .st-lethal-bar {
-  background: rgba(234, 179, 8, 0.18);
-  border-left-color: var(--st-mid);
-}
-button[data-st-lethal="mid"] .st-lethal-bar {
-  background: rgba(100, 116, 139, 0.22);
-  border-left-color: var(--st-low);
-}
-button[data-st-lethal="none"] .st-lethal-bar {
-  background: rgba(148, 163, 184, 0.12);
-  border-left-color: #475569;
-  color: var(--st-muted);
-}
+/* ============================================================== bench sandbox */
 
-/* =============================================================== bench sandbox */
-/* The opponent's bench as tappable pills. Fixed above the move bar, horizontally scrollable,
- * one 48px touch target per mon, safe-area aware for gesture-navigation phones.
+/* The opponent bench as a row of "roster cards". The strip is tap-transparent (so a
+ * residual overlap with the PS move bar never eats a move-button tap); the pills are the
+ * actual touch targets.
  *
- * `bottom` carries `--st-band-lift`: on the new client Showdown's own control bar is a
- * `position: static` node inside the scrollable battle log (client2.css:
- * `.battle-log .battle-controls { top: 0; position: static }`), so it lands in the bottom
- * third of the screen — 688..792 of 891, measured live — instead of the classic client's
- * 297..402. ui_overlay.js measures the bar and publishes the lift needed to park this strip
- * above it; on the classic client (and in lobbies, where there is no bar) the var is 0px and
- * the strip stays exactly where it was.
- *
- * `pointer-events: none` on the strip with `auto` on the pills is the belt to that braces:
- * the strip is a live element pinned to the viewport bottom, so if it ever DOES overlap a
- * move button it must not be the element that receives the tap. The gradient is cosmetic
- * and can overlap; the touch target is not. */
+ * Wraps rather than scrolls. A scrollable row was measurably unreachable on a phone: a
+ * full team of six renders 717px of pill inside a 411px strip, so only 3 of 6 were fully
+ * visible, the rest sat off-screen behind a swipe gesture with no affordance at all
+ * (measured: probe-strip.js, 411/393/360/320px). flex-wrap puts the whole team on screen
+ * with no gesture. The strip is `position: fixed` with `bottom`, so it grows upward, and
+ * --st-strip-h is measured from its live rect (not assumed), so the TR chip restacks
+ * above it and the sheet's dock re-anchors by itself. */
 .st-bench-strip {
   position: fixed;
   left: 0;
@@ -445,54 +574,81 @@ button[data-st-lethal="none"] .st-lethal-bar {
   bottom: calc(var(--st-touch) + 8px + var(--st-band-lift, 0px));
   z-index: 40;
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
-  padding: 6px 10px calc(6px + env(safe-area-inset-bottom, 0px)) 10px;
+  padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px)) 10px;
   overflow-x: auto;
   overflow-y: hidden;
-  background: linear-gradient(180deg, rgba(15, 23, 42, 0) 0%, rgba(15, 23, 42, 0.82) 40%, var(--st-panel) 100%);
-  border-top: var(--st-border);
+  overscroll-behavior-x: contain;
+  background:
+    linear-gradient(180deg, rgba(8, 12, 22, 0) 0%, rgba(8, 12, 22, 0.88) 35%, rgba(10, 14, 26, 0.96) 100%);
+  border-top: 1px solid var(--st-hairline);
   scrollbar-width: none;
   -webkit-overflow-scrolling: touch;
   pointer-events: none;
 }
-
 .st-bench-strip::-webkit-scrollbar { display: none; }
 
+/* A roster card: a single tight monospace line of "Species HP%" on a deep ink card, with
+ * a left rail (color = state) and a 2px baseline accent in the rail teal. The bottom
+ * scanline and the rail together are the "broadcast" detail. */
 .st-bench-pill {
+  position: relative;
   flex: 0 0 auto;
   min-width: 96px;
   min-height: var(--st-touch);
-  padding: 8px 12px;
-  border: var(--st-border);
-  border-radius: var(--st-radius);
-  background: rgba(15, 23, 42, 0.9);
+  padding: 0 12px;
+  border: 1px solid var(--st-hairline);
+  border-left: 3px solid var(--st-quiet);
+  border-radius: var(--st-r-sm);
+  background:
+    linear-gradient(180deg, rgba(14, 20, 34, 0.96) 0%, rgba(8, 12, 22, 0.96) 100%);
   color: var(--st-text);
-  font-size: 12px;
-  font-weight: 600;
+  font-family: var(--st-font-mono);
+  font-size: 11.5px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.02em;
   white-space: nowrap;
-  /* The strip itself is tap-transparent (see above); the pills are the things you actually
-   * want to hit. Horizontal drag on a pill still scrolls the strip, because the scroll
-   * gesture routes from the touch target to its nearest scrollable ancestor. */
   pointer-events: auto;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  box-shadow: 0 1px 0 rgba(190, 215, 255, 0.04) inset, 0 4px 10px rgba(0, 0, 0, 0.35);
+  transition: transform 120ms ease, border-color 120ms ease, background-color 120ms ease;
+  font-variant-numeric: var(--st-tnum);
 }
+.st-bench-pill::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 2px;
+  background: var(--st-hairline-bold);
+  border-bottom-left-radius: var(--st-r-sm);
+  border-bottom-right-radius: var(--st-r-sm);
+}
+.st-bench-pill:active { transform: scale(0.98); }
+.st-bench-pill:focus-visible { outline: 2px solid var(--st-rail); outline-offset: 2px; }
 
-.st-bench-pill:active { background: rgba(30, 41, 59, 0.95); }
-
-/* The tapped target: gold, because it is a prediction, not a fact. */
 .st-bench-pill.st-selected {
   border-color: var(--st-mid);
-  box-shadow: 0 0 0 2px rgba(234, 179, 8, 0.35) inset;
-  color: #fde68a;
+  border-left-color: var(--st-mid);
+  color: #ffe2a3;
+  background:
+    linear-gradient(180deg, rgba(38, 28, 8, 0.96) 0%, rgba(22, 16, 6, 0.96) 100%);
+  box-shadow: 0 0 0 1px rgba(255, 200, 87, 0.4) inset, 0 0 14px rgba(255, 200, 87, 0.18);
 }
+.st-bench-pill.st-selected::after { background: var(--st-mid); }
 
 .st-bench-pill.st-fainted {
   border-style: dashed;
-  opacity: 0.45;
+  opacity: 0.5;
   text-decoration: line-through;
+  text-decoration-color: var(--st-veto);
 }
 
-/* ============================================================ detective badges */
-/* The deductions the engine has actually PROVEN, over the opponent's card. */
+/* ============================================================== deduction row */
+
 .st-badge-row {
   position: fixed;
   left: 8px;
@@ -502,153 +658,158 @@ button[data-st-lethal="none"] .st-lethal-bar {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  padding: 4px 6px;
+  padding: 0;
   pointer-events: none;
 }
-
 :root[data-st-band-anchored] .st-badge-row {
   top: calc(var(--st-battle-top, 0px) + 46px);
 }
 
+/* A deduction badge is a left-rail ticket. The rail color is the engine's own choice
+ * (unmasked=green, choice-broken=red, lockout=slate). The text is uppercase, tight, with
+ * a tick mark in front — a "channel ID" that reads as one broadcast unit. */
 .st-unmask-badge {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   max-width: 100%;
-  padding: 3px 8px;
-  border: var(--st-border);
-  border-radius: 999px;
-  background: var(--st-panel);
+  padding: 4px 10px 4px 8px;
+  border: 1px solid var(--st-hairline);
+  border-left: 3px solid var(--st-quiet);
+  border-radius: var(--st-r-sm);
+  background:
+    linear-gradient(180deg, rgba(14, 20, 34, 0.96) 0%, rgba(8, 12, 22, 0.96) 100%);
   color: var(--st-text);
-  font-size: 11px;
-  font-weight: 600;
+  font-family: var(--st-font);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  box-shadow: 0 1px 0 rgba(190, 215, 255, 0.04) inset, 0 4px 10px rgba(0, 0, 0, 0.3);
+  font-variant-numeric: var(--st-tnum);
 }
-
-.st-unmask-badge.st-unmasked { border-color: rgba(34, 197, 94, 0.6); color: #bbf7d0; }
-.st-unmask-badge.st-choice-broken { border-color: rgba(239, 68, 68, 0.6); color: #fecaca; }
-.st-unmask-badge.st-lockout { border-color: rgba(148, 163, 184, 0.6); color: #e2e8f0; }
+.st-unmask-badge::before {
+  content: "▸";
+  color: inherit;
+  font-size: 9px;
+  opacity: 0.7;
+}
+.st-unmask-badge.st-unmasked     { border-left-color: var(--st-high); color: #c8f5dc; }
+.st-unmask-badge.st-choice-broken { border-left-color: var(--st-veto); color: #ffd2d2; }
+.st-unmask-badge.st-lockout      { border-left-color: var(--st-low);  color: #d3dceb; }
 
 /* =============================================================== match receipt */
-/* The post-match summary sheet. It only mounts on `|win|`/`|tie|`, by which point Showdown's
- * own control bar is gone, so it shares the bench strip's `--st-band-lift` rather than
- * competing for the strip's slot — the two are never on screen together in real use, and the
- * shared var means a receipt that does arrive early still clears the bar instead of hiding it.
- * Above the TR chip's alert level, which must stay the loudest element. */
+
 .st-receipt-card {
   position: fixed;
   left: 8px;
   right: 8px;
   bottom: calc(var(--st-touch) + 16px + var(--st-band-lift, 0px));
   z-index: 60;
-  padding: 12px 14px;
-  border: var(--st-border);
-  border-radius: 14px;
-  background: var(--st-panel-solid);
-  box-shadow: var(--st-shadow);
+  padding: 14px 16px;
+  border: 1px solid var(--st-hairline);
+  border-left: 3px solid var(--st-rail);
+  border-radius: var(--st-r-lg);
+  background:
+    linear-gradient(180deg, var(--st-ink-1) 0%, var(--st-ink-3) 100%);
+  box-shadow: var(--st-shadow-2);
   color: var(--st-text);
 }
-
 .st-receipt-title {
   margin: 0 0 4px;
+  font-family: var(--st-font);
   font-size: 15px;
-  font-weight: 700;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  color: var(--st-text);
 }
-
 .st-receipt-headline {
-  margin: 0 0 8px;
+  margin: 0 0 10px;
   color: var(--st-muted);
-  font-size: 12px;
+  font-family: var(--st-font-mono);
+  font-size: 11.5px;
   font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
 }
-
+/* Each row is a monospace key + value on a hairline divider, prefixed with its icon glyph.
+ * The icon, label and value are all set by the JS as a single text node ("⚔ KOs: 3"), so
+ * the styling works on the block — monospace, tabular numerals, hairline above. */
 .st-receipt-row {
-  padding: 3px 0;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  display: block;
+  padding: 6px 0;
+  border-top: 1px solid var(--st-hairline-soft);
+  font-family: var(--st-font-mono);
   font-size: 12px;
   line-height: 1.5;
   font-variant-numeric: tabular-nums;
+  color: var(--st-text);
 }
+.st-receipt-row:first-of-type { border-top: 0; padding-top: 0; }
 
 .st-receipt-copy {
   display: block;
   width: 100%;
   min-height: var(--st-touch);
-  margin-top: 10px;
-  border: var(--st-border);
-  border-radius: var(--st-radius);
-  background: rgba(34, 197, 94, 0.16);
-  color: #dcfce7;
+  margin-top: 12px;
+  border: 1px solid transparent;
+  border-radius: var(--st-r-sm);
+  background: linear-gradient(180deg, var(--st-rail) 0%, #2dd4bf 100%);
+  color: #062b29;
+  font-family: var(--st-font);
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.2);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.18) inset, 0 4px 12px rgba(45, 212, 191, 0.25);
+  transition: transform 120ms ease, filter 120ms ease;
 }
+.st-receipt-copy:hover  { filter: brightness(1.05); }
+.st-receipt-copy:active { transform: scale(0.99); }
 
-.st-receipt-copy:active { background: rgba(34, 197, 94, 0.28); }
+/* ============================================================== Supreme Overlord */
 
-/* =========================================================== Supreme Overlord */
-/* Inline pill above the card: a multiplier the opponent's Kingambit is earning. */
 .st-overlord-gauge {
   position: fixed;
   left: 8px;
   right: 8px;
   top: 18px;
   z-index: 36;
-  padding: 4px 10px;
-  border: 1px solid rgba(234, 179, 8, 0.55);
-  border-radius: 999px;
-  background: var(--st-panel);
-  color: #fde68a;
-  font-size: 12px;
-  font-weight: 600;
+  padding: 5px 14px 5px 16px;
+  border: 1px solid rgba(251, 191, 36, 0.45);
+  border-left: 3px solid var(--st-gold);
+  border-radius: var(--st-r-pill);
+  background:
+    linear-gradient(180deg, rgba(34, 24, 6, 0.96) 0%, rgba(20, 14, 4, 0.96) 100%);
+  color: #ffe7a3;
+  font-family: var(--st-font);
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
   text-align: center;
   pointer-events: none;
+  font-variant-numeric: var(--st-tnum);
+  box-shadow: 0 1px 0 rgba(255, 200, 87, 0.1) inset, 0 0 12px rgba(251, 191, 36, 0.15);
 }
-
-/* On a real battle the banner drops to `--st-battle-top` (just above the arena) so it stops
- * painting over the topbar / room-tab bar. The chip band re-anchors with it by preserving the
- * SAME offsets the original layout had to the (now-displaced) banner top: the gold pill sits
- * 18 px under the banner so the bottom of the pill peeks out from behind the dark strip just
- * like it did at the viewport top, and the deduction badges keep their 46 px gap. The
- * attribute is only ever set by js/_syncChipBand, so lobbies and the test harness keep the
- * viewport-top layout unchanged. */
 :root[data-st-band-anchored] .st-overlord-gauge {
   top: calc(var(--st-battle-top, 0px) + 18px);
 }
 
-/* Portrait phone: keep the new chrome compact so it never eats the battlefield. */
 @media (orientation: portrait) {
-  .st-lethal-bar { font-size: 10.5px; padding: 2px 4px; }
-  .st-bench-pill { min-width: 84px; font-size: 11.5px; }
-  .st-unmask-badge { font-size: 10.5px; }
+  .st-lethal-bar { font-size: 10px; padding: 3px 5px 3px; }
+  .st-bench-pill { min-width: 84px; font-size: 11px; }
+  .st-unmask-badge { font-size: 10px; }
   .st-receipt-card { max-height: 46vh; overflow-y: auto; }
 }
-
-/* Very tall screens (2340px class): lift the strip clear of the taller move bar. The extra
- * clearance is on top of, not instead of, `--st-band-lift`. */
 @media (min-height: 2000px) {
   .st-bench-strip { bottom: calc(var(--st-touch) + 16px + var(--st-band-lift, 0px)); }
 }
-
-/* A receipt that animates in is the only motion this block introduces; honour the preference. */
 @media (prefers-reduced-motion: reduce) {
   .st-receipt-card { animation: none; }
 }
 
-/* ================================================== PP-stall gauge & sentinel */
-/* The two "sweaty" readouts. The PP gauge tracks how much of the opponent's one set-defining
- * move (Sucker Punch, Protect, Substitute) is left, because a PP-stalled pivot is the whole
- * reason to click a coverage move; the sentinel bar says which of their format mechanics are
- * already spent, which is the one thing about their bench we can be certain of. Both sit in the
- * chip band (z 37/38): under the bench strip (40) so a tap target is never covered, and well
- * under the receipt (60) and the TR chip, which must stay the loudest thing on screen.
- * These blocks are `position: fixed` like the rest of the chrome, so they cannot stack in CSS,
- * and both neighbours are content-driven: the badge row grows with how much we have deduced, and
- * the gauge grows with how many lines the engine fills in (the advice line wraps). So each block
- * MEASURES what it follows and publishes it as a custom property, consumed here with a static
- * fallback for the case where the stylesheet loads without ui_overlay.js having run:
- *   --st-chip-bottom   the chip band's real bottom  (fallback 104px: three badges at phone width)
- *   --st-pp-gauge-h    the gauge's own height        (fallback 58px: headline + threat + advice)
- * Both are set in px and are only ever read by the offsets below, so the stack stays gap-true
- * however much either block has to say. A hand-tuned offset was tried first and was wrong within
- * a minute of looking at it: without `box-sizing` (which this file sets per rule, not globally)
- * the gauge rendered 56px tall instead of the assumed 46 and sat on top of the sentinel. */
+/* ========================================================== PP gauge & sentinel */
+
 .st-pp-gauge {
   position: fixed;
   box-sizing: border-box;
@@ -656,36 +817,40 @@ button[data-st-lethal="none"] .st-lethal-bar {
   right: 8px;
   top: calc(var(--st-chip-bottom, 104px) + 2px);
   z-index: 38;
-  /* A real cap for pathological content, never a mid-glyph crop the UI assumed — AND bounded by
-   * the viewport: a gauge that starts low (a tall badge row) and is allowed 40vh would hang its
-   * last line off the bottom of the screen and get clipped there. `min()` keeps whichever of the
-   * two is smaller, so the block always ends on screen. */
   max-height: min(40vh, calc(100vh - var(--st-chip-bottom, 104px) - 8px));
   overflow: hidden;
-  padding: 5px 10px;
-  border: 1px solid rgba(148, 163, 184, 0.5);
-  border-radius: var(--st-radius);
-  background: var(--st-panel);
+  padding: 8px 12px 8px 14px;
+  border: 1px solid var(--st-hairline);
+  border-left: 3px solid var(--st-rail);
+  border-radius: var(--st-r-md);
+  background:
+    linear-gradient(180deg, var(--st-ink-1) 0%, var(--st-ink-2) 100%);
   color: var(--st-text);
+  font-family: var(--st-font);
   font-size: 11.5px;
-  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+  font-variant-numeric: var(--st-tnum);
   pointer-events: none;
+  box-shadow: 0 1px 0 rgba(190, 215, 255, 0.04) inset, var(--st-shadow-1);
 }
 
-.st-pp-headline { font-weight: 700; }
-
-/* The threat read is a warning, not a fact: it names moves they MIGHT hold. */
+.st-pp-headline {
+  font-family: var(--st-font);
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  color: var(--st-text);
+}
 .st-pp-threat {
   margin-top: 2px;
-  color: #fcd34d;
+  color: #ffd06a;
+  font-weight: 600;
 }
-
-/* The advised line is the solver's own output, so it is quoted flat, never styled as advice. */
 .st-pp-advice {
   margin-top: 2px;
   color: var(--st-muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 11px;
+  font-family: var(--st-font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.01em;
 }
 
 .st-format-sentinel {
@@ -695,136 +860,352 @@ button[data-st-lethal="none"] .st-lethal-bar {
   right: 8px;
   top: calc(var(--st-chip-bottom, 104px) + 2px + var(--st-pp-gauge-h, 58px) + 2px);
   z-index: 37;
-  /* Mirror of the PP-gauge guard: a cap on the sentinel's height AND a viewport bound so a tall
-   * PP gauge above it can't push the last sentinel row off the screen. */
   max-height: min(34vh, calc(100vh - var(--st-chip-bottom, 104px) - var(--st-pp-gauge-h, 58px) - 10px));
   overflow: hidden;
-  padding: 6px 10px;
-  border: var(--st-border);
-  border-radius: var(--st-radius);
-  background: var(--st-panel);
+  padding: 8px 12px 8px 14px;
+  border: 1px solid var(--st-hairline);
+  border-left: 3px solid var(--st-low);
+  border-radius: var(--st-r-md);
+  background:
+    linear-gradient(180deg, var(--st-ink-1) 0%, var(--st-ink-2) 100%);
   color: var(--st-text);
+  font-family: var(--st-font);
   font-size: 11.5px;
+  line-height: 1.45;
   pointer-events: none;
+  box-shadow: 0 1px 0 rgba(190, 215, 255, 0.04) inset, var(--st-shadow-1);
+  font-variant-numeric: var(--st-tnum);
 }
 
+/* Section headers: a small uppercase tick + label, broadcast-style. The line below them is
+ * a hairline divider so the rows read as a table. */
 .st-sentinel-head {
-  margin-top: 2px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  padding-bottom: 3px;
   color: var(--st-muted);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
+  border-bottom: 1px solid var(--st-hairline-soft);
 }
-
+.st-sentinel-head::before {
+  content: "▸";
+  color: var(--st-rail);
+  font-size: 9px;
+}
 .st-sentinel-head:first-child { margin-top: 0; }
 
-/* A burned mechanic is struck through; a live one is the quiet default. */
-.st-sentinel-row { font-weight: 600; }
-.st-sentinel-row.st-burned { color: #fecaca; text-decoration: line-through; }
-.st-sentinel-row.st-live { color: #bbf7d0; }
-
-/* "TACTICAL FREEDOM": the reward for a burned mechanic, so it reads as good news. */
-.st-sentinel-tactic {
-  padding-left: 10px;
-  color: #bbf7d0;
-  line-height: 1.45;
+.st-sentinel-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin-top: 4px;
+  padding: 2px 0;
+  font-weight: 600;
+  color: var(--st-text);
 }
+.st-sentinel-row.st-burned { color: #ffd2d2; }
+.st-sentinel-row.st-burned .st-sentinel-name { text-decoration: line-through; text-decoration-color: rgba(255, 93, 93, 0.6); text-decoration-thickness: 1.5px; }
+.st-sentinel-row.st-live   { color: #c8f5dc; }
 
+.st-sentinel-tactic {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 2px 0 2px 14px;
+  color: #c8f5dc;
+  line-height: 1.45;
+  font-weight: 600;
+}
+.st-sentinel-tactic::before { content: "•"; color: var(--st-rail); margin-right: 4px; }
 .st-sentinel-bench {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--st-hairline-soft);
   color: var(--st-muted);
+  font-family: var(--st-font-mono);
   font-size: 10.5px;
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
 }
 
-/* Portrait phone: these two stack under the banner, so keep them to one or two lines each. */
 @media (orientation: portrait) {
-  .st-pp-gauge { font-size: 11px; padding: 4px 8px; }
-  .st-pp-advice { font-size: 10.5px; }
-  .st-format-sentinel { font-size: 11px; padding: 5px 8px; }
-  .st-sentinel-tactic { padding-left: 8px; }
+  .st-pp-gauge { font-size: 11px; padding-left: 12px; }
+  .st-pp-advice { font-size: 10px; }
+  .st-format-sentinel { font-size: 11px; padding-left: 12px; }
+  .st-sentinel-tactic { padding-left: 10px; }
 }
-
-/* Very tall screens (2340px class): there is room, so let both readouts breathe. The offsets are
- * derived, so the taller variant only has to give the gauge room to say more. */
 @media (min-height: 2000px) {
   .st-pp-gauge { max-height: 46vh; }
 }
-
-/* Both readouts change every turn; nothing here animates, but the guard stays for symmetry. */
 @media (prefers-reduced-motion: reduce) {
   .st-pp-gauge, .st-format-sentinel { animation: none; }
 }
 
+/* =============================================================== mobile sheet
+ * Mobile portrait has no room at the top of the screen for the chip band: the battle scene
+ * itself is only ~250 px tall and every pixel is a sprite, HP bar, party icon or statbar
+ * (measured: 89–104% coverage of the foe's active sprite and both party icons). So the band
+ * is re-parented into ONE scrollable column docked just above the TR chip and bench strip.
+ * The column collapses to a 32 px header rail by default — the banner summary + a card count
+ * + a caret — so a player who just wants to play can keep the chrome out of the way and
+ * expand it on demand.
+ *
+ * The rail is a real <button>, so the focus ring is the same teal as the rest of the chrome
+ * and Space/Enter activate it. A capture-phase mousedown handler preventDefaults so the
+ * button never holds keyboard focus (see _ensureSheet in ui_overlay.js).
+ */
+.st-sheet {
+  /* Hidden by default: only the mobile layout mounts it. The desktop rules below force
+   * `display: none` so a stale sheet from a prior mobile session cannot leak into desktop. */
+  display: none;
+  position: fixed;
+  box-sizing: border-box;
+  /* `left: 0; right: 0; margin: auto` plus a max-width keeps the sheet phone-width even
+   * when the layout is deliberately forced to mobile on a 1920px desktop viewport, instead
+   * of stretching into a 1904px ribbon. */
+  left: 0;
+  right: 0;
+  margin-left: auto;
+  margin-right: auto;
+  max-width: 520px;
+  /* Docked directly above the always-on bottom band. `--st-band-top` is the LIVE top Y of
+   * that band (the TR chip and the bench strip), published by ui_overlay.js, so the sheet
+   * clears both instead of sliding under the taller bench strip. The 6px gap gives the band
+   * breathing room. The fallbacks reproduce the mock's geometry when no page measurement
+   * exists yet (a lobby, or the first frame before the first render). */
+  bottom: calc(100vh - var(--st-band-top, 400px) + 6px);
+  z-index: 39;
+  max-height: 36px;            /* collapsed: just the header rail */
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  box-shadow: none;
+  overflow: hidden;
+  pointer-events: none;
+  display: none;
+  flex-direction: column;
+  gap: 6px;
+  transition: max-height 220ms cubic-bezier(.2,.7,.2,1), padding 220ms ease, background 220ms ease, border-color 220ms ease, box-shadow 220ms ease;
+}
+:root[data-st-layout="mobile"] .st-sheet {
+  display: flex;
+}
+.st-sheet[data-st-sheet-open="1"] {
+  /* 58vh by default, but never tall enough to reach the battle scene: --st-sheet-max is
+   * published by ui_overlay.js from the chip's live top minus the arena's bottom, so the
+   * expanded panel can never cover a sprite, an HP bar or a party icon. The 120px floor
+   * keeps a usable panel on the clients where the measurement is unavailable. */
+  max-height: min(58vh, var(--st-sheet-max, 220px));
+  padding: 8px;
+  overflow-y: auto;
+  background:
+    linear-gradient(180deg, rgba(10, 14, 26, 0.96) 0%, rgba(14, 20, 34, 0.94) 100%);
+  border: 1px solid var(--st-hairline);
+  box-shadow: var(--st-shadow-1);
+  /* The backdrop dims the log behind the sheet on purpose; it is a modal surface, not a
+   * passive decoration, so it earns its own shadow. */
+}
+@media (prefers-reduced-motion: reduce) {
+  .st-sheet { transition: none; }
+}
+
+/* On desktop the sheet must never appear, even if a stale element survived a resize. */
+:root[data-st-layout="desktop"] .st-sheet { display: none !important; }
+
+.st-sheet-header {
+  /* The rail: a single full-width button that is always visible (collapsed and expanded).
+   * `flex-shrink: 0` so the cards never compress it, `position: sticky` so it stays put
+   * while the cards scroll beneath it. */
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 32px;
+  flex: 0 0 auto;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 6px 10px 6px 12px;
+  margin: 0;
+  border: 1px solid var(--st-hairline);
+  border-left: 3px solid var(--st-rail);
+  border-radius: 10px;
+  background:
+    linear-gradient(180deg, rgba(10, 14, 26, 0.96) 0%, rgba(14, 20, 34, 0.94) 100%);
+  color: var(--st-text);
+  font-family: var(--st-font);
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: 0.01em;
+  text-align: left;
+  cursor: pointer;
+  pointer-events: auto;
+  font-variant-numeric: var(--st-tnum);
+  box-shadow: 0 1px 0 rgba(190, 215, 255, 0.04) inset, var(--st-shadow-1);
+  appearance: none;
+  -webkit-tap-highlight-color: transparent;
+  transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
+}
+.st-sheet-header:active { transform: scale(0.995); }
+.st-sheet-header:focus { outline: none; }
+.st-sheet-header:focus-visible {
+  outline: 2px solid var(--st-rail);
+  outline-offset: 2px;
+}
+.st-sheet[data-st-sheet-open="1"] .st-sheet-header {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  border-bottom-color: transparent;
+  background:
+    linear-gradient(180deg, rgba(16, 22, 38, 0.98) 0%, rgba(12, 18, 32, 0.96) 100%);
+}
+
+.st-sheet-summary {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  /* The banner text is uppercase, channel-ID style. Mirror that. */
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--st-text);
+}
+.st-sheet-count {
+  flex: 0 0 auto;
+  font-family: var(--st-font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--st-rail);
+  border: 1px solid var(--st-hairline);
+  border-radius: 999px;
+  padding: 1px 8px;
+  background: rgba(94, 234, 212, 0.06);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.st-sheet-count[data-st-count="0"] {
+  color: var(--st-muted);
+  background: transparent;
+  border-color: var(--st-hairline-soft);
+}
+.st-sheet-caret {
+  flex: 0 0 auto;
+  font-family: var(--st-font-mono);
+  font-size: 12px;
+  color: var(--st-rail);
+  transition: transform 220ms cubic-bezier(.2,.7,.2,1);
+  display: inline-block;
+}
+.st-sheet[data-st-sheet-open="1"] .st-sheet-caret {
+  transform: rotate(180deg);
+}
+
+/* Children that are stacked inside the sheet lose their viewport-fixed positioning and
+ * become flex items. Width auto lets them fill the sheet's content box; their own padding,
+ * border and shadow stay (each card is still itself). The desktop console does the same for
+ * its five band elements; this is the mobile equivalent for a larger set. */
+:root[data-st-layout="mobile"] .st-sheet > .tactician-banner,
+:root[data-st-layout="mobile"] .st-sheet > .st-overlord-gauge,
+:root[data-st-layout="mobile"] .st-sheet > .st-badge-row,
+:root[data-st-layout="mobile"] .st-sheet > .st-deduction-badges,
+:root[data-st-layout="mobile"] .st-sheet > .st-pp-gauge,
+:root[data-st-layout="mobile"] .st-sheet > .st-format-sentinel,
+:root[data-st-layout="mobile"] .st-sheet > .st-receipt-card,
+:root[data-st-layout="mobile"] .st-sheet > .st-cancel-alert-card {
+  position: static;
+  top: auto; right: auto; bottom: auto; left: auto;
+  z-index: auto;
+  width: auto;
+  max-width: 100%;
+  margin: 0;
+  border-radius: 10px;
+}
+/* Inside the sheet the banner drops its own safe-area top padding (it is no longer pinned to
+ * the top of the viewport) and its bottom border becomes a hairline divider from the next
+ * card. */
+:root[data-st-layout="mobile"] .st-sheet > .tactician-banner {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--st-hairline-soft);
+  border-radius: 10px 10px 0 0;
+}
+/* The sentinel is the last card in the natural order; give its bottom radius back. */
+:root[data-st-layout="mobile"] .st-sheet > .st-format-sentinel {
+  border-radius: 0 0 10px 10px;
+}
+:root[data-st-layout="mobile"] .st-sheet > .tactician-banner + .st-pp-gauge,
+:root[data-st-layout="mobile"] .st-sheet > .tactician-banner + .st-format-sentinel,
+:root[data-st-layout="mobile"] .st-sheet > .st-overlord-gauge + .st-pp-gauge,
+:root[data-st-layout="mobile"] .st-sheet > .st-pp-gauge + .st-format-sentinel {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
 /* =============================================================== layout mode */
-/* The HUD has two layouts, chosen by `data-st-layout` on documentElement. The default
- * (no attribute, or `mobile`) is the portrait phone layout this file was written for. The
- * desktop layout docks a single scrollable console into the 640 px-wide arena column on
- * the left, where there is no PS furniture to collide with. Every rule below is scoped to
- * a layout that nobody is in by accident — the attribute is only ever set by
- * ui_overlay.js. */
+/* Desktop-only re-positioning. The mobile layout above is the default and a real, complete
+ * one. Every rule below is scoped to `[data-st-layout="desktop"]` — that attribute is only
+ * ever set by ui_overlay.js, so lobbies, the options page and the test harness keep the
+ * mobile layout untouched. */
 
 :root[data-st-layout="desktop"] .tactician-banner {
-  /* The arena column on desktop: same intent as the mobile rule (sit just above the
-   * battlefield, not at the viewport top), but the width is the arena, not the screen. */
   top: var(--st-battle-top, 56px);
-  left: 8px;
-  right: auto;
+  left: 8px; right: auto;
   width: 624px;
-  border-radius: 12px 12px 0 0;
+  border-radius: var(--st-r-md) var(--st-r-md) 0 0;
+  border-left-width: 3px;
 }
 :root[data-st-layout="desktop"] .st-overlord-gauge {
   top: calc(var(--st-battle-top, 56px) + 22px);
-  left: 16px;
-  right: auto;
+  left: 16px; right: auto;
   width: auto;
   max-width: calc(640px - 32px);
+  text-align: left;
 }
 :root[data-st-layout="desktop"] .st-badge-row {
   top: calc(var(--st-battle-top, 56px) + 56px);
-  left: 8px;
-  right: auto;
+  left: 8px; right: auto;
   width: 624px;
   max-height: 84px;
   overflow-y: auto;
 }
 
-/* The bottom band lives inside the console on desktop; their fixed positioning is opt-out. */
+/* The console is the desktop anchor: a single scrollable column inside the 640 px arena
+ * column. Below the move bar, clear of the log, the topbar and the chrome. */
 .st-console {
   position: fixed;
-  /* Start below the measured controls bottom (set by _syncControlBar) and at least below the
-   * 50 px PS topbar. `max()` keeps the panel in clear air whether or not a battle is loaded. */
   top: max(58px, calc(var(--st-controls-bottom, 0px) + 8px));
-  left: 8px;
-  right: auto;
+  left: 8px; right: auto;
   width: 624px;
-  /* Anchor 8 px above the viewport bottom; on very short windows we collapse the bottom and
-   * let the panel scroll. */
   bottom: max(8px, env(safe-area-inset-bottom, 0px));
   z-index: 50;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 8px;
-  background: var(--st-panel);
-  border: 1px solid rgba(255, 255, 255, 0.10);
-  border-radius: 12px;
-  box-shadow: var(--st-shadow);
+  padding: 10px;
+  background:
+    linear-gradient(180deg, rgba(10, 14, 26, 0.96) 0%, rgba(14, 20, 34, 0.94) 100%);
+  border: 1px solid var(--st-hairline);
+  border-radius: var(--st-r-lg);
+  box-shadow: var(--st-shadow-2);
   overflow-y: auto;
   overflow-x: hidden;
   scrollbar-width: thin;
-  scrollbar-color: rgba(148, 163, 184, 0.35) transparent;
+  scrollbar-color: rgba(148, 178, 212, 0.35) transparent;
   -webkit-overflow-scrolling: touch;
-  /* Desktop panels do not have to be tap-transparent — the only thing under them is free
-   * viewport space (the lower-left rectangle of the arena column). */
 }
 .st-console::-webkit-scrollbar { width: 6px; }
-.st-console::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.35); border-radius: 3px; }
+.st-console::-webkit-scrollbar-thumb { background: rgba(148, 178, 212, 0.35); border-radius: 3px; }
 
-/* Inside the console, every band element loses its viewport-fixed positioning and becomes a
- * flex item. left/right/bottom are reset to their natural flow values. The children also
- * span the panel's width (no longer full-viewport). */
 [data-st-layout="desktop"] .st-console .tactician-tr-chip,
 [data-st-layout="desktop"] .st-console .st-bench-strip,
 [data-st-layout="desktop"] .st-console .st-pp-gauge,
@@ -832,59 +1213,43 @@ button[data-st-lethal="none"] .st-lethal-bar {
 [data-st-layout="desktop"] .st-console .st-receipt-card,
 [data-st-layout="desktop"] .st-console .st-cancel-alert-card {
   position: static;
-  left: auto;
-  right: auto;
-  top: auto;
-  bottom: auto;
+  left: auto; right: auto; top: auto; bottom: auto;
   width: auto;
   z-index: auto;
   margin: 0;
 }
-/* The chip's pill style survives, but the rounded bar shape is less ideal inside a card. */
-[data-st-layout="desktop"] .st-console .tactician-tr-chip { border-radius: 10px; }
+[data-st-layout="desktop"] .st-console .tactician-tr-chip   { border-radius: var(--st-r-md); }
 [data-st-layout="desktop"] .st-console .st-bench-strip {
   border-top: none;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 10px;
-  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid var(--st-hairline);
+  border-radius: var(--st-r-md);
+  background: rgba(10, 14, 26, 0.6);
   padding: 6px;
 }
-/* The strip's tap-transparency was for the full-width mobile case; the console panel never
- * covers PS's move bar (the bar is at y < console top), so pills go back to a normal hit
- * target. */
-[data-st-layout="desktop"] .st-console .st-bench-strip { pointer-events: auto; }
-[data-st-layout="desktop"] .st-console .st-bench-pill  { pointer-events: auto; }
+[data-st-layout="desktop"] .st-console .st-bench-strip     { pointer-events: auto; }
+[data-st-layout="desktop"] .st-console .st-bench-pill      { pointer-events: auto; }
+[data-st-layout="desktop"] .st-console .st-bench-strip     { background: rgba(10, 14, 26, 0.65); }
+[data-st-layout="desktop"] .st-console .st-receipt-card    { background: var(--st-ink-1); }
 
-/* On mobile the band's gradient was a safety net; on desktop the panel's own background is
- * the safety net, so the children drop their gradients. */
-[data-st-layout="desktop"] .st-console .st-bench-strip { background: rgba(15, 23, 42, 0.65); }
-[data-st-layout="desktop"] .st-console .st-receipt-card { background: rgba(15, 23, 42, 0.9); }
-
-/* The mobile-only lift variable is no-op in desktop (the console clears the move bar by
- * construction — the bar is ABOVE the console). Drop the offset additions so any stale value
- * the engine published does not push the children. */
+/* --st-band-lift is no-op in desktop (the console clears the move bar by construction). */
 [data-st-layout="desktop"] .st-console .tactician-tr-chip,
 [data-st-layout="desktop"] .st-console .st-receipt-card,
 [data-st-layout="desktop"] .st-console .st-bench-strip {
   --st-band-lift: 0px;
 }
 
-/* The team drawer remains a full-width sheet on mobile (it has to, the bench lives under
- * the keyboard), but on desktop it docks to the same column as the console. */
 :root[data-st-layout="desktop"] .team-drawer {
-  left: 8px;
-  right: auto;
+  left: 8px; right: auto;
   width: 624px;
   max-height: 80vh;
   bottom: max(8px, env(safe-area-inset-bottom, 0px));
-  border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.10);
-  box-shadow: var(--st-shadow);
+  border-radius: var(--st-r-lg);
+  border: 1px solid var(--st-hairline);
+  box-shadow: var(--st-shadow-2);
 }
 
 /* =============================================================== mode toggle */
-/* The button that switches between mobile and desktop. A compact pill next to the TAC
- * drawer toggle, so the two form a single bottom-left cluster the user can find by feel. */
+
 .st-mode-toggle {
   position: fixed;
   left: calc(10px + var(--st-touch) + 8px);
@@ -899,96 +1264,57 @@ button[data-st-lethal="none"] .st-lethal-bar {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
+  font-family: var(--st-font);
+  font-size: 11.5px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--st-text);
-  background: var(--st-panel);
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 999px;
-  box-shadow: var(--st-shadow);
+  background:
+    linear-gradient(180deg, var(--st-ink-1) 0%, var(--st-ink-2) 100%);
+  border: 1px solid var(--st-hairline-bold);
+  border-radius: var(--st-r-sm);
+  box-shadow: 0 1px 0 rgba(190, 215, 255, 0.05) inset, var(--st-shadow-1);
   cursor: pointer;
   user-select: none;
   -webkit-tap-highlight-color: transparent;
+  font-variant-numeric: var(--st-tnum);
   transition: transform 120ms ease, background-color 120ms ease, border-color 120ms ease;
 }
-.st-mode-toggle:hover  { background: rgba(30, 41, 59, 0.96); border-color: rgba(255, 255, 255, 0.24); }
-.st-mode-toggle:active { transform: scale(0.97); }
+.st-mode-toggle:hover  { border-color: var(--st-rail-dim); color: var(--st-rail); }
+.st-mode-toggle:active { transform: scale(0.97); box-shadow: var(--st-shadow-press); }
 .st-mode-toggle:focus-visible {
-  outline: 2px solid var(--st-high);
+  outline: 2px solid var(--st-rail);
   outline-offset: 2px;
 }
-/* In desktop mode the toggle still lives at the bottom-left of the viewport (the free zone
- * below the arena), not inside the console, so the user can find it without scrolling. */
 @media (min-width: 1024px) {
   .st-mode-toggle { left: 10px; bottom: 10px; }
 }
 
-/* =============================================================== visual polish */
-/* A few refinements that make the existing surfaces look more deliberate. Kept as additive
- * rules so removing them does not regress the geometry work. */
-.tactician-banner {
-  font-feature-settings: "tnum" 1, "cv11" 1;
-  letter-spacing: 0.01em;
-  background:
-    linear-gradient(180deg, rgba(30, 41, 59, 0.96) 0%, rgba(15, 23, 42, 0.94) 100%);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-}
-.team-drawer-toggle {
-  font-feature-settings: "tnum" 1;
-  font-size: 13px;
-  letter-spacing: 0.08em;
-  background:
-    linear-gradient(180deg, rgba(30, 41, 59, 0.96) 0%, rgba(15, 23, 42, 0.94) 100%);
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
-  transition: transform 120ms ease, background-color 120ms ease, border-color 120ms ease;
-}
-.team-drawer-toggle:hover  { background: rgba(30, 41, 59, 0.98); border-color: rgba(255, 255, 255, 0.24); }
-.team-drawer-toggle:active { transform: scale(0.96); }
-.team-drawer-toggle:focus-visible {
-  outline: 2px solid var(--st-high);
-  outline-offset: 2px;
-}
+/* =============================================================== cancel window */
 
-.st-receipt-card { border-radius: 12px; }
-.tactician-tr-chip { transition: transform 160ms ease, box-shadow 160ms ease; }
-.tactician-tr-chip.tr-danger { box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.5), 0 0 16px rgba(239, 68, 68, 0.25); }
-.tactician-tr-chip.tr-gold   { box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.5), 0 0 16px rgba(251, 191, 36, 0.2); }
-
-
-/* -------------------------------------------- cancel-window deep ponder */
-
-/* THE CANCEL WINDOW. Showdown keeps an `<button name="undoChoice">Cancel</button>` on screen from
- * the moment the player clicks a move until the opponent locks in, and the deep background pass
- * (src/content.js) can find a better line inside that window. The flag goes on the button — the
- * one control the alert asks the player to press — and the card says why, so the button is never
- * highlighted without naming the line the deeper read prefers. */
 .st-cancel-alert {
   border-color: rgba(251, 191, 36, 0.85) !important;
   box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.45), 0 0 18px rgba(251, 191, 36, 0.3) !important;
   animation: st-pulse-gold 1.4s ease-in-out infinite;
 }
-
 @keyframes st-pulse-gold {
   0%, 100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.0); }
-  50% { box-shadow: 0 0 0 4px rgba(251, 191, 36, 0.3); }
+  50%      { box-shadow: 0 0 0 4px rgba(251, 191, 36, 0.3); }
 }
-
 .st-cancel-badge {
   display: inline-block;
   margin-left: 6px;
-  padding: 1px 6px;
-  border-radius: 999px;
-  background: rgba(251, 191, 36, 0.22);
-  border: 1px solid rgba(251, 191, 36, 0.6);
-  color: #fde68a;
-  font-size: 10.5px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
+  padding: 2px 7px;
+  border-radius: var(--st-r-sm);
+  background: rgba(251, 191, 36, 0.18);
+  border: 1px solid rgba(251, 191, 36, 0.55);
+  color: #ffe7a3;
+  font-family: var(--st-font);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   white-space: nowrap;
   vertical-align: middle;
   pointer-events: none;
@@ -1001,39 +1327,45 @@ button[data-st-lethal="none"] .st-lethal-bar {
   right: 8px;
   bottom: calc(var(--st-touch) + 56px + var(--st-band-lift, 0px));
   z-index: 2147483002;
-  padding: 7px 12px;
-  border-radius: 12px;
-  background: rgba(251, 191, 36, 0.16);
-  border: 1px solid rgba(251, 191, 36, 0.55);
-  color: #fde68a;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  padding: 8px 14px 8px 18px;
+  border: 1px solid rgba(251, 191, 36, 0.45);
+  border-left: 3px solid var(--st-gold);
+  border-radius: var(--st-r-md);
+  background:
+    linear-gradient(180deg, rgba(36, 26, 8, 0.96) 0%, rgba(22, 16, 6, 0.96) 100%);
+  color: #ffe7a3;
+  font-family: var(--st-font);
   font-size: 12px;
   font-weight: 700;
-  line-height: 1.35;
-  text-align: center;
-  box-shadow: var(--st-shadow);
+  line-height: 1.4;
+  text-align: left;
+  letter-spacing: 0.01em;
+  box-shadow: 0 1px 0 rgba(255, 200, 87, 0.1) inset, 0 0 14px rgba(251, 191, 36, 0.18);
   pointer-events: none;
+  font-variant-numeric: var(--st-tnum);
 }
-
 .st-cancel-head {
   display: block;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
+  margin-bottom: 2px;
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: rgba(253, 230, 138, 0.85);
+  color: var(--st-gold);
 }
-
-.st-cancel-body { display: block; }
-
-.st-cancel-why {
+.st-cancel-body { display: block; color: #ffe7a3; }
+.st-cancel-why  {
   display: block;
-  color: var(--st-muted);
-  font-size: 11px;
-  font-weight: 600;
+  margin-top: 2px;
+  color: rgba(255, 231, 163, 0.7);
+  font-family: var(--st-font-mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .st-mode-toggle, .team-drawer-toggle, .tactician-tr-chip { transition: none; }
   .st-cancel-alert, .st-cancel-alert-card { animation: none; }
+  .st-lethal-bar::before { transition: none; }
 }

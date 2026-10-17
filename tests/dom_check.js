@@ -576,9 +576,16 @@ function sectionLayoutModeResolvesAndReparents() {
   hud.toggleLayoutMode();
   eq('toggle flips desktop -> mobile', hud.layoutMode, 'mobile');
   eq('documentElement follows the toggle', doc.documentElement.getAttribute('data-st-layout'), 'mobile');
-  // On mobile the children are back in the body and the console is removed.
-  for (const n of [chip, strip, gauge, sent, recpt]) {
-    check(n.className + ' is back in the body on mobile', n.parentNode === doc.body);
+  // On mobile the band children live in the collapsible .st-sheet (so the battle scene is
+  // not painted over) and the console is removed. The chip and bench strip stay in the
+  // body as the always-thumb-accessible bottom band.
+  const sheetEl = doc.querySelector('.st-sheet');
+  check('the sheet exists after switching to mobile', !!sheetEl);
+  for (const n of [gauge, sent, recpt]) {
+    check(n.className + ' lives in the sheet on mobile', n.parentNode === sheetEl);
+  }
+  for (const n of [chip, strip]) {
+    check(n.className + ' stays in the body as the bottom band', n.parentNode === doc.body);
   }
   check('the console is removed on mobile', !doc.querySelector('.st-console'));
 
@@ -588,6 +595,29 @@ function sectionLayoutModeResolvesAndReparents() {
   check('the mode toggle is mounted', !!btn);
   check('its label matches the resolved layout', /mobile/i.test(btn.textContent), btn.textContent);
   eq('its resolved attribute matches', btn.getAttribute('data-st-resolved'), 'mobile');
+
+  // The mobile sheet is collapsed by default and exposes a header rail the user can tap to
+  // expand. The header mirrors the banner's text as its summary and a count of stacked cards,
+  // both kept in sync by _updateSheetHeader.
+  const sheet = doc.querySelector('.st-sheet');
+  check('mobile sheet exists on the mobile layout', !!sheet);
+  eq('mobile sheet is collapsed by default', sheet.getAttribute('data-st-sheet-open'), '0');
+  const header = doc.querySelector('.st-sheet-header');
+  check('mobile sheet has a header rail', !!header);
+  // The harness's element.textContent is a flat string (not a live descendant walk), so read
+  // the summary and count spans directly.
+  const summaryEl = doc.querySelector('.st-sheet-summary');
+  const countEl = doc.querySelector('.st-sheet-count');
+  check('the header summary mirrors the banner', /TACTICIAN|Showdown/.test(summaryEl ? summaryEl.textContent : ''), summaryEl && summaryEl.textContent);
+  // 3 cards ended up in the sheet (gauge, sent, recpt); chip and strip are in the body.
+  check('the count badge reflects 3 stacked cards', /3\s*readouts/.test(countEl ? countEl.textContent : ''), countEl && countEl.textContent);
+  // The header is a real button so Space/Enter can activate it, and tapping it toggles the
+  // open state without stealing focus.
+  eq('header tag is BUTTON', header.tagName, 'BUTTON');
+  hud.toggleSheet();
+  eq('toggleSheet flips the open attribute to 1', sheet.getAttribute('data-st-sheet-open'), '1');
+  hud.toggleSheet();
+  eq('toggleSheet flips back to 0', sheet.getAttribute('data-st-sheet-open'), '0');
 }
 
 /**

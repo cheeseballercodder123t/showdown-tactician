@@ -109,8 +109,9 @@
         teamStatus: null, candidates: null,
         benchStrip: null, badgeRow: null, receipt: null, overlord: null,
         ppGauge: null, sentinel: null, leadAdvisory: null, cancelAlert: null,
-        console: null, modeToggle: null
+        console: null, sheet: null, sheetHeader: null, modeToggle: null
       };
+      this._sheetOpen = false;     // the mobile sheet's collapse/expand state
       this._touched = [];        // [{ el, prop, previous }] inline style rollbacks
       this._lastRanked = [];
       this._lastReasonByMove = {};
@@ -472,6 +473,8 @@
       const text = typeof info === 'string' ? info : this._bannerText(info);
       banner.textContent = text;
       banner.setAttribute && banner.setAttribute('data-turn', safeString(info && info.turn ? info.turn : ''));
+      // On mobile the sheet's collapsed rail mirrors this text as its summary, so refresh it.
+      this._updateSheetHeader();
       return banner;
     }
 
@@ -485,7 +488,13 @@
       const el = this._el('div', 'tactician-banner');
       if (!el) return null;
       if (el.setAttribute) { el.setAttribute(BANNER_ATTR, '1'); el.setAttribute('role', 'status'); }
-      this._nodes.banner = this._mount(el);
+      // Route through _mountBand so the banner lands in the mobile sheet (or desktop console)
+      // like every other band element, instead of as a free-floating viewport-fixed node that
+      // would paint over the battle scene on mobile portrait.
+      this._nodes.banner = this._mountBand(el);
+      // Once the banner is parented, refresh the sheet header (it reads the banner's text as
+      // the collapsed summary) and re-anchor the sheet to the chip band.
+      this._updateSheetHeader();
       return this._nodes.banner;
     }
 
@@ -562,20 +571,30 @@
     }
 
     /**
-     * _mountBand(el) -> the same element, parented to the right place.
-     * Band elements (the TR chip, bench strip, PP gauge, sentinel, receipt) live in the
-     * docked console on desktop and in the body on mobile. The console is a flex column on
-     * desktop so children flow as cards; the body hosts `position: fixed` nodes on mobile.
-     * Existing nodes (e.g. an adopted band element) are returned unchanged — we never
-     * re-mount what is already mounted.
+     * _mountBand(el, intoSheet) -> the same element, parented to the right place.
+     * Band elements live in the docked console on desktop and in a collapsible `.st-sheet` at
+     * the bottom of the screen on mobile. Both containers are flex columns, so children flow
+     * as cards; the body is only used as the last-resort host when the resolved layout is
+     * unknown (lobbies, tests).
+     *
+     * `intoSheet` is false for the TR chip and the bench strip: those two are the always-on,
+     * thumb-targeted interactive band (tap a bench pill to retarget the sandbox; read the
+     * Trick Room alert). They stay `position: fixed` children of the BODY on mobile -- a bench
+     * strip that lives inside a collapsed sheet is invisible right when it matters.
+     * Existing nodes are returned unchanged -- we never re-mount what is already mounted.
      */
-    _mountBand(el) {
+    _mountBand(el, intoSheet) {
       if (!el) return el;
       if (el.parentNode) return el;
       if (this.resolvedLayout === 'desktop') {
         const console = this._ensureConsole();
         if (console && typeof console.appendChild === 'function') {
           try { console.appendChild(el); return el; } catch (e) { /* fall through */ }
+        }
+      } else if (this.resolvedLayout === 'mobile' && intoSheet !== false) {
+        const sheet = this._ensureSheet();
+        if (sheet && typeof sheet.appendChild === 'function') {
+          try { sheet.appendChild(el); this._updateSheetHeader(); return el; } catch (e) { /* fall through */ }
         }
       }
       return this._mount(el);
@@ -588,7 +607,9 @@
       const el = this._el('div', 'tactician-tr-chip tr-info');
       if (!el) return null;
       if (el.setAttribute) { el.setAttribute(CHIP_ATTR, '1'); el.setAttribute('role', 'alert'); }
-      this._nodes.chip = this._mountBand(el);
+      // intoSheet=false: the TR chip is the always-on alert in the bottom band on mobile
+      // (desktop still parks it in the console).
+      this._nodes.chip = this._mountBand(el, false);
       return this._nodes.chip;
     }
 
@@ -778,6 +799,9 @@
 
     _dropNode(el) {
       if (el && typeof el.remove === 'function') el.remove();
+      // Removing a sheet child changes the rail's count, so refresh the header. No-op when
+      // the mobile sheet is not mounted (desktop, lobbies, tests without a sheet).
+      try { this._updateSheetHeader(); } catch (e) { /* detached */ }
       return null;
     }
 
@@ -881,6 +905,14 @@
         if (typeof btn.appendChild === 'function') btn.appendChild(node);
       }
       node.textContent = min + '\u2013' + max + '%' + (verdict ? ' (' + verdict + ')' : '');
+      // Publish the fill percentage (max of the roll range, clamped to 0..100) as a CSS custom
+      // property so the bar's ::before can draw a real progress fill behind the text. Set on
+      // the element's inline style — pure visual data, no class or text change, so it cannot
+      // affect any textContent or className assertion the regression suite makes.
+      if (node.style && typeof node.style.setProperty === 'function') {
+        const fill = U.clamp(max, 0, 100);
+        node.style.setProperty('--st-lethal-fill', fill + '%');
+      }
       if (node.setAttribute) {
         node.setAttribute('title', safeString(target.species) + ': ' + min + '-' + max + '% vs ' +
           safeString(line.name) + (line.koChancePct ? ' (' + U.round1(line.koChancePct) + '% KO)' : ''));
@@ -908,7 +940,9 @@
         strip = this._el('div', 'st-bench-strip');
         if (!strip) return null;
         if (strip.setAttribute) strip.setAttribute(BENCH_ATTR, '1');
-        strip = this._mountBand(strip);
+        // intoSheet=false: the bench strip is the always-on tappable band on mobile. Parked
+        // in the console on desktop.
+        strip = this._mountBand(strip, false);
       }
       this._nodes.benchStrip = strip;
       this.selectedBenchId = (selectedId === undefined || selectedId === null) ? '' : safeString(selectedId);
@@ -930,6 +964,13 @@
         if (typeof strip.appendChild === 'function') strip.appendChild(pill);
       }
       this.bindBenchTargets();
+      // The strip is `flex-wrap`, so a 6-mon roster is 2 rows and the strip is ~121px tall
+      // instead of ~65px. Everything that sits above it -- the TR chip's stacking offset
+      // and the mobile sheet's dock -- is derived from --st-strip-h and --st-band-top,
+      // both of which are MEASURED from the live rect. Without this re-measure the last
+      // published value is whatever the previous roster looked like, so the chip rides up
+      // over the pills and the sheet docks into the wrong place until the next resize.
+      this._syncChipBand();
       return strip;
     }
 
@@ -995,7 +1036,9 @@
         row = this._el('div', 'st-badge-row');
         if (!row) return null;
         if (row.setAttribute) row.setAttribute(BADGE_ROW_ATTR, '1');
-        row = this._mount(row);
+        // Route through _mountBand so the row lands inside the mobile sheet (or desktop
+        // console) instead of as a free-floating viewport-fixed node over the battle scene.
+        row = this._mountBand(row);
       }
       this._nodes.badgeRow = row;
       this._clearChildren(row);
@@ -1102,7 +1145,10 @@
         el = this._el('div', 'st-overlord-gauge');
         if (!el) return null;
         if (el.setAttribute) el.setAttribute(OVERLORD_ATTR, '1');
-        el = this._mount(el);
+        // Route through _mountBand so the overlord pill lands in the mobile sheet instead of
+        // painting over the foe's HP bar at the top of the arena (measured: 25% coverage of
+        // the right trainersprite and 93% of the left HP bar on classic before the fix).
+        el = this._mountBand(el);
       }
       this._nodes.overlord = el;
       el.textContent = '\uD83D\uDC51 Supreme Overlord: +' + roundPct(gauge.percentBoost) + '% (' +
@@ -1204,6 +1250,10 @@
       const lift = overlaps ? Math.round(bottomEdge - (top - 4)) : 0;
 
       doc.documentElement.style.setProperty('--st-band-lift', (lift > 0 ? lift : 0) + 'px');
+      // The bench strip's real height, published so the TR chip can stack ABOVE it instead of
+      // painting over the pills. Measured: the chip's 33px body sat squarely on the strip's
+      // 48px pills, hiding the lower two thirds of every pill text and both touch targets.
+      doc.documentElement.style.setProperty('--st-strip-h', Math.round(stripH) + 'px');
       if (doc.documentElement.dataset) {
         if (lift > 0) doc.documentElement.dataset.stBandLifted = '1';
         else delete doc.documentElement.dataset.stBandLifted;
@@ -1233,8 +1283,14 @@
       const doc = this._document();
       if (!doc || !doc.documentElement || !doc.documentElement.style ||
           typeof doc.documentElement.style.setProperty !== 'function') return null;
+      // NOTE: the band is the chrome ABOVE the arena, so the top-band elements (banner,
+      // overlord, badge row, deduction badges) define its bottom. `.st-lethal-bar` is INTENTIONALLY
+      // excluded: it lives inside Showdown's own move buttons at the bottom of the screen, and
+      // including it makes the band get dragged down to the move buttons (measured: chip-bottom
+      // jumped to 591 px on the new client once lethal bars were rendered, parking the PP gauge
+      // and sentinel on top of the move menu).
       const sels = ['.tactician-banner', '.st-overlord-gauge', '.st-badge-row',
-        '.st-deduction-badges', '.st-lethal-bar'];
+        '.st-deduction-badges'];
       let bottom = 0;
       for (let i = 0; i < sels.length; i++) {
         const el = this._qs(sels[i]);
@@ -1262,6 +1318,39 @@
       // would drag the banner up a few pixels every time the player scrolled the log. The
       // chrome height only changes on resize/rotate, and that is exactly what the key catches.
       const view = doc.defaultView || (typeof window !== 'undefined' ? window : null);
+
+      // The mobile sheet is docked directly above the always-on bottom band (the TR chip and
+      // the bench strip). Publishing the band's LIVE top edge as --st-band-top is what makes
+      // the dock honest: both nodes are `position: fixed` with a lift-dependent offset, and
+      // the strip is taller than the chip, so a formula built from either one alone would
+      // let an expanded sheet swallow the bench pills (measured: 25px of overlap). Re-measured
+      // on every call, NOT gated on the layout key, because the new client scrolls `.battle`
+      // and the band lift moves with the log.
+      const bandTop = this._bottomBandTop(doc);
+      if (bandTop) {
+        doc.documentElement.style.setProperty('--st-band-top', bandTop + 'px');
+      }
+      const battleEl = this._qs('.battle');
+      if (bandTop && battleEl && typeof battleEl.getBoundingClientRect === 'function') {
+        const b2 = battleEl.getBoundingClientRect();
+        if (b2 && b2.bottom === b2.bottom && b2.bottom > 0) {
+          doc.documentElement.style.setProperty('--st-arena-bottom', Math.round(b2.bottom) + 'px');
+          // bandTop - arenaBottom - the 6px sheet gap - an 8px safety margin.
+          let max = bandTop - Math.round(b2.bottom) - 14;
+          // Showdown's own control bar is sometimes ABOVE the bottom band (classic client:
+          // the bar sits mid-page and the band rides the viewport bottom). An expanded sheet
+          // must not cover the move buttons either, so clamp to that when it binds.
+          const bar = this._qs('.battle-controls');
+          if (bar && typeof bar.getBoundingClientRect === 'function') {
+            const cb = bar.getBoundingClientRect().bottom;
+            if (cb && cb === cb && cb > 0 && cb < bandTop) {
+              max = Math.min(max, bandTop - Math.round(cb) - 14);
+            }
+          }
+          doc.documentElement.style.setProperty('--st-sheet-max', Math.max(max, 56) + 'px');
+        }
+      }
+
       const key = (view && typeof view.innerWidth === 'number')
         ? (view.innerWidth + 'x' + view.innerHeight) : '';
       if (key && key === this._layoutKey) return px;
@@ -1284,6 +1373,30 @@
         }
       }
       return px;
+    }
+
+    /**
+     * _bottomBandTop(doc) -> the topmost Y of the always-on bottom band, or 0.
+     * The TR chip and the bench strip share the bottom band, but they do NOT share a top: the
+     * strip is `touch + 16 + lift` from the bottom and is 65px tall, while the chip is
+     * `touch + 18 + lift` and is ~33px tall, so the strip's top edge sits ~25px HIGHER. The
+     * sheet has to dock above the highest of them, or an expanded sheet swallows the bench
+     * pills. So this returns the MINIMUM top of the visible band nodes (a hidden node reports
+     * a zero rect and is skipped, which is what makes the measurement honest on turns where
+     * Trick Room is not running).
+     */
+    _bottomBandTop(doc) {
+      const sels = ['.tactician-tr-chip', '.st-bench-strip'];
+      let top = 0;
+      for (let i = 0; i < sels.length; i++) {
+        const el = this._qs(sels[i]);
+        if (!el || typeof el.getBoundingClientRect !== 'function') continue;
+        const r = el.getBoundingClientRect();
+        if (r && r.top === r.top && r.top > 4 && r.height > 4) {
+          if (top === 0 || r.top < top) top = Math.round(r.top);
+        }
+      }
+      return top;
     }
 
     /**
@@ -1757,10 +1870,10 @@
 
     /**
      * _setLayout(resolved) -> 'mobile' | 'desktop'.
-     * Switches the DOM into the resolved layout. On desktop it ensures the `.st-console`
-     * exists and reparents the bottom band into it; on mobile it moves them back and
-     * removes the console. The decision is published as `data-st-layout` on
-     * documentElement, which overlay.css reads to switch positioning rules.
+     * Switches the DOM into the resolved layout. On desktop the band is parked in the
+     * `.st-console` and `data-st-layout="desktop"` switches the CSS rules. On mobile the band
+     * lives in a collapsible `.st-sheet` docked above the bottom band, so the battle scene is
+     * left clear. Drain-then-fill ordering keeps the migration idempotent across resizes.
      */
     _setLayout(resolved) {
       if (resolved !== 'mobile' && resolved !== 'desktop') resolved = 'mobile';
@@ -1771,8 +1884,15 @@
       // The mode toggle is mounted by bindDrawer (the "HUD is live" signal), never here:
       // a HUD that is only constructed — never bound to the page — must not leave a button
       // in the document. This only re-labels a button that already exists.
-      if (resolved === 'desktop') this._reparentIntoConsole();
-      else this._reparentOutOfConsole();
+      if (resolved === 'desktop') {
+        // Drain the mobile sheet first (it lives in body, not the console) so the console
+        // reparent below finds the band nodes in their natural body hosts.
+        this._reparentOutOfSheet();
+        this._reparentIntoConsole();
+      } else {
+        this._reparentOutOfConsole();
+        this._reparentIntoSheet();
+      }
       // Any layout-bound geometry has to be re-measured: the band lift depends on where
       // Showdown's control bar sits, the banner re-anchors to the battle top, and the chip
       // band re-anchors with it.
@@ -1809,13 +1929,17 @@
      * battlefield regardless of the panel's height.
      */
     _reparentIntoConsole() {
-      const console = this._ensureConsole();
-      if (!console) return;
       const doc = this._document();
       if (!doc) return;
       const sel = '.tactician-tr-chip, .st-bench-strip, .st-pp-gauge, .st-format-sentinel, .st-receipt-card';
       const nodes = (typeof doc.querySelectorAll === 'function')
         ? doc.querySelectorAll(sel) : [];
+      // Lazy: only build the console when there are band elements to put in it. Constructing
+      // the HUD in a clean document (the clipboard tests do this) used to leave the body
+      // empty; the first mount of a band element creates the console through _mountBand.
+      if (!nodes || !nodes.length) return;
+      const console = this._ensureConsole();
+      if (!console) return;
       for (let i = 0; i < nodes.length; i++) {
         const n = nodes[i];
         if (n && n.parentNode !== console && typeof console.appendChild === 'function') {
@@ -1852,6 +1976,183 @@
         try { console.parentNode.removeChild(console); } catch (e) { /* detached */ }
       }
       this._nodes.console = null;
+    }
+
+    /* ---------------------------------------------------------------- mobile sheet
+     * The mobile equivalent of the desktop console. Mobile portrait has NO room at the top of
+     * the screen for the chip band — the battle scene is only ~250 px tall and every pixel is
+     * either a sprite, an HP bar, a party icon, or a statbar (measured coverage: 89–104%). So
+     * instead of parking four cards over the arena the band is re-parented into ONE scrollable
+     * column docked just above the TR chip and bench strip. The column is collapsed to a 32 px
+     * header rail by default (showing the banner summary + a card count + a caret) and expands
+     * on tap, so a player who just wants to play can keep the chrome out of the way.
+     */
+    _ensureSheet() {
+      if (this._nodes.sheet) return this._nodes.sheet;
+      const doc = this._document();
+      if (!doc) return null;
+      let el = doc.querySelector ? doc.querySelector('.st-sheet') : null;
+      if (!el) {
+        el = (doc.createElement ? doc.createElement('div') : null);
+        if (!el) return null;
+        el.className = 'st-sheet';
+        if (el.setAttribute) {
+          el.setAttribute('data-st-sheet', '1');
+          el.setAttribute('data-st-sheet-open', this._sheetOpen ? '1' : '0');
+          el.setAttribute('role', 'region');
+          el.setAttribute('aria-label', 'Tactical readouts');
+        }
+        const parent = doc.body || doc.documentElement;
+        if (parent && parent.appendChild) parent.appendChild(el);
+        // The header is the only piece of chrome that is always visible: it doubles as the
+        // rail content when collapsed and the title bar when expanded. A <button> is the
+        // right tag (Space/Enter activate it, it participates in tab order, the focus ring
+        // is the same teal as the rest of the design).
+        const header = this._el('button', 'st-sheet-header');
+        if (header) {
+          if (header.setAttribute) { header.setAttribute('type', 'button'); header.setAttribute('aria-expanded', '0'); }
+          const summary = this._el('span', 'st-sheet-summary');
+          if (summary && typeof header.appendChild === 'function') header.appendChild(summary);
+          const count = this._el('span', 'st-sheet-count');
+          if (count && typeof header.appendChild === 'function') header.appendChild(count);
+          const caret = this._el('span', 'st-sheet-caret', '\u25BE');  // ▾
+          if (caret && typeof header.appendChild === 'function') header.appendChild(caret);
+          if (typeof el.appendChild === 'function') el.appendChild(header);
+          const self = this;
+          if (header.addEventListener) {
+            header.addEventListener('click', function (e) {
+              if (e) { e.preventDefault && e.preventDefault(); e.stopPropagation && e.stopPropagation(); }
+              self.toggleSheet();
+            }, true);
+            // Blur on activation so a HUD button can never hold keyboard focus.
+            header.addEventListener('mousedown', function (e) { if (e && e.preventDefault) e.preventDefault(); }, true);
+            header.addEventListener('keydown', function (e) {
+              if (e && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault && e.preventDefault(); self.toggleSheet(); }
+            });
+          }
+          this._nodes.sheetHeader = header;
+        }
+      }
+      this._nodes.sheet = el;
+      this._updateSheetHeader();
+      return el;
+    }
+
+    _reparentIntoSheet() {
+      const doc = this._document();
+      if (!doc) return;
+      // The mobile band set is broader than the desktop one: on mobile the BANNER also goes
+      // into the container, because a free-floating banner at top-of-arena paints over the
+      // sprites (measured: banner covers 46% of the foe's HP bar). The chip and bench strip
+      // stay in the bottom band — they are thumb-targeted and the most-used interactive bits.
+      const sel = '.tactician-banner, .st-overlord-gauge, .st-badge-row, .st-deduction-badges, ' +
+        '.st-pp-gauge, .st-format-sentinel, .st-receipt-card, .st-cancel-alert-card';
+      const nodes = (typeof doc.querySelectorAll === 'function')
+        ? doc.querySelectorAll(sel) : [];
+      // Lazy: the first band element to be mounted creates the sheet through _mountBand.
+      // Constructing the HUD in a clean document must NOT add a body child, so a test that
+      // asserts an empty body (the receipt copy-fallback test) keeps passing.
+      if (!nodes || !nodes.length) return;
+      const sheet = this._ensureSheet();
+      if (!sheet) return;
+      for (let i = 0; i < nodes.length; i++) {
+        const n = nodes[i];
+        if (!n) continue;
+        if (n.parentNode === sheet) continue;
+        if (n.parentNode && n.parentNode !== doc.body && n.parentNode !== doc.documentElement) {
+          // The node is inside the console (from a previous desktop layout) or some other host.
+          // Move it to body first so the next appendChild isn't a no-op.
+          try { (doc.body || doc.documentElement).appendChild(n); } catch (e) { /* fall through */ }
+        }
+        if (typeof sheet.appendChild === 'function') {
+          try { sheet.appendChild(n); } catch (e) { /* detached */ }
+        }
+      }
+      // Defensive recovery: the TR chip and the bench strip are the always-on bottom band and
+      // must never sit inside the sheet (an earlier build routed them there, which hid the
+      // bench strip inside a collapsed rail). Anything else that leaked in goes back to body.
+      const leaked = (typeof doc.querySelectorAll === 'function')
+        ? doc.querySelectorAll('.st-sheet > .tactician-tr-chip, .st-sheet > .st-bench-strip') : [];
+      const body = doc.body || doc.documentElement;
+      for (let i = 0; i < leaked.length; i++) {
+        const n = leaked[i];
+        if (n && n.parentNode === sheet && body && typeof body.appendChild === 'function') {
+          try { body.appendChild(n); } catch (e) { /* detached */ }
+        }
+      }
+      this._updateSheetHeader();
+    }
+
+    _reparentOutOfSheet() {
+      const sheet = this._nodes.sheet;
+      if (!sheet) return;
+      const doc = this._document();
+      const body = (doc && doc.body) || (doc && doc.documentElement) || sheet.parentNode;
+      const live = sheet.children || sheet.childNodes;
+      const kids = Array.prototype.slice.call(live || []);
+      for (let i = 0; i < kids.length; i++) {
+        const n = kids[i];
+        // Don't detach the sheet's own header — it's chrome, not a band element.
+        if (!n || n === this._nodes.sheetHeader) continue;
+        if (n.parentNode === sheet && body && typeof body.appendChild === 'function') {
+          try { body.appendChild(n); } catch (e) { /* detached */ }
+        }
+      }
+      if (sheet.parentNode && typeof sheet.parentNode.removeChild === 'function') {
+        try { sheet.parentNode.removeChild(sheet); } catch (e) { /* detached */ }
+      }
+      this._nodes.sheet = null;
+      this._nodes.sheetHeader = null;
+    }
+
+    /** Read the banner's text and the count of stacked cards, write them into the header. */
+    _updateSheetHeader() {
+      const header = this._nodes.sheetHeader;
+      const sheet = this._nodes.sheet;
+      if (!header || !sheet) return;
+      const banner = this._qs('.tactician-banner') || this._nodes.banner;
+      const summary = header.querySelector
+        ? header.querySelector('.st-sheet-summary') : null;
+      const count = header.querySelector
+        ? header.querySelector('.st-sheet-count') : null;
+      const summaryText = (banner && banner.textContent)
+        ? String(banner.textContent).trim() : 'TACTICIAN';
+      if (summary) summary.textContent = summaryText;
+      // Count the stacked cards (everything that lives inside the sheet, minus the header).
+      let n = 0;
+      const live = sheet.children || sheet.childNodes;
+      const kids = live ? Array.prototype.slice.call(live) : [];
+      for (let i = 0; i < kids.length; i++) {
+        if (kids[i] && kids[i] !== header) n++;
+      }
+      if (count) {
+        count.textContent = n > 0 ? (n + (n === 1 ? ' readout' : ' readouts')) : 'idle';
+        if (count.setAttribute) count.setAttribute('data-st-count', String(n));
+      }
+    }
+
+    /** toggleSheet() -> the new open state ('open' | 'closed'). */
+    toggleSheet() {
+      return this.setSheetOpen(!this._sheetOpen);
+    }
+
+    /** setSheetOpen(open) -> the resulting state. */
+    setSheetOpen(open) {
+      // Re-measure BEFORE expanding: the dock and the clearance cap both depend on where the
+      // bottom band and the arena sit right now, and both move when the log scrolls. Opening
+      // the sheet is the one moment a stale value would be visible, so it is worth a layout
+      // read here.
+      try { this._syncChipBand(); } catch (e) { /* detached */ }
+      this._sheetOpen = !!open;
+      const sheet = this._ensureSheet();
+      if (sheet && sheet.setAttribute) {
+        sheet.setAttribute('data-st-sheet-open', this._sheetOpen ? '1' : '0');
+      }
+      const header = this._nodes.sheetHeader;
+      if (header && header.setAttribute) {
+        header.setAttribute('aria-expanded', this._sheetOpen ? '1' : '0');
+      }
+      return this._sheetOpen;
     }
 
     _updateModeToggle() {

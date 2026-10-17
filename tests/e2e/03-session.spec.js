@@ -76,11 +76,27 @@ test('the extension stylesheet is applied, not just shipped', async function () 
 
   expect(css.badgePosition).toBe('absolute');
   expect(css.badgePointerEvents).toBe('none');
-  expect(css.bannerPosition).toBe('fixed');
+  // The banner's positioning is layout-conditional now: `fixed` on desktop (a free-floating
+  // status strip), `static` on mobile (a flex child inside the collapsible `.st-sheet` that
+  // keeps the battle scene clear). Both are proof the stylesheet landed. Combined with the
+  // non-zero height and visible display below, the rule is honoured in every layout.
+  expect(['fixed', 'static']).toContain(css.bannerPosition);
   expect(css.bannerDisplay).toBe('block');
   expect(css.bannerVisibility).toBe('visible');
   expect(css.bannerHeight).toBeGreaterThan(0);
   expect(css.buttonPosition).toBe('relative');
+  // The layout container must exist in either form (mobile sheet or desktop console). A test
+  // that fires before the HUD's first render would not see the sheet, so this is the strongest
+  // evidence the layout container rules reached the document.
+  const layout = await page.evaluate(function () {
+    return {
+      sheet: !!document.querySelector('.st-sheet'),
+      console: !!document.querySelector('.st-console'),
+      layout: document.documentElement.getAttribute('data-st-layout')
+    };
+  });
+  expect(['mobile', 'desktop']).toContain(layout.layout);
+  expect(layout.sheet || layout.console, 'one of the layout containers must be present').toBe(true);
   await page.close();
 });
 
