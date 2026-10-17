@@ -181,6 +181,48 @@
       realOppSwitch: {
         enabled: true
       },
+      // CONDITIONAL MOVES (see laplace_core._payoff). A move whose damage only exists when the
+      // opponent's CLICK is the right shape used to be priced as unconditional damage, so the
+      // matrix recommended lines the game resolves with |-fail|:
+      //   - Sucker Punch into a predicted SWITCH credited its damage to the incoming body, although
+      //     the move fails the moment the target is not attacking. With this on, Sucker Punch prices
+      //     its damage only against a Physical/Special reply; a switch, a setup move, a status move
+      //     or a Protect leaves the cell worth the wasted turn it is (their switch still resolves —
+      //     the leaf board is the body that came in, unhit);
+      //   - Fake Out / First Impression kept their damage on every turn. On, they fail once our
+      //     active body has already acted since it entered, because the game only allows the first
+      //     turn out; and the reply is priced against the flinch a landed Fake Out really applies
+      //     (their click does not happen at all — no damage, no setup boost, no Turn-2 follow-up),
+      //     blocked by Inner Focus / Shield Dust / a Covert Cloak when the board reveals one. The
+      //     same rules are applied to THEIR Sucker Punch and THEIR Fake Out, because those are
+      //     reply columns in the same matrix.
+      //
+      // Ships ON: unlike the policy tiers below, these three are GAME RULES — the shipped build was
+      // crediting damage that cannot happen. Each half has its own switch so the ablation rows
+      // (`conditionalmoves`, `conditional-suckerpunch`, `conditional-firstturn`, `conditional-flinch`)
+      // can price them separately; NONE of them has had a win-rate gate yet.
+      conditionalMoves: {
+        enabled: true,
+        suckerPunchRequiresAttack: true,   // Sucker Punch only lands on an attacking click
+        firstTurnOnly: true,               // Fake Out / First Impression fail after the first turn out
+        flinch: true                       // a landed Fake Out takes their click away
+      },
+      // CHOICE PHYSICS, both directions (see laplace_core._oppChoiceLock and _choiceLockRisk).
+      // A Choice item locks its holder into the first move it clicks, and the shipped engine ignored
+      // that in BOTH halves of the matrix:
+      //   - THEIR half enumerated all four of the locked body's moves as if it were free to pick
+      //     any of them, so a Scarfed / Banded / Specs'd body was priced as a toolbox;
+      //   - OUR half had no cost for LOCKING ourselves into a move their bench is immune to — a
+      //     Choice-locked Earthquake into three Levitate bodies is a lost game, not a lost turn.
+      // `riskPenalty` is in evaluator score units (the evaluator's own scale is 1000) and is charged
+      // to an unlocked click whose type some living, revealed-immune bench body takes 0 from.
+      // Ships ON as a game rule (a locked body really does have one move); the PENALTY is a policy
+      // number and has NOT been measured. Both halves are the exact identity with `enabled: false`.
+      choiceLock: {
+        enabled: true,
+        oppLock: true,                       // their reply space collapses to the locked move
+        riskPenalty: 60                      // our own lock risk, per cell
+      },
       // Pivot pricing (see laplace_core._pivotPayoff). U-turn / Volt Switch / Flip Turn / Chilly
       // Reception / Teleport / Parting Shot are priced as what they are: a hit, a switch, and the
       // incoming body's own matchup — with the TURN ORDER deciding who eats the opponent's reply,
@@ -260,12 +302,14 @@
       // exact share of rolls that reach the current HP (`koChanceExact`, null when the roll set
       // cannot answer exactly — then the scalar path is kept).
       //
-      // IT IS DELIBERATELY NOT the full `p * V_KO + (1 - p) * V_survive`. That form needs its KO
-      // branch to mean "the target never answers", which needs to know we move FIRST, and `_payoff`
-      // does not model move order at all — only `_pivotPayoff` does, and the comment on the
-      // symmetric reply treatment says so. Claiming a zero-counterattack branch here would invent a
-      // speed assumption for every row that flows through this cell, so the reply stays symmetric
-      // and that half is NOT modelled. Ships OFF.
+      // The same flag carries the ORDERING half, and the order is ASKED FOR rather than assumed:
+      // `_payoff` reads `_turnOrder` (priority, then Speed through Trick Room — the check the setup
+      // extension and the pivot tier already use) and, when one side moves first with a FRACTIONAL
+      // exact chance `p` of fainting the other, scales the slower side's damage by `(1 - p)`. That
+      // is the `p * V_KO` branch the HP-only form could not claim, without inventing a speed
+      // assumption: an undecidable order (a tie) and the endpoints `p` 0 and 1 keep the symmetric
+      // pricing, so no cell ever claims a turn it cannot establish. Still NOT modelled: accuracy (a
+      // MISS is not a roll) and move order decided by anything the board does not show. Ships OFF.
       rollKoBranch: {
         enabled: false
       },
@@ -438,7 +482,15 @@
       wincon: {
         enabled: false,
         maxBounty: 0,
-        maxTargets: 3
+        maxTargets: 3,
+        // THE CHIP HALF. `maxBounty` is paid only when the named roadblock is GONE; a wall that
+        // has been chipped to the point where our own best hit breaks it is most of the way to the
+        // same outcome, and before this the leaf was blind to it. `chipBounty` is the ceiling paid
+        // for reaching that break point (the smallest roll of our best hit), scaled by the share
+        // of the distance the turn actually covered from the body's HP when the plan was made.
+        // Ceiling, not a per-hit rate: the plan is rebuilt every turn, so this cannot compound into
+        // a reason to chip forever. 0 disables the half, which is the shipped reading.
+        chipBounty: 0
       },
       // The endgame solver. With few bodies left per side the branching factor collapses and a
       // bounded alpha-beta search (src/endgame_solver.js) can be run instead of one turn of the
@@ -973,6 +1025,21 @@
       scout: {
         enabled: true,
         maxBend: 0.5
+      },
+      // TEAM-PREVIEW SYNERGY (src/set_pruner.js, `_applyTeamSynergyPrior`). The |poke| frame names
+      // their whole six before a single set is revealed, and that composition is evidence about
+      // EACH body's set: a Pelipper on their team makes a Swift Swim / Hurricane set far more
+      // likely than the curated average, a Trick Room setter makes a 0-Spe set likely, and a
+      // SECOND Stealth Rock carrier is unlikely once one body has already shown the move (a team
+      // rarely carries two copies of a hazard it only needs once). Every factor is a BOUNDED
+      // re-weighting of the pool the pruner already holds — it can never add a set, and a set a
+      // deduction removed is not resurrected — and it is recomputed from each set's BASE weight,
+      // so the call is idempotent. Ships ON as a prior; NOT measured.
+      synergy: {
+        enabled: true,
+        weatherFactor: 1.35,      // a weather-benefiting set when the setter is on their team
+        trFactor: 1.25,           // a Trick Room set when a TR setter is on their team
+        srDuplicateFactor: 0.25   // THIS body's Stealth Rock when another body has revealed it
       },
       // Ability deduction via negative space (src/set_pruner.js, tables in src/util.js). Each rule
       // turns something the log PRINTED into an elimination, in the same spirit as the item rules

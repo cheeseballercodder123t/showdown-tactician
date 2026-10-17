@@ -258,6 +258,35 @@ eq('the real plan pays exactly its own bounty once the target is gone',
   wb.bonus(plan, [plan.targetId]), plan.bounty);
 eq('...and nothing before that', wb.bonus(plan, []), 0);
 
+/* ---------------------------------------------------------------- 3b. the chip half */
+
+section('3b. a chipped roadblock pays for the distance it covered toward the break point');
+
+const chipTier = tier({ chipBounty: 120 });
+const chipPlan = { targetId: 'Ferrothorn', bounty: 250, chipThreshold: 40, hpAtPlan: 90 };
+const leafAt = function (hp) {
+  return { active: { opp: { id: 'ferrothorn', hpPercent: hp } }, oppTeam: [] };
+};
+eq('chipBounty 0 (the shipped reading) pays nothing for a surviving target',
+  tier().bonus(chipPlan, [], leafAt(50)), 0);
+eq('half the distance to the break point pays half the ceiling',
+  chipTier.bonus(chipPlan, [], leafAt(65)), 60);
+eq('reaching the break point pays the whole ceiling', chipTier.bonus(chipPlan, [], leafAt(40)), 120);
+eq('...and chipping past it cannot pay more', chipTier.bonus(chipPlan, [], leafAt(5)), 120);
+eq('no progress this turn pays nothing', chipTier.bonus(chipPlan, [], leafAt(90)), 0);
+eq('healing it pays nothing (progress is one-directional)', chipTier.bonus(chipPlan, [], leafAt(95)), 0);
+eq('the fainted branch is still the full bounty, never the chip',
+  chipTier.bonus(chipPlan, ['Ferrothorn'], leafAt(0)), 250);
+eq('a leaf that cannot name the target pays nothing (no invented progress)',
+  chipTier.bonus(chipPlan, [], { active: { opp: { id: 'blissey', hpPercent: 10 } }, oppTeam: [] }), 0);
+eq('a plan with no measured break point pays nothing',
+  chipTier.bonus({ targetId: 'ferrothorn', bounty: 250, chipThreshold: 0, hpAtPlan: 90 }, [], leafAt(10)), 0);
+check('the plan itself carries both measured numbers',
+  typeof plan.chipThreshold === 'number' && typeof plan.hpAtPlan === 'number' &&
+  plan.hpAtPlan > 0, JSON.stringify({ chipThreshold: plan.chipThreshold, hpAtPlan: plan.hpAtPlan }));
+check('...and the break point is the smallest roll of our best hit, not a guess',
+  plan.chipThreshold >= 0 && plan.chipThreshold <= 100, String(plan.chipThreshold));
+
 /* ========================================================= 4. worlds and bounds */
 
 section('4. worlds are deduplicated into bodies, and maxTargets bounds the work');

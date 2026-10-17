@@ -260,6 +260,67 @@ const FEATURES = [
       'field. On, the incoming body is resolved and is the body the leaf board is built around.'
   },
   {
+    id: 'conditionalmoves',
+    label: 'conditional-move failure (off)',
+    tier: 'laplace',
+    direction: 'off',
+    patch: { 'laplace.conditionalMoves.enabled': false },
+    expect: 'hurts',
+    note: 'Off restores the pre-tier pricing, and every cell it restores is a line the game answers ' +
+      'with |-fail|: Sucker Punch credits its damage into a predicted switch (where it fails, because ' +
+      'the target is not attacking) and into their setup/status click; Fake Out keeps its damage on ' +
+      'every turn after its first, although it only works on the first turn out; and a landed Fake ' +
+      'Out no longer flinches the reply away, which is the reason to click the move at all on its ' +
+      'one legal turn.'
+  },
+  /* The three sub-knobs, because the tier is three rules rather than one: the attack requirement
+   * is a property of THEIR click, the first-turn rule a property of OUR stint, and the flinch a
+   * property of the exchange between them. The expectation is the same on each row — switching the
+   * rule off should cost wins, because it re-admits a line the game fails. */
+  {
+    id: 'conditional-suckerpunch',
+    label: 'Sucker Punch attack requirement (off)',
+    tier: 'laplace',
+    direction: 'off',
+    parent: 'conditionalmoves',
+    patch: { 'laplace.conditionalMoves.suckerPunchRequiresAttack': false },
+    expect: 'hurts',
+    note: 'Off prices Sucker Punch (and their Sucker Punch) as unconditional damage: its hit lands ' +
+      'in the predicted-switch column, into their setup move, into a status click and through a ' +
+      'Protect, although the move fails whenever the target does not select an attacking move.'
+  },
+  {
+    id: 'conditional-firstturn',
+    label: 'Fake Out first-turn rule (off)',
+    tier: 'laplace',
+    direction: 'off',
+    parent: 'conditionalmoves',
+    patch: { 'laplace.conditionalMoves.firstTurnOnly': false },
+    expect: 'hurts',
+    note: 'Off lets Fake Out / First Impression keep their damage after the body has already acted ' +
+      'since it entered, so a move that fails outside its one legal turn out is priced as a normal ' +
+      'attack on every turn of the stint.',
+    caveat: 'INERT HERE BY CONSTRUCTION: none of the six sample teams carries Fake Out or First ' +
+      'Impression, so the engine seat never holds one to fail and this row cannot move until a ' +
+      'team that carries the move is added. The Sucker Punch sibling DOES have a corpus (Kingambit ' +
+      'is on hazardStackBalance and voltTurnOffense).'
+  },
+  {
+    id: 'conditional-flinch',
+    label: 'Fake Out flinch (off)',
+    tier: 'laplace',
+    direction: 'off',
+    parent: 'conditionalmoves',
+    patch: { 'laplace.conditionalMoves.flinch': false },
+    expect: 'hurts',
+    note: 'Off charges the reply a landed Fake Out really takes away: the flinched body does not act ' +
+      'at all, so its damage, its setup boost and its Turn-2 follow-up are all priced against us. ' +
+      'The arrow points the other way from the two rows above — this rule RE-PRICES a line UP.',
+    caveat: 'INERT HERE BY CONSTRUCTION, for the same reason as `conditional-firstturn`: it prices ' +
+      'a move no sample team carries. The mechanism IS pinned off-battle in ' +
+      'tests/conditional_check.js (§6).'
+  },
+  {
     id: 'pricepivots',
     label: 'pivot pricing (off)',
     tier: 'laplace',
@@ -425,15 +486,66 @@ const FEATURES = [
       'COUNTERFACTUAL IS ALSO PARTIAL BY CONSTRUCTION and that has to be read before any number is: ' +
       'the formula it implements is deliberately NOT `p * V_KO + (1 - p) * V_survive`. That form ' +
       'needs its KO branch to mean "the target never answers", which needs to know we move FIRST, and ' +
-      '`_payoff` does not model move order at all — only `_pivotPayoff` does, and the in-code comment ' +
-      'on the symmetric reply treatment says exactly that. Inventing a zero-counterattack branch here ' +
-      'would put a speed assumption into the cell every row flows through, so the reply stays ' +
-      'symmetric and only the HP side of the cliff is removed; a positive reading is therefore a ' +
-      'LOWER bound on the correction and the ordering half needs its own tier. What it does remove is ' +
-      'measurable without a battle: the discontinuity itself, pinned in ' +
+      '`_payoff` has to ask for. It does: the ordering half reads `_turnOrder` (priority, then Speed ' +
+      'through Trick Room — the check the setup extension and the pivot tier already use) and, when ' +
+      'the faster side\'s hit has a FRACTIONAL exact chance `p` of fainting the slower one before it ' +
+      'moves, scales the slower side\'s damage by `(1 - p)`. A tie and the endpoints `p` 0 and 1 keep ' +
+      'the symmetric pricing, so no cell claims a turn the board cannot establish and every cell that ' +
+      'was never ambiguous is bit-identical to the shipped build. What the tier removes is ' +
+      'measurable without a battle: the discontinuity and both endpoints, pinned in ' +
       '`tests/quiescence_check.js` §KO. Not modelled either: accuracy (a 90 % move and a 60 % one ' +
       'both use their own roll set, but a MISS is not a roll), and the secondary riders of the same ' +
       'move.'
+  },
+  {
+    id: 'choicephysics',
+    label: 'Choice lock physics, both directions (off)',
+    tier: 'laplace',
+    direction: 'off',
+    patch: { 'laplace.choiceLock.enabled': false },
+    expect: 'helps',
+    note: 'SHIPS ON (a game rule, not a preference). Off prices a Choice-locked opponent as if they ' +
+      'could click their whole list — the lock is real and the board proves it whenever the stint ' +
+      'has already revealed a move — and stops charging US for locking ourselves into a move a ' +
+      'living bench body is 0x immune to.'
+  },
+  {
+    id: 'choicephysics-opplock',
+    label: 'their Choice lock in the sampled worlds (off)',
+    tier: 'laplace',
+    direction: 'off',
+    parent: 'choicephysics',
+    patch: { 'laplace.choiceLock.oppLock': false },
+    expect: 'helps',
+    note: 'Off leaves their whole move list standing as a reply in worlds where their item and their ' +
+      'revealed stint move prove the lock, so the matrix prices clicks the game will refuse.'
+  },
+  {
+    id: 'choicephysics-risk',
+    label: 'our Choice-lock risk (off)',
+    tier: 'laplace',
+    direction: 'off',
+    parent: 'choicephysics',
+    patch: { 'laplace.choiceLock.riskPenalty': 0 },
+    expect: 'helps',
+    note: 'Off makes locking ourselves in free: clicking a move while holding Choice commits us to it ' +
+      'against whatever comes in, and the switch to a body that is 0x immune is the way that ' +
+      'commitment is punished.'
+  },
+  {
+    id: 'pruner-synergy',
+    label: 'team-preview synergy prior (off)',
+    tier: 'pruner',
+    direction: 'off',
+    patch: { 'pruner.synergy.enabled': false },
+    expect: 'neutral',
+    note: 'Off ignores their six names: a Drizzle/Drought body no longer lifts their weather sets, a ' +
+      'Trick Room setter no longer lifts the slow breakers, and a revealed Stealth Rock no longer ' +
+      'cuts the redundant Rock sets on the other five slots.',
+    caveat: 'UNMEASURED. This is a PRIOR on the candidate pool, and its effect is bounded by the hard ' +
+      'deductions it cannot override — a real delta would mean the pool was already wide enough for ' +
+      'the prior to change a ranking, and zero means the corpus never disagreed with it. Pinned ' +
+      'off-battle on both sides in `tests/scout_check.js` §7b instead of being claimed here.'
   },
   {
     id: 'threatspeedgate',

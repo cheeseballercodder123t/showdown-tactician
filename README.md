@@ -243,6 +243,9 @@ tests/preview_check.js     the Turn-0 lead advisory: the parser contract, the 6x
                            the broker wiring and the HUD card (31 checks)
 tests/quiescence_check.js  the setup punisher: the boost table, the one extra exchange, the three
                            guards, and the shield's own no-decay cell (108 checks)
+tests/conditional_check.js the conditional moves: Sucker Punch lands only on an attack, Fake Out
+                           only on its first turn out, and a landed Fake Out flinches the reply
+                           away — both directions of the matrix, each knob's exact identity (65 checks)
 tests/profile_check.js     the opponent profiler: the deviation estimator, label/factor agreement,
                            every refusal (80 checks)
 tests/entropy_check.js     the scouting entropy: Shannon arithmetic against hand-computed constants,
@@ -356,6 +359,8 @@ node tests/scout_check.js     #  78 checks: the scouting tool, the overlay, the 
 node tests/pressure_check.js  # 151 checks: the PP-stall pivot, the volatility charge, the format sentinel
 node tests/quiescence_check.js # 108 checks: the setup punisher, the boost table, the follow-up
                               #   weight (1.0 is an exact identity), the guards
+node tests/conditional_check.js # 65 checks: Sucker Punch / Fake Out / First Impression failure pricing,
+                              #   the flinch and its blockers, the exact identity when each knob is off
 node tests/profile_check.js   #  80 checks: the opponent profiler (deviation, labels, clamping)
 node tests/entropy_check.js   #  48 checks: the scouting entropy and its assumed-response model
 node tests/wincon_check.js    #  56 checks: the win-condition bounty (refusals, payout)

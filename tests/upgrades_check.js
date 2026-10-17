@@ -481,6 +481,114 @@ check('a battle with no telemetry keeps every reply (no silent regression)',
   quietEngine.lastReadout.clock.keepSwitchReplies === true && quietEngine.lastReadout.clock.label === 'unknown',
   JSON.stringify(quietEngine.lastReadout.clock));
 
+/* ==================== 8b. choice-lock physics, both directions */
+
+section('8b. a Choice-locked body has ONE move, and locking ourselves in has a price');
+
+{
+  const LOCKED = {
+    id: 'wlock', weight: 1,
+    team: [
+      { species: 'Great Tusk', isActive: true, item: 'Choice Scarf',
+        activeStintMoves: ['Headlong Rush'], activeStintCount: 1,
+        setMoves: ['Headlong Rush', 'Close Combat', 'Rapid Spin', 'Knock Off'] },
+      { species: 'Gholdengo', isActive: false, item: 'Air Balloon', setMoves: [] }
+    ]
+  };
+  const eng = newEngine().engine;
+  const lockedActs = eng.getOppActions(LOCKED, { field: { trickRoom: false }, turn: 5 });
+  eq('a locked body offers ONLY the move it is locked into',
+    lockedActs.filter(function (a) { return a.kind !== 'switch'; }).map(function (a) { return a.name; }),
+    ['Headlong Rush']);
+  check('...and its switches are still on the menu (a lock is not a trap)',
+    lockedActs.some(function (a) { return a.kind === 'switch'; }),
+    JSON.stringify(lockedActs.map(function (a) { return a.kind; })));
+
+  const noLock = newEngine({ choiceLock: { enabled: false } }).engine;
+  eq('with the tier off the full four-move menu comes back',
+    noLock.getOppActions(LOCKED, { field: {} }).filter(function (a) { return a.kind !== 'switch'; }).length, 4);
+  eq('...and oppLock:false does the same on its own',
+    newEngine({ choiceLock: { oppLock: false } }).engine
+      .getOppActions(LOCKED, { field: {} }).filter(function (a) { return a.kind !== 'switch'; }).length, 4);
+
+  const twoMoves = JSON.parse(JSON.stringify(LOCKED));
+  twoMoves.team[0].activeStintMoves = ['Headlong Rush', 'Close Combat'];
+  eq('a SECOND distinct move disproves the lock (the item is not Choice after all)',
+    eng.getOppActions(twoMoves, { field: {} }).filter(function (a) { return a.kind !== 'switch'; }).length, 4);
+
+  const free = JSON.parse(JSON.stringify(LOCKED));
+  free.team[0].item = 'Leftovers';
+  eq('a non-Choice item is not locked',
+    eng.getOppActions(free, { field: {} }).filter(function (a) { return a.kind !== 'switch'; }).length, 4);
+
+  const disproven = JSON.parse(JSON.stringify(LOCKED));
+  disproven.team[0].cannotBeChoice = true;
+  eq('evidence against Choice (cannotBeChoice) keeps the menu',
+    eng.getOppActions(disproven, { field: {} }).filter(function (a) { return a.kind !== 'switch'; }).length, 4);
+
+  const stale = JSON.parse(JSON.stringify(LOCKED));
+  stale.team[0].setMoves = ['Close Combat', 'Rapid Spin'];
+  eq('a stint move the sampled world does not believe it owns cannot become the only column',
+    eng.getOppActions(stale, { field: {} }).filter(function (a) { return a.kind !== 'switch'; }).length, 2);
+}
+
+{
+  /* OUR HALF. A locked body's cost is concrete when their bench takes 0 from the click. */
+  const POINTS = realCfg('laplace.choiceLock.riskPenalty', 60);
+  const myBody = function (extra) {
+    return Object.assign({
+      species: 'Great Tusk', isActive: true, item: 'Choice Band', cannotBeChoice: false,
+      activeStintMoves: [], liveSet: null,
+      setMoves: ['Earthquake', 'Close Combat', 'Rapid Spin', 'Stealth Rock'], evs: {}, ivs: {}
+    }, extra || {});
+  };
+  const EQ = { kind: 'move', name: 'Earthquake', moveId: 'earthquake' };
+  const TOXIC = { kind: 'move', name: 'Toxic', moveId: 'toxic' };
+  const U_TURN = { kind: 'move', name: 'U-turn', moveId: 'uturn' };
+  const levitate = { species: 'Rotom-Wash', isActive: false, fainted: false, revealedAbility: 'Levitate', setMoves: [] };
+  const ground = { species: 'Gholdengo', isActive: false, fainted: false, setMoves: [] };
+  const wing = { species: 'Skarmory', isActive: false, fainted: false, setMoves: [] };
+  const worldWith = function (body) { return { team: [{ species: 'Hatterene', isActive: true, setMoves: [] }, body] }; };
+  const eng = newEngine().engine;
+  check('the shipped penalty is a positive number', typeof POINTS === 'number' && POINTS > 0, String(POINTS));
+  eq('a Levitate body on their bench charges the click',
+    eng._choiceLockRisk(EQ, myBody(), null, worldWith(levitate)), POINTS);
+  eq('...as does a type-chart immunity (a Flying body vs Ground)',
+    eng._choiceLockRisk(EQ, myBody(), null, worldWith(wing)), POINTS);
+  eq('a bench that merely resists it charges nothing',
+    eng._choiceLockRisk(EQ, myBody(), null, worldWith(ground)), 0);
+  eq('an unrevealed body is never assumed immune',
+    eng._choiceLockRisk(EQ, myBody(), null, worldWith({ species: 'Rotom-Wash', isActive: false, fainted: false })), 0);
+  eq('a status move carries no type-immunity risk',
+    eng._choiceLockRisk(TOXIC, myBody(), null, worldWith(wing)), 0);
+  eq('a pivot is not locked into the fight it is leaving',
+    eng._choiceLockRisk(U_TURN, myBody(), null, worldWith(wing)), 0);
+  eq('a body already locked in has already paid it',
+    eng._choiceLockRisk(EQ, myBody({ activeStintMoves: ['Earthquake'] }), null, worldWith(levitate)), 0);
+  eq('a non-Choice holder pays nothing',
+    eng._choiceLockRisk(EQ, myBody({ item: 'Leftovers' }), null, worldWith(levitate)), 0);
+  eq('a disproven Choice item pays nothing',
+    eng._choiceLockRisk(EQ, myBody({ cannotBeChoice: true }), null, worldWith(levitate)), 0);
+  eq('the whole tier off pays nothing',
+    newEngine({ choiceLock: { enabled: false } }).engine
+      ._choiceLockRisk(EQ, myBody(), null, worldWith(levitate)), 0);
+
+  /* The hook itself: the same cell, priced twice, differs by EXACTLY the penalty. */
+  const fixture = pipeline(MATCH);
+  const battle = fixture.battle;
+  battle.active.my.item = 'Choice Band';
+  battle.active.my.activeStintMoves = [];
+  const oppAct = { kind: 'move', name: 'Power Whip', moveId: 'powerwhip' };
+  const risky = newEngine({ choiceLock: { riskPenalty: POINTS } }).engine;
+  const safe = newEngine({ choiceLock: { riskPenalty: 0 } }).engine;
+  const offEngine = newEngine({ choiceLock: { enabled: false } }).engine;
+  const a = risky._payoff(EQ, oppAct, battle, battle.field, worldWith(levitate));
+  const b = safe._payoff(EQ, oppAct, battle, battle.field, worldWith(levitate));
+  const c = offEngine._payoff(EQ, oppAct, battle, battle.field, worldWith(levitate));
+  close('the payoff hook charges exactly the configured penalty', b - a, POINTS, 1e-9);
+  close('...and the tier off is the unpenalised cell exactly', c, b, 1e-9);
+}
+
 /* ===================== 9. reverse damage deduction (live EV solving) */
 
 section('9. the state manager records what their hit did to our body');

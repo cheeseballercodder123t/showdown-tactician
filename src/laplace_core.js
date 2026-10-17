@@ -330,6 +330,22 @@
       this.realOppSwitch = Object.assign({
         enabled: cfgGet('laplace.realOppSwitch.enabled', true)
       }, options.realOppSwitch || {});
+      // Conditional moves (see `_firstTurnOut` and the block it feeds in `_payoff`). Three separate
+      // leaves because the three rules fail for different reasons and are ablated separately; the
+      // whole section is the exact identity when `enabled: false`.
+      this.conditionalMoves = Object.assign({
+        enabled: cfgGet('laplace.conditionalMoves.enabled', true),
+        suckerPunchRequiresAttack: cfgGet('laplace.conditionalMoves.suckerPunchRequiresAttack', true),
+        firstTurnOnly: cfgGet('laplace.conditionalMoves.firstTurnOnly', true),
+        flinch: cfgGet('laplace.conditionalMoves.flinch', true)
+      }, options.conditionalMoves || {});
+      // Choice physics (see `_oppChoiceLock` / `_choiceLockRisk`). `enabled: false` restores the
+      // pre-tier matrix in both directions; `oppLock` splits their half from our penalty.
+      this.choiceLock = Object.assign({
+        enabled: cfgGet('laplace.choiceLock.enabled', true),
+        oppLock: cfgGet('laplace.choiceLock.oppLock', true),
+        riskPenalty: cfgGet('laplace.choiceLock.riskPenalty', 60)
+      }, options.choiceLock || {});
       this.pricePivots = Object.assign({
         enabled: cfgGet('laplace.pricePivots.enabled', true),
         regenPct: cfgGet('laplace.pricePivots.regenPct', 33.3)
@@ -495,7 +511,13 @@
     getOppActions(world, state) {
       const out = [];
       const active = world && world.team ? world.team.find(function (m) { return m.isActive; }) || world.team[0] : null;
-      const moves = (active && active.setMoves) || [];
+      /* A CHOICE-LOCKED BODY HAS ONE MOVE. Enumerating its other three builds a reply space the
+       * game does not offer, so a Scarfed / Banded / Specs'd body was priced as a toolbox that can
+       * answer every board at once. The lock is read from EVIDENCE: a known Choice item, no
+       * disproof, and exactly one distinct move in the active stint (a second distinct move is
+       * itself the proof the item is not Choice — the same rule state_manager records). */
+      const lock = this._oppChoiceLock(active);
+      const moves = lock ? [lock] : ((active && active.setMoves) || []);
       for (let i = 0; i < moves.length; i++) {
         const name = moves[i];
         if (!name) continue;
@@ -1418,6 +1440,79 @@
     }
 
     /**
+     * `_oppChoiceLock(active)` -> the move a Choice-locked body is stuck on, or null.
+     *
+     * Read from the board's own evidence, never assumed: the item must BE a Choice item, the body
+     * must not have evidence against Choice (`cannotBeChoice`, which the pruner sets when a second
+     * distinct move was observed or the item was removed), and the active stint must hold exactly
+     * one distinct move. The locked move is then required to be one the sampled world actually
+     * believes the body owns, so a stale stint from another world cannot put a move on the menu the
+     * body cannot click. Off (`enabled` or `oppLock` false) the full menu is kept, bit-for-bit.
+     */
+    _oppChoiceLock(active) {
+      const c = this.choiceLock;
+      if (!c || c.enabled === false || c.oppLock === false || !active) return null;
+      if (active.fainted || active.cannotBeChoice) return null;
+      const item = active.currentBattleItem || active.confirmedItem || active.item ||
+        (active.liveSet && active.liveSet.item) || '';
+      if (!U.isChoiceItem(item)) return null;
+      const stint = active.activeStintMoves || [];
+      if (stint.length !== 1 || !stint[0]) return null;
+      const moves = active.setMoves || [];
+      const wanted = U.toID(stint[0]);
+      for (let i = 0; i < moves.length; i++) if (U.toID(moves[i]) === wanted) return moves[i];
+      return null;
+    }
+
+    /**
+     * `_choiceLockRisk(action, myBody, state, world)` -> the score charged for locking ourselves in.
+     *
+     * A Choice item does not just add power: it REMOVES three moves until the body leaves the field.
+     * The cost is concrete when the opponent can put a body in front of the locked move that takes
+     * 0 from it — a Choice-locked Earthquake into three Levitate bodies is a lost game, not a lost
+     * turn — so an unlocked click whose type some living, provably immune bench body resists at 0x
+     * is charged `laplace.choiceLock.riskPenalty`.
+     *
+     * Only OUR unlocked click carries it (`activeStintMoves` empty means the choice is still open),
+     * only a damaging non-pivot move can be locked into usefully, and the immunity must be PROVABLE:
+     * the type chart, or an ability/item the board reveals. An unrevealed bench body is never
+     * assumed immune.
+     */
+    _choiceLockRisk(action, myBody, state, world) {
+      const c = this.choiceLock;
+      if (!c || c.enabled === false || !action || !myBody) return 0;
+      const points = typeof c.riskPenalty === 'number' ? c.riskPenalty : 0;
+      if (!(points > 0)) return 0;
+      if (action.kind !== 'move' || U.isPivotMove(action.name)) return 0;
+      const data = U.getMoveData(action.name);
+      if (!data || data.isStatus || !data.type) return 0;
+      if (myBody.cannotBeChoice) return 0;
+      const item = myBody.currentBattleItem || myBody.confirmedItem || myBody.item ||
+        (myBody.liveSet && myBody.liveSet.item) || '';
+      if (!U.isChoiceItem(item)) return 0;
+      /* Already locked: the committing click happened on an earlier turn, so this one carries no
+       * NEW cost. (A body that has not moved this stint has not committed to anything yet.) */
+      if ((myBody.activeStintMoves || []).length > 0) return 0;
+      const bench = (world && world.team) || (state && state.oppTeam) || [];
+      for (let i = 0; i < bench.length; i++) {
+        const mon = bench[i];
+        if (!mon || mon.fainted || mon.isActive) continue;
+        if (this._immuneToType(data.type, mon)) return points;
+      }
+      return 0;
+    }
+
+    /** Is this body 0x against `type`, from the TYPE CHART or a REVEALED ability/item? */
+    _immuneToType(type, mon) {
+      if (!type || !mon) return false;
+      const species = mon.species || mon.id || '';
+      if (U.typeEffectiveness(type, species) === 0) return true;
+      const ability = mon.revealedAbility || mon.ability || (mon.liveSet && mon.liveSet.ability) || '';
+      const item = mon.confirmedItem || mon.item || (mon.liveSet && mon.liveSet.item) || '';
+      return !!U.immunityReason(type, { species: species, ability: ability, item: item });
+    }
+
+    /**
      * _oppSwitchTarget(state, oppAction, world) -> the body THEY are switching to, or null.
      *
      * The sampled WORLD's own roster is the authority when there is one — its bodies carry the set
@@ -1897,6 +1992,35 @@
     /* ------------------------------------------------------------- evaluation */
 
     /**
+     * `_firstTurnOut(mon, state)` -> is this body on the first turn it has to act since entering?
+     *
+     * That is the condition Fake Out and First Impression are gated on (`activeMoveActions === 0`):
+     * a body that switched in on turn N can use them on turn N+1 — its first turn to act — and
+     * never again; a lead can use them on turn 1.
+     *
+     * Two independent readings, ANDed, because each covers the other's hole:
+     *   - the LOG reading: `lastMoveTurn` (stamped on every |move|, including a failed one — the
+     *     game counts the click) has not advanced past `switchedInTurn` (stamped on entry), and
+     *     `lastMoveTurn === 0` means the body has never acted at all;
+     *   - the CLOCK reading: the first turn this body could act after entering is `switchedInTurn+1`
+     *     (turn 1 for a lead, whose entry is stamped as turn 1 because the switch lines precede
+     *     `|turn|1`). A body that has been flinched, fully paralysed or recharging through that
+     *     window never emits a |move| line, so the log reading alone would keep calling it "first
+     *     turn out" forever.
+     */
+    _firstTurnOut(mon, state) {
+      if (!mon) return false;
+      const lastActed = typeof mon.lastMoveTurn === 'number' ? mon.lastMoveTurn : 0;
+      const entered = typeof mon.switchedInTurn === 'number' ? mon.switchedInTurn : 0;
+      const turn = (state && typeof state.turn === 'number') ? state.turn : 0;
+      if (typeof mon.switchedInTurn === 'number' && turn > 0) {
+        const firstActingTurn = mon.switchedInTurn <= 1 ? 1 : mon.switchedInTurn + 1;
+        if (turn > firstActingTurn) return false;
+      }
+      return lastActed === 0 || lastActed < entered;
+    }
+
+    /**
      * Payoff of (myAction vs oppAction) in a simulated 1-ply state.
      *
      * This is STILL one turn: the leaf is the board after both sides have acted once. What
@@ -1935,12 +2059,63 @@
       const shielded = !!(qOn && q.blockProtect !== false &&
         (oppAction.kind === 'protect' || (oppData && oppData.isProtect)));
 
+      /* ---- CONDITIONAL MOVES (config `laplace.conditionalMoves`). A move's damage is not a
+       * property of the move alone: Sucker Punch's exists only if they ATTACK, and Fake Out's only
+       * on the first turn out. Both were priced as unconditional damage, so the matrix recommended
+       * lines the game answers with |-fail| — Sucker Punch credited its hit to a predicted
+       * switch-in, and Fake Out kept its damage on every turn after the first. The flags below are
+       * the whole rule, applied to BOTH sides (their Sucker Punch and their Fake Out are reply
+       * columns in the same matrix); every one of them is inert with the tier off. */
+      const cm = this.conditionalMoves;
+      const cmOn = !!(cm && cm.enabled !== false);
+      const myMoveId = myAction.kind === 'move' ? U.toID(myAction.moveId || myAction.name || '') : '';
+      const oppMoveId = oppAction.kind === 'move' ? U.toID(oppAction.moveId || oppAction.name || '') : '';
+      const myRequiresAttack = !!(cmOn && cm.suckerPunchRequiresAttack !== false &&
+        myMoveId && U.requiresTargetAttack(myMoveId));
+      const oppRequiresAttack = !!(cmOn && cm.suckerPunchRequiresAttack !== false &&
+        oppMoveId && U.requiresTargetAttack(oppMoveId));
+      const myFirstTurnRule = !!(cmOn && cm.firstTurnOnly !== false &&
+        myMoveId && U.firstTurnOnly(myMoveId));
+      const myFlinchMove = !!(cmOn && cm.flinch !== false && myMoveId && U.guaranteedFlinch(myMoveId));
+      const oppFlinchMove = !!(cmOn && cm.flinch !== false && oppMoveId && U.guaranteedFlinch(oppMoveId));
+
+      /* Is the chosen action an ATTACK, in the sense Sucker Punch cares about? A switch has no move
+       * at all; Protect and every setup/status click are Status-category, which is exactly the set
+       * the move fails against. An unidentifiable move name is left read as an attack rather than
+       * assumed to fail — the dex miss is ours, not the game's. */
+      const myData = (oppRequiresAttack && myAction.kind !== 'switch') ? U.getMoveData(myAction.name) : null;
+      const myAttacks = myAction.kind === 'move' &&
+        (myAction.name === 'Struggle' || !myData || !myData.isStatus);
+      const oppAttacks = oppAction.kind === 'move' &&
+        (oppAction.name === 'Struggle' || !oppData || !oppData.isStatus);
+
+      /* Our click does not happen: Sucker Punch into anything that is not an attack, or a Fake Out /
+       * First Impression after the body has already acted once since it came in. */
+      const myMoveFails = !!(myAction.kind === 'move' &&
+        ((myRequiresAttack && !oppAttacks) || (myFirstTurnRule && !this._firstTurnOut(myActive, state))));
+      /* Their Fake Out lands first (+3) and flinches US: our whole click is gone. What beats it is a
+       * shield (+4 — it blocks the move and is priced on its own) or another priority-3 Fake Out,
+       * which is a Speed tie and is left to the symmetric pricing below. */
+      const oppDeniesMyAction = !!(oppFlinchMove && myAction.kind === 'move' &&
+        U.movePriority(myAction.name) < U.movePriority(oppAction.name) &&
+        this._firstTurnOut(oppActive, state) && !U.flinchBlocked(myActive));
+      /* ...and a Fake Out of OURS takes their click away — but only when it LANDS (a flinch from a
+       * move that failed does not exist) and only against a MOVE: a switch is not flinched, and
+       * their body is already off the field, so the incoming body acts as normal next turn. */
+      const oppActionDenied = !!(myFlinchMove && !myMoveFails && oppAction.kind === 'move' &&
+        U.movePriority(myAction.name) > U.movePriority(oppAction.name) &&
+        !U.flinchBlocked(oppActive));
+      /* Their Sucker Punch fails for the same reason ours does: we are not attacking them. It is a
+       * wasted reply, not a miss — they still took their turn. */
+      const oppMoveFails = !!(oppRequiresAttack && !myAttacks);
+
       // The stat stages their setup leaves them with, and whether they can pay for it: Belly Drum
       // below half HP (Clangorous Soul below a third) FAILS, so a setup they cannot afford is the
       // wasted turn it is, not a free boost.
       let setupGain = null;
       let setupHpCost = 0;
-      if (oppUsesSetup) {
+      // A flinched body does not get to set up: this is their CLICK being taken away, not a miss.
+      if (oppUsesSetup && !oppActionDenied) {
         const spec = U.setupBoosts(oppAction.name);
         if (spec) {
           const gain = {};
@@ -1965,6 +2140,34 @@
         }
       }
 
+      /* ---- THE ORDERING HALF OF THE KO CLIFF (`laplace.rollKoBranch`).
+       *
+       * `_koTransition` prices the EXPECTED HP a fractional exact KO leaves, but the reply was still
+       * charged in full — so a hit that faints the target on 10 of 16 rolls was read as if the
+       * target always answered, and a hit that faints US that often was read as if we always acted.
+       * That needs the move ORDER, which is exactly why it was left out of the HP-only half (see
+       * the config comment: "claiming a zero-counterattack branch would invent a speed assumption").
+       * Here the order is not invented — it is asked for, through the same `_turnOrder` the setup
+       * extension and the pivot tier already use (priority first, then Speed, through Trick Room),
+       * and an UNDECIDABLE order (a Speed tie) keeps the symmetric pricing exactly.
+       *
+       * The rule, both directions: on the `p` share of rolls where the FASTER side's hit faints the
+       * slower one before it moves, the slower side's damage is 0, so its expectation is
+       * `(1 - p) x damage`. Only a FRACTIONAL exact chance scales anything — p = 0 is the scalar
+       * path already and p = 1 would make the defender's whole turn vanish, which is the branch the
+       * HP-only tier deliberately did not claim. Inert unless the tier is on. */
+      const koOrder = !!(this.rollKoBranch && this.rollKoBranch.enabled === true) &&
+        myAction.kind === 'move' && oppAction.kind === 'move';
+      const order = koOrder
+        ? this._turnOrder(myActive, myAction.name, oppActive, oppAction.name, null, field, state)
+        : null;
+      /* Our own hit's exact share, read by the reply below (null unless the tier surfaced one), and
+       * the reply damage the ordering half precomputes when THEY move first — declared here because
+       * the branch that fills them and the branch that reads them are siblings. */
+      let myKoExact = null;
+      let replyPre = null;
+      let slowerShare = 1;
+
       let pivot = null;
       let myEffects = null;
       /* The other two own-move leaf channels, each null unless its own tier is on: the condition a
@@ -1977,15 +2180,17 @@
           mySideMon = incoming;
           myHp = this._switchInHp(incoming, state, field);
         }
-      } else if (myAction.kind === 'move' && this.pricePivots && this.pricePivots.enabled !== false &&
+      } else if (myAction.kind === 'move' && !oppDeniesMyAction &&
+                 this.pricePivots && this.pricePivots.enabled !== false &&
                  U.isPivotMove(myAction.name)) {
         /* A PIVOT is not a move plus a switch: it is one transaction whose orders matter (see
          * _pivotPayoff). It prices itself, including the reply, so it replaces everything below. */
         pivot = this._pivotPayoff(myAction, myActive, oppSideMon, oppAction, state, field, shielded,
           setupGain ? { gain: setupGain, cost: setupHpCost } : null);
-      } else if (!shielded) {
+      } else if (!shielded && !oppDeniesMyAction && !myMoveFails) {
         // Our move still lands on a turn they spend setting up — they are not attacking us yet.
-        // It does NOT land through a Protect.
+        // It does NOT land through a Protect, through a flinch, or when the move's own condition
+        // (Sucker Punch's attack requirement, Fake Out's first turn out) says it fails.
         myEffects = this._myMoveLeafEffects(myAction, myHp, field, state);
         // A Protect is priced here too: the action reaches this branch (it is neither a switch nor
         // a pivot), it deals no damage, and what it changes is whether THEIR reply lands below.
@@ -1994,6 +2199,19 @@
         if (myEffects && myEffects.myHpCost) {
           myHp = U.clamp(myHp - myEffects.myHpCost, 0, 100);
         }
+        /* WHEN THEY MOVE FIRST, how much of OUR hit survives their hit is a number, not a story: it
+         * is the complement of the share of their rolls that faints us. Their damage is priced here
+         * (before our own) so that the factor is available when our hit is applied, and the object
+         * is handed to the reply branch below rather than recomputed — one call, not two. */
+        replyPre = (order === 'them' && oppAction.name !== 'Struggle')
+          ? this._damageOf(oppActive, mySideMon, oppAction.name, field, false,
+              (myEffects && myEffects.myBoosts) ? { defender: { boosts: myEffects.myBoosts } } : undefined)
+          : null;
+        const replyKo = (replyPre && typeof replyPre.koChanceExact === 'number')
+          ? replyPre.koChanceExact : null;
+        /* `koChanceExact` is a PERCENT (the same unit `_koTransition` divides by 100); reading it as
+         * a fraction would make every ambiguous hit look like a certain miss. */
+        slowerShare = (replyKo !== null && replyKo > 0 && replyKo < 100) ? (1 - replyKo / 100) : 1;
         if (this.priceRecovery && this.priceRecovery.enabled !== false && U.isRecoveryMove(myAction.name)) {
           /* A HEAL DEALS NO DAMAGE. The 1-ply model used to score Recover/Roost/Slack Off as a
            * wasted turn — the cell was priced on a board where the body stood at the HP it had
@@ -2004,8 +2222,19 @@
           myHp = U.clamp(myHp + heal, 0, 100);
           events.push({ move: myAction.name, healed: heal });
         } else {
-          const dmg = this._damageOf(myActive, oppSideMon, myAction.name, field, true);
-          if (dmg) {
+          const raw = this._damageOf(myActive, oppSideMon, myAction.name, field, true);
+          if (raw) {
+            myKoExact = (typeof raw.koChanceExact === 'number') ? raw.koChanceExact : null;
+            /* Expected damage on the share of rolls where we live to act: scale the mean and drop
+             * the exact-roll fields, because the KO probability of the REDUCED hit is a different
+             * number and `_koTransition` must not read the old one off a shrunk mean. */
+            const dmg = slowerShare === 1 ? raw : Object.assign({}, raw, {
+              minPercent: raw.minPercent * slowerShare,
+              maxPercent: raw.maxPercent * slowerShare,
+              avgPercent: raw.avgPercent * slowerShare,
+              isOHKO: false, is2HKO: false,
+              koChanceExact: null, koChancePct: null
+            });
             /* The KO cliff. OFF this is the historical `clamp(oppHp - avgPercent, 0, 100)`, so the
              * two arms are bit-identical on every cell whose mean does not straddle 100 %. */
             oppHp = this._koTransition(oppHp, dmg);
@@ -2031,7 +2260,14 @@
         // the extension must not invent the follow-up — which is exactly the "KO the setup user"
         // line the whole feature exists to reward. (Their DAMAGING replies keep the pre-existing
         // symmetric treatment, because who moves first is not modelled there either.)
-        const followUp = this._setupFollowUp(myAction, myActive, oppActive, mySideMon, setupGain,
+        /* A LINE THAT NEVER CONNECTED HAS NO SECOND EXCHANGE EITHER. The extension prices our own
+         * move again on turn 2, so a Sucker Punch that failed this turn (their reply is a setup
+         * move, not an attack) or a click we never got to make at all (their Fake Out flinched us)
+         * must not debit their body a second time. The switch-shaped action is this file's existing
+         * "no second hit of ours" contract — the same sentinel `_pivotPayoff` hands in for a switch
+         * reply — and `_setupFollowUp` keys the repeat on `kind === 'move'`. */
+        const ourLine = (myMoveFails || oppDeniesMyAction) ? { kind: 'switch', name: '' } : myAction;
+        const followUp = this._setupFollowUp(ourLine, myActive, oppActive, mySideMon, setupGain,
           setupHpCost, { oppHp: oppHp, myHp: myHp }, field, state,
           (myEffects && myEffects.myBoosts) || null);
         oppHp = followUp.oppHp;
@@ -2047,11 +2283,19 @@
         const shieldedNow = !!(myShield && myShield.up &&
           !(oppAction && U.piercesProtect(oppAction.name)));
         const defOpts = (myEffects && myEffects.myBoosts) ? { defender: { boosts: myEffects.myBoosts } } : undefined;
-        const dmg = oppAction.name === 'Struggle'
+        /* A FLINCHED REPLY NEVER HAPPENS, and their own conditional move fails on the same rule
+         * ours does (Sucker Punch into a switch or a status click). Both are a wasted turn for
+         * them, not a miss — the cell scores the board they were left with. */
+        const dmg = replyPre || ((oppActionDenied || oppMoveFails) ? null : (oppAction.name === 'Struggle'
           ? { avgPercent: this.struggleChipPercent, isOHKO: false }
-          : this._damageOf(oppActive, mySideMon, oppAction.name, field, false, defOpts);
+          : this._damageOf(oppActive, mySideMon, oppAction.name, field, false, defOpts)));
+        /* THE OTHER DIRECTION: when we moved first, their reply exists only on the rolls where our
+         * hit did not finish them — `(1 - p)` of them. A p of 0 or 1 is left to the scalar path. */
+        const replyPct = (dmg && order === 'me' && typeof myKoExact === 'number' &&
+          myKoExact > 0 && myKoExact < 100)
+          ? dmg.avgPercent * (1 - myKoExact / 100) : (dmg ? dmg.avgPercent : 0);
         if (dmg && !shieldedNow) {
-          myHp = U.clamp(myHp - dmg.avgPercent, 0, 100);
+          myHp = U.clamp(myHp - replyPct, 0, 100);
         }
       }
 
@@ -2089,7 +2333,9 @@
        * thrown away: with the substitution resolved, their new body is the one that ate it, and
        * paying this on top would credit the same event twice. It is unchanged whenever the tier is
        * off or the switch-in could not be named. */
-      if (oppAction.kind === 'switch' && myAction.kind === 'move' && !oppSwitchedIn) score += this.switchAteHitBonus;
+      if (oppAction.kind === 'switch' && myAction.kind === 'move' && !myMoveFails && !oppSwitchedIn) {
+        score += this.switchAteHitBonus;
+      }
 
       // ---- the optional tiers, both inert unless their config section says otherwise ----
       // The profiler's COLUMN factor: we are not facing the perfectly rational opponent fictitious
@@ -2101,9 +2347,14 @@
       // between us and the sweep is gone from the simulated board. This is the one tier that can
       // outrank raw damage, which is exactly why it is capped in config and off by default.
       if (this._winconPlan && this.wincon) {
-        const paid = this.wincon.bonus(this._winconPlan, this._faintedIds(sim));
+        const paid = this.wincon.bonus(this._winconPlan, this._faintedIds(sim), sim);
         if (paid) score += paid;
       }
+      /* THE COST OF LOCKING OURSELVES IN (see `_choiceLockRisk`). Read from the WORLD's own bench,
+       * so a world whose sampled bench is immune to the click pays the charge and a world that
+       * cannot answer it does not — the same disagreement-across-worlds machinery as every tier. */
+      const lockRisk = this._choiceLockRisk(myAction, myActive, state, world);
+      if (lockRisk) score -= lockRisk;
       /* The 2-ply beam's out-parameter. `_payoff` is the only thing that knows the board a cell
        * LEAVES BEHIND -- which body switched in, the HP after its entry hazards, a pivot's incoming
        * body -- so a caller refining cells hands in an empty object and gets that board back instead

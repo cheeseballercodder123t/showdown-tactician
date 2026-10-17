@@ -11,6 +11,81 @@ reaches a verdict.
 
 ## Unreleased
 
+### Added — the two halves of Choice lock, a team-preview synergy prior, and chip credit toward the OHKO
+
+Four boards the leaf was pricing as if the opponent were a bag of independent damages.
+
+**Choice lock, both directions.** An opponent holding a Choice item has ONE click, and the arena and
+HUD both let their whole move list stand as a reply. In any sampled world where the active opponent
+holds a Choice item and the stint already reveals a move, `getOppActions` now restricts that world's
+columns to the revealed move plus switches — a lock proven by the board rather than assumed from the
+item. On our side the risk is the mirror image: clicking a move while holding Choice commits us to it
+against whatever comes in, so `_payoff` charges `laplace.choiceLockRisk` when a living bench body is
+`0x` immune to that move's type (by type or a confirmed ability) — the switch that punishes the lock.
+
+**Team preview.** `|poke|` already carries their six, and the set pruner ignored it. `set_pruner`
+now applies a synergy prior (`config.pruner.synergy`) — Rain sets where a Drizzle body is revealed,
+Sun where Drought is, Trick Room where `U.TR_SETTERS` plus slow breakers are — and once one opponent
+reveals Stealth Rock, the other five slots' Rock-set weights are cut. A prior on candidates, never a
+proof: the set it boosts still has to survive every hard deduction.
+
+**The win condition is a threshold, not a KO.** `wincon_bounty` credited only `faintedIds`. A
+roadblock chipped from 90 % to 40 % is worth nothing in that ledger and is exactly how a wall stops
+answering our sweeper. The bounty now pays in proportion to how much of the gap to the sweeper's
+OHKO break point the hit closed.
+
+### Added — the ordering half of the KO cliff, under the flag that already owns the HP half
+
+`laplace.rollKoBranch` priced the HP a fractional exact KO leaves but charged the reply in full, so a
+hit that faints the target on 10 of 16 rolls read as if the target always answered. That needs move
+order, which is why the first half refused to claim it. `_payoff` now asks `_turnOrder` — priority,
+then Speed through Trick Room, the same check the setup extension and the pivot tier use — and when
+the faster side's hit has a **fractional** exact chance `p` of fainting the slower one, the slower
+side's damage is scaled by `(1 - p)`. A tie and the endpoints `p` 0 and 1 keep the symmetric pricing,
+so no cell claims a turn the board cannot establish and every unambiguous cell is bit-identical. The
+flag still ships `false` on an unrun gate.
+
+### Fixed — a move that can FAIL is no longer priced as if it cannot: Sucker Punch, Fake Out, and the flinch
+
+`_payoff` treated a move's damage as a property of the move. Three families of clicks do not work
+that way, and the matrix was recommending lines the game answers with `|-fail|`:
+
+- **Sucker Punch into a predicted switch.** The switch column resolved the incoming body (that part
+  was right — `laplace.realOppSwitch`) and then CREDITED OUR HIT TO IT, although the move fails the
+  moment the target does not select an attacking move. Same for their setup move, their status
+  click and their Protect. It was also credited a second time by the `quiescence` follow-up when
+  their reply was a setup move, so the failing line looked like the best attack on the board.
+- **Fake Out after its first turn.** Fake Out / First Impression only work on the first turn the
+  user can act after entering; every turn after that they fail. The engine kept pricing their damage
+  on every turn of the stint, so a 40 BP priority move whose whole value is the flinch read as a
+  free chip forever.
+- **The flinch did not exist at all.** `flinch` appeared nowhere in `src/`. A landed Fake Out takes
+  the target's whole click away (damage, setup boost, Turn-2 follow-up), which is the reason to
+  click the move on its one legal turn — and that upside was priced at zero.
+
+`laplace.conditionalMoves` (`src/config.js`) prices all three **from game rules only**, and applies
+them to BOTH sides of the matrix — their Sucker Punch and their Fake Out are reply columns in the
+same cell, so a switch or a setup click in front of a Kingambit is now priced as the free turn it is
+instead of as a hit we eat. A flinch is blocked by a REVEALED Inner Focus / Shield Dust / Covert
+Cloak and by nothing else: an unrevealed body is assumed flinchable rather than exempted on a guess.
+
+Three separate leaves (`suckerPunchRequiresAttack`, `firstTurnOnly`, `flinch`), each the exact
+identity when off; `tests/conditional_check.js` (65 checks, README) pins the classifiers, the two
+independent readings of "first turn out" (the `|move|` stamp AND the turn window, so a body flinched
+through its whole stint does not read as first-turn-out forever), the failing and passing cells in
+both directions, the flinch blockers, and the exact pre-tier number each knob restores. Ablation
+rows `conditionalmoves` and its three sub-knobs are registered in `tools/run_ablation.js`.
+
+**Ships ON, and that is a judgement rather than a measurement.** The other leaf transitions on this
+branch shipped OFF until a win-rate gate adopted them; this one ships ON because it is not a policy
+preference — the shipped build was crediting damage that cannot happen, which is the class of defect
+`tests/blackbox_guard.js` exists to forbid. **Its win-rate gate has NOT been run**, and neither have
+the three sub-knobs'; they are in the table for exactly that reason. Not modelled, stated rather than
+discovered later: Upper Hand (it fails unless the target clicks a PRIORITY move, a narrower
+condition than "an attack", so it is deliberately not in the Sucker Punch family), move ORDER
+(Sucker Punch's +1 bracket still does not decide who swings first in the cell — only the failure
+condition is priced), Substitute, and the 30 %-flinch riders (a roll is not a rule).
+
 ### Added — the KO cliff: the mean of sixteen rolls stops standing in for all sixteen (ships OFF)
 
 `_payoff` moved the target by `avgPercent` — the MEAN of the 16 damage rolls — and clamped at 0, so a

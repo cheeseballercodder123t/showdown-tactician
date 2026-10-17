@@ -135,6 +135,11 @@
         dominance: U.round2(dominance),
         score: target.score,
         reason: target.reason,
+        /* THE CHIP HALF's two numbers, both measured: the target's HP when the plan was made,
+         * and the HP at which OUR best hit on it becomes an OHKO (the smallest roll of that hit).
+         * `bonus` reads them against the leaf to price progress toward the break point. */
+        hpAtPlan: target.hp,
+        chipThreshold: target.ourBestMin,
         blockers: blockers
       };
       this.last = plan;
@@ -147,20 +152,52 @@
      * fold it into a leaf without a plan-is-satisfied flag of its own. `faintedIds` may hold ids,
      * species names or the mons themselves; anything else in it pays nothing.
      */
-    bonus(plan, faintedIds) {
+    bonus(plan, faintedIds, leaf) {
       if (!this._on() || !plan || !plan.targetId) return 0;
       const maxBounty = Math.max(0, this._tune('maxBounty', 0));
       const raw = (typeof plan.bounty === 'number' && isFinite(plan.bounty)) ? plan.bounty : 0;
       const bounty = U.clamp(raw, 0, maxBounty);
-      if (!(bounty > 0)) return 0;
       const wanted = U.toID(plan.targetId);
       const list = Array.isArray(faintedIds) ? faintedIds : [];
       for (let i = 0; i < list.length; i++) {
         const entry = list[i];
         const id = U.toID(entry && typeof entry === 'object' ? (entry.id || entry.species) : entry);
-        if (id && id === wanted) return bounty;
+        if (id && id === wanted) return bounty > 0 ? bounty : 0;
       }
-      return 0;
+      /* THE CHIP HALF. A roadblock that is not dead yet still changed the board: the plan is worth
+       * something for moving its HP toward the point where our own best hit breaks it. The share
+       * is measured against where the body STARTED (the live board the plan was made on) and the
+       * break point (the smallest roll of our best hit), so the same chip on a healthy wall and on
+       * a nearly-broken one are not paid the same. Clipped to the bounty's own ceiling. */
+      const chip = Math.max(0, this._tune('chipBounty', 0));
+      if (!(chip > 0) || !leaf) return 0;
+      const threshold = (typeof plan.chipThreshold === 'number') ? plan.chipThreshold : 0;
+      const started = (typeof plan.hpAtPlan === 'number') ? plan.hpAtPlan : 100;
+      if (!(threshold > 0) || !(started > 0)) return 0;
+      const now = this._leafHp(leaf, wanted);
+      if (!(now > 0) || now >= started) return 0;
+      const need = Math.max(1, started - threshold);
+      const progress = U.clamp((started - now) / need, 0, 1);
+      return Math.round(U.clamp(chip * progress, 0, Math.max(chip, bounty)));
+    }
+
+    /** The target's HP on a leaf board: its active slot first, then their roster. */
+    _leafHp(leaf, wanted) {
+      const active = leaf && leaf.active && leaf.active.opp;
+      const hit = function (mon) {
+        if (!mon) return null;
+        if (U.toID(mon.id || mon.species) !== wanted) return null;
+        const hp = (typeof mon.hpPercent === 'number') ? mon.hpPercent : mon.hp;
+        return (typeof hp === 'number' && isFinite(hp)) ? hp : null;
+      };
+      const first = hit(active);
+      if (first !== null) return first;
+      const team = (leaf && leaf.oppTeam) || [];
+      for (let i = 0; i < team.length; i++) {
+        const hp = hit(team[i]);
+        if (hp !== null) return hp;
+      }
+      return 100;
     }
 
     /* -------------------------------------------------------------- rosters */
@@ -246,6 +283,8 @@
       const row = {
         id: id,
         species: species,
+        hp: (typeof mon.hpPercent === 'number') ? mon.hpPercent : ((typeof mon.hp === 'number') ? mon.hp : 100),
+        ourBestMin: (ourBest && typeof ourBest.minPercent === 'number') ? ourBest.minPercent : 0,
         attackPower: attackPower,
         killThreat: killThreat,
         unbreakable: unbreakable,

@@ -740,8 +740,92 @@ check('a roll set that cannot answer keeps a NULL exact chance, never a 0',
 same('...and the transition falls back to the scalar path for it',
   KO_ON._koTransition(100, { avgPercent: 101, koChanceExact: null }), 0);
 /* A failing damage call is still null, not a partial object. */
-check('a failed damage call is still null',
+check('a failing damage call is still null',
   stubbed(KO_ON, { failed: true }) === null);
+
+/* ------------------------------------------------------------------ the ordering half
+ *
+ * The HP half above answers "what does the board look like after a fractional KO" but charged the
+ * reply in full, because it never asked WHO MOVES FIRST. The ordering half asks `_turnOrder` (the
+ * same helper the setup extension and the pivot tier use) and scales the SLOWER side's damage by
+ * `(1 - p)` — on the `p` share of rolls where the faster side's hit faints it first, it never acts.
+ *
+ * Priced through `_payoff` with the damage engine STUBBED to a known roll set: what is under test
+ * here is the factor and its two endpoints, not `calc_engine` (which §2 already pins). */
+function stab(engine, table, fn) {
+  const real = engine._damageOf;
+  engine._damageOf = function (attacker, defender, moveName) {
+    const row = table[moveName];
+    if (!row) return real.apply(engine, arguments);
+    return {
+      move: moveName, minPercent: row.avg, maxPercent: row.avg, avgPercent: row.avg,
+      isOHKO: false, is2HKO: false, koChanceExact: row.ko, koChancePct: row.ko, rollCount: 16
+    };
+  };
+  try { return fn(); } finally { engine._damageOf = real; }
+}
+
+{
+  /* THEY MOVE SECOND and our hit faints them on 10 of 16 rolls. The reply is Earthquake, not
+   * Extreme Speed: +2 priority would (correctly) make the ORDER theirs and the case would prove
+   * nothing about being faster. */
+  const QUAKE = { kind: 'move', name: 'Earthquake', moveId: 'earthquake' };
+  const st = board();
+  const table = { 'Ice Spinner': { avg: 101, ko: 62.5 }, 'Earthquake': { avg: 40, ko: 0 } };
+  const traceOn = stab(KO_ON, table, function () {
+    const t = {};
+    KO_ON._payoff(ICE, QUAKE, st, st.field, null, t);
+    return t;
+  });
+  const traceOff = stab(KO_OFF, table, function () {
+    const t = {};
+    KO_OFF._payoff(ICE, QUAKE, st, st.field, null, t);
+    return t;
+  });
+  same('our fractional KO leaves their expected HP where the HP half puts it',
+    traceOn.oppHp, 0.375);
+  same('...and their reply is charged only on the share of rolls where they survive',
+    traceOn.myHp, 100 - 40 * (1 - 0.625));
+  same('the OFF arm charges it in full, as it always did', traceOff.myHp, 60);
+  same('...and prices our hit on the mean', traceOff.oppHp, 0);
+
+  /* A CERTAIN KO IS NOT CLAIMED: at p = 100 the ordering half leaves the scalar reading alone. */
+  const certain = stab(KO_ON, { 'Ice Spinner': { avg: 101, ko: 100 }, 'Earthquake': { avg: 40, ko: 0 } },
+    function () { const t = {}; KO_ON._payoff(ICE, QUAKE, st, st.field, null, t); return t; });
+  same('p = 100 keeps the historical reply (the branch this tier does not claim)',
+    certain.myHp, 60);
+  same('...and still takes the body to zero', certain.oppHp, 0);
+
+  /* A HIT THAT NEVER KOs IS THE SCALAR CELL, exactly. */
+  const never = stab(KO_ON, { 'Ice Spinner': { avg: 40, ko: 0 }, 'Earthquake': { avg: 40, ko: 0 } },
+    function () { const t = {}; KO_ON._payoff(ICE, QUAKE, st, st.field, null, t); return t; });
+  same('p = 0 is untouched on their side', never.oppHp, 60);
+  same('...and on ours', never.myHp, 60);
+
+  /* WE MOVE SECOND: their fractional hit scales OUR damage. Trick Room inverts the same fixture
+   * rather than inventing a second board. */
+  const slow = board();
+  slow.field.trickRoom = true;
+  const flipped = { 'Ice Spinner': { avg: 101, ko: 0 }, 'Earthquake': { avg: 30, ko: 50 } };
+  const traceSlow = stab(KO_ON, flipped, function () {
+    const t = {};
+    KO_ON._payoff(ICE, QUAKE, slow, slow.field, null, t);
+    return t;
+  });
+  same('a hit we only get to make on half the rolls is half the expectation',
+    traceSlow.oppHp, 100 - 101 * 0.5);
+  same('...and their hit lands in full, because they moved first', traceSlow.myHp, 70);
+
+  /* AN UNDECIDABLE ORDER invents nothing: a Speed tie keeps the symmetric cell. */
+  const tie = board();
+  const realOrder = KO_ON._turnOrder;
+  KO_ON._turnOrder = function () { return null; };
+  let tieTrace;
+  try { tieTrace = stab(KO_ON, table, function () { const t = {}; KO_ON._payoff(ICE, QUAKE, tie, tie.field, null, t); return t; }); }
+  finally { KO_ON._turnOrder = realOrder; }
+  same('a Speed tie keeps the symmetric reply', tieTrace.myHp, 60);
+  same('...everywhere except the HP half it already priced', tieTrace.oppHp, 0.375);
+}
 
 /* ------------------------------------------------------------------ report */
 

@@ -131,6 +131,11 @@ const INVENTORY = [
   'laplace.quiescence.enabled', 'laplace.quiescence.extendSetup', 'laplace.quiescence.blockProtect',
   'laplace.quiescence.respectTurn2Speed', 'laplace.quiescence.followUpWeight',
   'laplace.realOppSwitch.enabled', 'laplace.pricePivots.enabled', 'laplace.pricePivots.regenPct',
+  // conditional moves (shipped ON: three game rules, one switch each so they ablate separately)
+  'laplace.conditionalMoves.enabled', 'laplace.conditionalMoves.suckerPunchRequiresAttack',
+  'laplace.conditionalMoves.firstTurnOnly', 'laplace.conditionalMoves.flinch',
+  // choice physics, both directions (their locked reply space, our lock-risk charge)
+  'laplace.choiceLock.enabled', 'laplace.choiceLock.oppLock', 'laplace.choiceLock.riskPenalty',
   'laplace.priceRecovery.enabled', 'laplace.priceRecovery.defaultHealPct',
   'laplace.priceMyMoveEffects.enabled',
   // the other two leaf-transition tiers (each `enabled: false` until a win-rate gate adopts it)
@@ -149,6 +154,7 @@ const INVENTORY = [
   'laplace.profile.enabled', 'laplace.profile.minSamples', 'laplace.profile.flightThreshold',
   'laplace.profile.aggressionThreshold', 'laplace.profile.maxFactor', 'laplace.profile.maxHistory',
   'laplace.wincon.enabled', 'laplace.wincon.maxBounty', 'laplace.wincon.maxTargets',
+  'laplace.wincon.chipBounty',
   'laplace.endgame.enabled', 'laplace.endgame.maxBodies', 'laplace.endgame.maxDepth',
   'laplace.endgame.nodeBudget',
   // the three-wide bound, the branch cap and the Speed chance node (see endgame_solver.js)
@@ -230,6 +236,9 @@ const INVENTORY = [
   'pruner.damageEvidence.maxObservations', 'pruner.damageEvidence.maxSetsTested',
   'pruner.abilityDeduction.enabled', 'pruner.abilityDeduction.statusRules',
   'pruner.abilityDeduction.groundRules', 'pruner.abilityDeduction.absenceRules',
+  // team-preview synergy: their six names re-weight each body's candidate pool
+  'pruner.synergy.enabled', 'pruner.synergy.weatherFactor', 'pruner.synergy.trFactor',
+  'pruner.synergy.srDuplicateFactor',
   // state
   'state.maxActiveStints', 'state.maxLog'
 ];

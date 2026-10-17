@@ -32,6 +32,7 @@ const SUITES = [
   'tests/upgrades_check.js',
   'tests/pressure_check.js',
   'tests/quiescence_check.js',
+  'tests/conditional_check.js',
   'tests/cross_check.js',
   'tests/scout_check.js',
   'tests/entropy_check.js',

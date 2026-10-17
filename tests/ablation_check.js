@@ -459,8 +459,11 @@ function checkFeatureTable() {
    *     which is a weight rather than a switch by construction — the row exists to price a
    *     magnitude, so it cannot be expressed as on/off;
    *   - `nash-exploitblend`, which turns a running-but-off leaf UP to 0.5, for the same reason: the
-   *     question is how much of the advantage to take, and 0 is the shipped answer. */
+   *     question is how much of the advantage to take, and 0 is the shipped answer;
+   *   - `choicephysics-risk`, whose variant sets the lock penalty to 0 rather than switching the
+   *     rule off, so the row measures the CHARGE and not the rule (the parent row owns that). */
   eq('the only non-boolean leaves are the documented numbers', nonBoolean.sort(), [
+    'choicephysics-risk:laplace.choiceLock.riskPenalty',
     'endgame:laplace.endgame.maxAlive',
     'nash-exploitblend:laplace.nash.exploitBlend',
     'quiescence-followup-damped:laplace.quiescence.followUpWeight',

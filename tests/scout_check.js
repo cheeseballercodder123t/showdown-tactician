@@ -453,6 +453,83 @@ delete overlay.species[U.toID(SPECIES)];
 ST.configMerge({ pruner: { scout: { enabled: true, maxBend: MAX_BEND } } });
 eq('the overlay entry is removed again', overlay.species[U.toID(SPECIES)], undefined);
 
+/* ============================ 7b. team-preview synergy (a second prior on the same pool) */
+
+section('7b. team-preview synergy: their six names re-weight each body, boundedly');
+
+const synergyPruner = new ST.ArchetypePruner();
+const W_WEATHER = ST.configGet('pruner.synergy.weatherFactor', 1.35);
+const W_TR = ST.configGet('pruner.synergy.trFactor', 1.25);
+const W_SR = ST.configGet('pruner.synergy.srDuplicateFactor', 0.25);
+const cand = function (id, extra) {
+  return Object.assign({
+    id: id, species: 'Barraskewda', ability: 'Oblivious', weight: 1,
+    moves: ['Aqua Jet'], ivs: { spe: 31 }
+  }, extra || {});
+};
+const mate = function (species, extra) {
+  return Object.assign({ species: species, side: 'p2', id: 'p2-' + U.toID(species) }, extra || {});
+};
+
+{
+  const team = [mate('Pelipper'), mate('Barraskewda')];
+  const mon = mate('Barraskewda');
+  const pool = [cand('swift', { ability: 'Swift Swim', moves: ['Aqua Jet', 'Hurricane'] }), cand('plain')];
+  const moved = synergyPruner._applyTeamSynergyPrior(mon, pool, { oppSide: 'p2', oppTeam: team });
+  eq('a Pelipper re-weights the Swift Swim set and nothing else',
+    [moved, pool[0].weight, pool[1].weight], [1, W_WEATHER, 1]);
+  const settled = pool[0].weight;
+  synergyPruner._applyTeamSynergyPrior(mon, pool, { oppSide: 'p2', oppTeam: team });
+  eq('...and a repeated call recomputes instead of compounding', pool[0].weight, settled);
+  eq('...and an exact identity check on the factor', W_WEATHER, 1.35);
+}
+
+{
+  const team = [mate('Ferrothorn', { revealedMoves: ['Stealth Rock'] }), mate('Toxapex')];
+  const pool = [cand('sr', { species: 'Toxapex', moves: ['Stealth Rock', 'Scald'] }),
+    cand('nosr', { species: 'Toxapex', moves: ['Scald'] })];
+  synergyPruner._applyTeamSynergyPrior(mate('Toxapex'), pool, { oppSide: 'p2', oppTeam: team });
+  eq('a second Stealth Rock carrier is pushed off the move', [pool[0].weight, pool[1].weight], [W_SR, 1]);
+  eq('...and the 0.25x is the documented factor', W_SR, 0.25);
+
+  const own = [cand('sr2', { species: 'Ferrothorn', moves: ['Stealth Rock'] })];
+  eq('the body that REVEALED it is not penalised by its own move',
+    synergyPruner._applyTeamSynergyPrior(team[0], own, { oppSide: 'p2', oppTeam: team }), 0);
+  eq('...its weight is untouched', own[0].weight, 1);
+}
+
+{
+  const team = [mate('Hatterene'), mate('Ursaluna')];
+  const pool = [cand('tr', { species: 'Ursaluna', ivs: { spe: 0 } }), cand('fast', { species: 'Ursaluna' })];
+  synergyPruner._applyTeamSynergyPrior(mate('Ursaluna'), pool, { oppSide: 'p2', oppTeam: team });
+  eq('a Trick Room setter boosts the 0-Spe set', [pool[0].weight, pool[1].weight], [W_TR, 1]);
+}
+
+{
+  const pool = [cand('swift', { ability: 'Swift Swim' })];
+  eq('our own bodies are never re-weighted by THEIR preview',
+    synergyPruner._applyTeamSynergyPrior({ species: 'Barraskewda', side: 'p1' }, pool,
+      { oppSide: 'p2', oppTeam: [mate('Pelipper')] }), 0);
+  eq('...nor is anything when there is no state',
+    synergyPruner._applyTeamSynergyPrior(mate('Barraskewda'), pool, null), 0);
+}
+
+{
+  /* The wiring: prune() applies the prior to the pool it publishes. */
+  const m = {
+    species: 'Barraskewda', side: 'p2', id: 'p2-barraskewda', level: 100,
+    revealedMoves: [], activeStintMoves: [], itemRuledOut: [], boosts: { spe: 0 },
+    candidateSets: [cand('swift', { ability: 'Swift Swim', moves: ['Aqua Jet', 'Hurricane'] }), cand('plain')]
+  };
+  const out = synergyPruner.prune(m, { oppSide: 'p2', oppTeam: [mate('Pelipper'), mate('Barraskewda')],
+    formatLocks: {}, field: {} });
+  const swift = out.filter(function (s) { return s.id === 'swift'; })[0];
+  eq('prune() itself publishes the re-weighted pool', swift && swift.weight, W_WEATHER);
+  check('...without dropping a set the preview cannot disprove', out.length === 2, String(out.length));
+  check('...and the re-weighting is on the survivor the engine publishes', m.liveSet === swift,
+    m.liveSet && m.liveSet.id);
+}
+
 /* ================================================================== summary */
 
 console.log('\n=== summary ===');

@@ -33,6 +33,20 @@
   const DMG_MAX_OBS = cfg('pruner.damageEvidence.maxObservations', 8);
   const DMG_MAX_SETS = cfg('pruner.damageEvidence.maxSetsTested', 64);
 
+  // Team-preview synergy: the |poke| names are evidence about each body's set. Load-time switches
+  // like every other pruner tunable; `_applyTeamSynergyPrior` is the only reader.
+  const SYNERGY_ON = cfg('pruner.synergy.enabled', true);
+  /* The two weather families, as ABILITIES THAT PAY OFF IN IT rather than setters only: a Drizzle
+   * Pelipper's own set is a rain set, and so is a Swift Swim body's, but a Drought Torkoal is a
+   * sun set for the same reason. Weather Ball and the accuracy/charge payoffs name the rest. */
+  const RAIN_ABILITIES = new Set(['drizzle', 'swiftswim', 'raindish', 'dryskin', 'hydration']);
+  const SUN_ABILITIES = new Set(['drought', 'chlorophyll', 'solarpower']);
+  const RAIN_MOVES = new Set(['hurricane', 'thunder', 'weatherball']);
+  const SUN_MOVES = new Set(['solarbeam', 'solarblade', 'weatherball']);
+  const SYNERGY_WEATHER = cfg('pruner.synergy.weatherFactor', 1.35);
+  const SYNERGY_TR = cfg('pruner.synergy.trFactor', 1.25);
+  const SYNERGY_SR_DUP = cfg('pruner.synergy.srDuplicateFactor', 0.25);
+
   // Ability deduction (rule tables in src/util.js). The master switch plus one switch per rule
   // family, read at LOAD time like the pruner's other tunables (config_check pins every one).
   const ABILITY_DEDUCTION_ON = cfg('pruner.abilityDeduction.enabled', true);
@@ -1283,6 +1297,12 @@
         published = pool.length ? pool : pristine.slice();
       }
 
+      /* TEAM-PREVIEW SYNERGY, applied to the SURVIVORS (never to the pristine pool): a factor may
+       * re-rank what the log still allows, it may not resurrect what a deduction removed. Applied
+       * after every elimination and before the pool is published/sorted, and idempotent because
+       * each set's factor is recomputed from its stored base weight. */
+      this._applyTeamSynergyPrior(mon, published, state);
+
       mon.candidateSets = published;
       mon.liveSet = this.bestSet(mon);
       this._publishEvPin(mon, published);
@@ -1319,6 +1339,129 @@
       this._addReason(mon, 'Exact spread pinned from ' + obs + ' observed hits: ' + evText(mon.pinnedEvs) +
         ' (all ' + published.length + ' surviving set' + (published.length === 1 ? '' : 's') + ' share it)');
       return mon.pinnedEvs;
+    }
+
+    /* -------------------------------------------------- team-preview synergy */
+
+    /**
+     * `_applyTeamSynergyPrior(mon, pool, state)` -> how many sets it moved.
+     *
+     * The opponent's six names are known before any set is. That is weak, but it is REAL evidence
+     * about each body, and the engine ignored it entirely:
+     *   - a Pelipper / Politoed on their team makes a Swift Swim / Hurricane / Thunder set far more
+     *     likely than the curated average, and a Torkoal / Charizard makes the sun version so;
+     *   - a Trick Room setter (`U.TR_SETTERS`) makes a 0-Spe set likely;
+     *   - a SECOND Stealth Rock carrier is unlikely once one body has already revealed the move.
+     *
+     * Every factor multiplies the set's BASE weight (stored once as `synergyBase`), so repeated
+     * calls recompute rather than compound, and no factor can add a set or beat a deduction. Off,
+     * or on a body that is not on the opponent's side, this is a no-op.
+     */
+    _applyTeamSynergyPrior(mon, pool, state) {
+      if (!SYNERGY_ON || !mon || !pool || !pool.length) return 0;
+      if (!state || !state.oppSide || mon.side !== state.oppSide) return 0;
+      const team = Array.isArray(state.oppTeam) ? state.oppTeam : [];
+      const weather = this._teamWeather(team);
+      const trTeam = this._teamHasTR(team);
+      const srElsewhere = this._stealthRockElsewhere(mon, team);
+      if (!weather && !trTeam && !srElsewhere) {
+        for (let i = 0; i < pool.length; i++) {
+          const set = pool[i];
+          if (set && typeof set.synergyBase === 'number') set.weight = set.synergyBase;
+        }
+        return 0;
+      }
+      let moved = 0;
+      for (let i = 0; i < pool.length; i++) {
+        const set = pool[i];
+        if (!set) continue;
+        if (typeof set.synergyBase !== 'number') {
+          set.synergyBase = (typeof set.weight === 'number') ? set.weight : 0;
+        }
+        let factor = 1;
+        if (weather && this._isWeatherSet(set, weather)) factor *= SYNERGY_WEATHER;
+        if (trTeam && this._isTRSet(set)) factor *= SYNERGY_TR;
+        if (srElsewhere && this._setHasMove(set, 'stealthrock')) factor *= SYNERGY_SR_DUP;
+        const next = set.synergyBase * factor;
+        if (next !== set.weight) moved++;
+        set.weight = next;
+      }
+      if (moved) {
+        this._addReason(mon, 'Team preview: re-weighted ' + moved + ' of ' + pool.length +
+          ' candidate sets' + (weather ? ' (' + weather + ')' : '') +
+          (trTeam ? ' (Trick Room)' : '') + (srElsewhere ? ' (duplicate Stealth Rock)' : ''));
+      }
+      return moved;
+    }
+
+    /** 'rain' | 'sun' | '' from the six names the |poke| frame printed. */
+    _teamWeather(team) {
+      const has = function (id) {
+        for (let i = 0; i < team.length; i++) {
+          const m = team[i];
+          if (m && U.toID(m.species || m.id) === id) return true;
+        }
+        return false;
+      };
+      if (has('pelipper') || has('politoed')) return 'rain';
+      if (has('torkoal') || has('ninetales') || has('charizard')) return 'sun';
+      return '';
+    }
+
+    /** Is a Trick Room setter on their six? (`U.TR_SETTERS` is the shared table.) */
+    _teamHasTR(team) {
+      for (let i = 0; i < team.length; i++) {
+        const m = team[i];
+        if (m && U.TR_SETTERS.has(U.toID(m.species || m.id))) return true;
+      }
+      return false;
+    }
+
+    /** Has a DIFFERENT body already revealed Stealth Rock? */
+    _stealthRockElsewhere(mon, team) {
+      const myId = mon && (mon.id || U.toID(mon.species));
+      for (let i = 0; i < team.length; i++) {
+        const m = team[i];
+        if (!m || m === mon) continue;
+        if (myId && (m.id || U.toID(m.species)) === myId) continue;
+        const revealed = m.revealedMoves || [];
+        for (let r = 0; r < revealed.length; r++) {
+          if (U.toID(revealed[r]) === 'stealthrock') return true;
+        }
+      }
+      return false;
+    }
+
+    /** Does this candidate set benefit from the team's weather? */
+    _isWeatherSet(set, kind) {
+      if (!set) return false;
+      const ability = U.toID(set.ability);
+      const moves = set.moves || [];
+      const has = function (ids) {
+        for (let i = 0; i < moves.length; i++) if (ids.has(U.toID(moves[i]))) return true;
+        return false;
+      };
+      if (kind === 'rain') {
+        return RAIN_ABILITIES.has(ability) || has(RAIN_MOVES);
+      }
+      return SUN_ABILITIES.has(ability) || has(SUN_MOVES);
+    }
+
+    /** Is this candidate set a Trick Room set (`isTR`, a 0-Spe IV, or the move itself)? */
+    _isTRSet(set) {
+      if (!set) return false;
+      if (set.isTR) return true;
+      const ivs = set.ivs || {};
+      if (ivs.spe === 0) return true;
+      return this._setHasMove(set, 'trickroom');
+    }
+
+    _setHasMove(set, moveId) {
+      const moves = (set && set.moves) || [];
+      for (let i = 0; i < moves.length; i++) {
+        if (U.toID(moves[i]) === moveId) return true;
+      }
+      return false;
     }
 
     /** Highest-weight surviving set (ties broken by id for determinism). */

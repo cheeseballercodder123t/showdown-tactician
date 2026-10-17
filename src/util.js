@@ -284,6 +284,44 @@
 
   function piercesProtect(name) { return PROTECT_PIERCING_MOVES.has(toID(name)); }
 
+  /* ---- Conditional moves: the damage only exists if the opponent's CLICK is the right shape.
+   *
+   * Sucker Punch is the one "you must attack" move in the format: it connects only when the target
+   * selected a Physical/Special move, and FAILS outright against a switch, a status move, a setup
+   * move or a Protect. Fake Out and First Impression fail unless the user has not yet acted since
+   * it entered the field (`activeMoveActions === 0` in the game's own terms) — a body that switched
+   * in on turn N can use them on turn N+1 and never again. Both families were priced as
+   * unconditional damage before this table existed: the matrix credited Sucker Punch into a
+   * predicted switch (the exact line that deals nothing) and kept crediting Fake Out on every turn
+   * after the first (the exact line the game answers with |-fail|).
+   *
+   * Deliberately NOT here: Upper Hand (it fails unless the target's click is a PRIORITY move, a
+   * narrower condition than "an attack", so treating it as `suckerpunch` would over-price it), and
+   * every accuracy roll — a 70% move is a probability, not a rule, and `laplace.volatility` is
+   * where a probability belongs. */
+  const REQUIRES_TARGET_ATTACK = new Set(['suckerpunch']);
+  const FIRST_TURN_ONLY = new Set(['fakeout', 'firstimpression']);
+
+  /* Moves whose flinch is a RULE, not a roll: Fake Out's secondary is 100%. (Iron Head's 30% and
+   * friends are not here for the same reason the accuracy rolls above are not.) */
+  const GUARANTEED_FLINCH = new Set(['fakeout']);
+
+  function requiresTargetAttack(name) { return REQUIRES_TARGET_ATTACK.has(toID(name)); }
+  function firstTurnOnly(name) { return FIRST_TURN_ONLY.has(toID(name)); }
+  function guaranteedFlinch(name) { return GUARANTEED_FLINCH.has(toID(name)); }
+
+  /**
+   * Is a flinch impossible on this body? Inner Focus and Shield Dust stop it, and so does a Covert
+   * Cloak. Read from what the board REVEALS: an unrevealed ability is not evidence, so an unknown
+   * body is assumed flinchable rather than exempted on a guess.
+   */
+  function flinchBlocked(mon) {
+    if (!mon) return false;
+    const ability = toID(mon.ability || '');
+    if (ability === 'innerfocus' || ability === 'shielddust') return true;
+    return toID(mon.item || '') === 'covertcloak';
+  }
+
   /** Is `status` impossible for a body of this species, on the type chart's own evidence? */
   function statusBlockedByType(status, speciesName) {
     const list = STATUS_TYPE_IMMUNITY[status];
@@ -1105,6 +1143,13 @@
     statusInflictedBy: statusInflictedBy,
     isPowderMove: isPowderMove,
     piercesProtect: piercesProtect,
+    REQUIRES_TARGET_ATTACK: REQUIRES_TARGET_ATTACK,
+    FIRST_TURN_ONLY: FIRST_TURN_ONLY,
+    GUARANTEED_FLINCH: GUARANTEED_FLINCH,
+    requiresTargetAttack: requiresTargetAttack,
+    firstTurnOnly: firstTurnOnly,
+    guaranteedFlinch: guaranteedFlinch,
+    flinchBlocked: flinchBlocked,
     statusBlockedByType: statusBlockedByType,
     GROUND_IMMUNE_ABILITIES: GROUND_IMMUNE_ABILITIES,
     ABILITY_IGNORING_ABILITIES: ABILITY_IGNORING_ABILITIES,

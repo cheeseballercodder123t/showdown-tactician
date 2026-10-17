@@ -194,10 +194,13 @@ const FLAG_INPUTS = [
   { match: 'laplace.priceMyMoveStatus', needs: [], note: 'writes our own status move\'s condition onto their leaf body; supplied by the position, not the harness' },
   { match: 'laplace.priceMyMoveProtect', needs: [], note: 'prices our own shield against their reply; supplied by the position, not the harness' },
   { match: 'laplace.rollKoBranch', needs: [], note: 'reads the roll set the damage engine already computed for the hit it is pricing; supplied by the position, not the harness' },
+  { match: 'laplace.conditionalMoves', needs: [], note: 'reads the SHAPE of the two clicks on the board it was handed — whether their reply is an ATTACK and whether our body has moved since it entered — both of which the parser maintains; supplied by the position, not the harness. The arena can carry the Sucker Punch half (Kingambit is on two sample teams) but NOT the Fake Out half: no sample team carries Fake Out or First Impression, which those two rows declare in their own caveat instead of it being inferred here' },
+  { match: 'laplace.choiceLock', needs: [], note: 'both halves read the board it was handed: the opponent\'s ITEM and the move their stint already revealed (the lock), and our own item plus the sampled world\'s bench (the risk). No harness channel — in a world where they are locked, the constraint is IN the world the engine built' },
   { match: 'laplace.urgency', needs: [], note: 'reads the turn number and the rows, both always supplied' },
   { match: 'evaluator.threatSpeedGate', needs: [], note: 'replaces a binary speed comparison with a ramp over the same two Speeds, which the engine computes from the board it was handed — there is no channel here for a harness to supply' },
   { match: 'pruner.damageEvidence', needs: [], note: 'reads damage observed in the log, which every battle supplies' },
   { match: 'pruner.residualOrder', needs: [], note: 'reads the residual order the parser asserts from the log' },
+  { match: 'pruner.synergy', needs: [], note: 'reads the six |poke| names and the hazards the log has revealed; every battle supplies both, and their absence is answered with a factor of 1 rather than a guess' },
   { match: 'pruner.abilityDeduction', needs: [], note: 'reads revealed status/ability/grounded damage evidence from the log' },
   /* The two EMPTY-OVERLAY controls. `pruner.scout` and `usage` re-weight sets from a GENERATED DATA
    * overlay that ships empty, so in a harness without one the tier is inert BY CONSTRUCTION and a
