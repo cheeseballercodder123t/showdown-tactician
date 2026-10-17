@@ -116,7 +116,20 @@ test('saving from the options page reaches a battle page already open', async fu
       return n ? n.textContent : null;
     });
   };
-  const before = await statusOf();
+  /* THE STARTUP IS ASYNCHRONOUS, and this assertion used to be a race. `start()` writes the
+   * placeholder "Loading team from storage..." and only replaces it when `chrome.storage.local.get`
+   * calls back, so reading the row straight after the setup lines passes on a warm local run and
+   * failed on CI with the placeholder still in place. Wait for the SETTLED state (the one this
+   * test is about) instead of assuming the callback has landed: the assertion is unchanged, the
+   * dependence on machine speed is gone. */
+  const waitForStatus = async function (pattern, timeout) {
+    await battle.waitForFunction(function (src) {
+      const n = document.querySelector('[data-st-team-status]');
+      return !!n && new RegExp(src).test(n.textContent || '');
+    }, pattern.source, { timeout: timeout || 15000 });
+    return statusOf();
+  };
+  const before = await waitForStatus(/No team loaded/);
   expect(before, 'the battle starts with no team').toMatch(/No team loaded/);
 
   /* Now a SECOND tab: the options page, as a user would open it from the toolbar. */
@@ -128,13 +141,11 @@ test('saving from the options page reaches a battle page already open', async fu
   }, null, { timeout: 10000 });
 
   /* content.js subscribes to chrome.storage.onChanged, so the open battle must react without
-   * a reload. This is the one assertion that proves the two surfaces are actually wired. */
-  await battle.waitForFunction(function () {
-    const n = document.querySelector('[data-st-team-status]');
-    return !!n && n.textContent && n.textContent.indexOf('No team loaded') === -1;
-  }, null, { timeout: 15000 });
-
-  const after = await statusOf();
+   * a reload. This is the one assertion that proves the two surfaces are actually wired. The wait
+   * is for the SAVED-TEAM text, not for the ABSENCE of the empty-team text: a negative predicate is
+   * satisfied by the startup placeholder as well, so the old form could resolve before anything had
+   * been adopted and then fail on the very next line. */
+  const after = await waitForStatus(/6\/6 confirmed/);
   expect(after, 'the battle page adopted the saved team').toMatch(/6\/6 confirmed/);
   expect(battleErrors).toEqual([]);
   expect(optionsErrors).toEqual([]);
