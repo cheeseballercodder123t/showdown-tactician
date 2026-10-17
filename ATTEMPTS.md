@@ -1871,9 +1871,10 @@ Three readings, in order of how much they change anything:
    arena), but it is the one row here with a concrete, already-built candidate behind it.
 3. **The early slice is 57, not 0.5.** It is not a leak: at 6v6 full HP the evaluator still reads team
    composition and matchup threat, which genuinely predicts the winner better than chance and has
-   nothing to do with the position. The noise-check reading the brief expected was too strong; what
-   the slice does establish is that the opening carries 6 points of signal, the crucible 20, and the
-   cleanup 36.
+nothing to do with the position. The noise-check reading the brief expected was too strong; what
+the slice does establish is that, above chance, the opening carries **7.3 points** of signal, the
+crucible **19.8**, and the cleanup **36.4** — and that the middle one is the only one of the three
+that a positional change can move, which is why the slice exists.
 
 The 0.7260 reproduces exactly on this split, so §P9's number and this one are the same measurement on
 the same corpus (the row counts differ between passes because the extraction that produced
