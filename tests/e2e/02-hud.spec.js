@@ -443,6 +443,9 @@ test('the mobile match readout is compact, accessible, flat, and expands below t
   expect(expanded.colors.hidden).toBe('false');
   expect(expanded.colors.height).toBeGreaterThanOrEqual(48);
   expect(expanded.colors.touchHeight).toBeGreaterThanOrEqual(44);
+  if (process.env.HUD_PREVIEW_DIR) {
+    await page.screenshot({ path: require('path').join(process.env.HUD_PREVIEW_DIR, 'mobile-field-atlas.png'), scale: 'css' });
+  }
   expect(opened.errors, opened.errors.join('\n')).toHaveLength(0);
   await page.close();
 });
@@ -471,6 +474,16 @@ test('opponent roster shows sprite art, active state, and HP rails on desktop', 
   expect(cards.some(function (card) { return card.name === 'Landorus-Therian'; })).toBe(true);
   expect(cards.every(function (card) { return card.meter === '100%'; })).toBe(true);
   expect(opened.errors, opened.errors.join('\\n')).toHaveLength(0);
+  if (process.env.HUD_PREVIEW_DIR) {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.waitForTimeout(250);
+    await page.evaluate(function () {
+      const consolePanel = document.querySelector('.st-console');
+      if (consolePanel) consolePanel.setAttribute('data-st-console-open', '1');
+    });
+    await page.waitForTimeout(250);
+    await page.screenshot({ path: require('path').join(process.env.HUD_PREVIEW_DIR, 'desktop-field-atlas.png'), scale: 'css' });
+  }
   await page.close();
 });
 
