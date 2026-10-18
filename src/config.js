@@ -925,7 +925,7 @@
     trickRoom: {
       turns: 5,
       speedRankBase: 10000,           // rank = base - speed under TR, so the slowest wins
-      alertFinal: '⚠️ TR EXPIRING NEXT TURN: Attack or sack setter; DO NOT hard-switch healthy breakers!',
+      alertFinal: 'TR 1/5 / LAST TURN: attack or sack your setter',
       alertTwoLeft: 'TR: 2 turns left — land your chip now; the last turn is for the sack.',
       maxHistory: 40
     },

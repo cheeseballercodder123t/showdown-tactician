@@ -217,6 +217,81 @@ sock._om({ data: afterUnlogged.join('\n') });
 flush();
 eq('and it does not block the next frame from being claimed', dbg.polled - mlPolled, 0);
 
+/* ------------------------------------------------------------------ the live client
+ *
+ * The client served at play.pokemonshowdown.com is NOT the one the WebSocket patch was written
+ * for: it keeps the raw lines in `battle.stepQueue` and exposes `battle.log(args, kwArgs,
+ * preempt)` as a METHOD, and its connection is not a page WebSocket at all. Measured live with
+ * this extension side-loaded, a joined battle room left the counters at `received: 4, polled: 0`
+ * — nothing reached the parser — so the HUD never saw a request, a Trick Room field or a Mega.
+ * The two checks below pin the two halves of the fix.
+ */
+
+/* (1) `battle.log` is a method on the live client. The old guard asked `typeof log.length`,
+ * which for a function is its ARITY — 3 — so it accepted the method and then read `undefined`
+ * forever. A function must never be treated as a log, and the raw queue must be used instead. */
+const liveBattle = {
+  stepQueue: [],
+  // Exactly the live signature, so `battle.log.length` really is 3 (the arity that fooled the
+  // old guard) — the test must reproduce the shape, not a convenient stand-in.
+  log: function log(args, kwArgs, preempt) { return [args, kwArgs, preempt]; },
+  p1: { pokemon: [] },
+  p2: { pokemon: [] }
+};
+eq('the live client\'s log really is a 3-arity method', liveBattle.log.length, 3);
+sandbox.app.curRoom = { battle: liveBattle };
+let livePolled = dbg.polled;
+flush();
+eq('a function battle.log is never read as a log', dbg.polled - livePolled, 0);
+
+livePolled = dbg.polled;
+liveBattle.stepQueue.push('|turn|1', '|switch|p1a: Great Tusk|Great Tusk, L50, M|100/100');
+flush();
+eq('the raw stepQueue delivers the new client\'s lines', dbg.polled - livePolled, 2);
+
+/* (2) app.receive is the transport-agnostic entry point. Battle frames are forwarded verbatim,
+ * non-battle rooms are left alone, and the page's own handler still runs (the extension must be
+ * transparent to Showdown). */
+let receivedInPage = null;
+const appObj = {
+  curRoom: { id: 'battle-gen9nationaldexou-1', battle: liveBattle },
+  receive: function (data) { receivedInPage = data; return 'handled'; }
+};
+sandbox.app = appObj;
+flush();                                          // installs the hook on the poll tick
+check('the receive hook is installed',
+  typeof appObj.receive === 'function' && appObj.receive.__stWrapped === true,
+  'receive was not wrapped');
+
+let hookDispatched = dbg.dispatched;
+const battleFrame = '>battle-gen9nationaldexou-1\n|turn|2\n|-fieldstart|move: Trick Room|[of] p2a: Slowking';
+const returned = appObj.receive(battleFrame);
+eq('a battle frame is forwarded line by line', dbg.dispatched - hookDispatched, 2);
+eq('the room header is not a protocol line', dbg.frames, 1);
+eq('the page still receives its own frame verbatim', receivedInPage, battleFrame);
+eq('the wrapped receive returns what the page returned', returned, 'handled');
+
+hookDispatched = dbg.dispatched;
+appObj.receive('>lobby\n|message|hello lobby');
+eq('non-battle room traffic is not forwarded', dbg.dispatched - hookDispatched, 0);
+
+/* ONE FRAME, ONE FORWARDER. Once app.receive has delivered a line it owns the inbound path: the
+ * WebSocket capture must stand down and the buffer poll must stop, or the same `|turn|` would be
+ * applied twice (which double-ticks the Trick Room / weather / Protect clocks). */
+hookDispatched = dbg.dispatched;
+sock._om({ data: '|-boost|p1a: Great Tusk|atk|1' });
+eq('the socket capture stands down once receive is hooked', dbg.dispatched - hookDispatched, 0);
+
+liveBattle.stepQueue.push('|turn|3');
+livePolled = dbg.polled;
+flush();
+eq('and the buffer poll stops behind app.receive', dbg.polled - livePolled, 0);
+
+/* A payload with no `>` header belongs to the current room, which is a battle here. */
+hookDispatched = dbg.dispatched;
+appObj.receive('|-damage|p1a: Great Tusk|55/100');
+eq('a roomless payload for a battle room is forwarded', dbg.dispatched - hookDispatched, 1);
+
 console.log('checks passed: ' + passed + '  failed: ' + failures.length);
 failures.forEach(function (f) { console.log('  x ' + f); });
 process.exit(failures.length ? 1 : 0);

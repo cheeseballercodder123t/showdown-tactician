@@ -56,16 +56,11 @@
   // The team-preview lead advisory card (Turn 0). As with the other attributes this is the
   // interface with overlay.css and the regression suite, so it is deliberately NOT configurable.
   const LEAD_ATTR = 'data-st-lead';
-  const SENTINEL_ICONS = { burned: '\u274C', live: '\uD83D\uDFE2' };
-  // The glyph on each "TACTICAL FREEDOM" bullet, keyed by the engine's `kind`. The engine names
-  // the tactic and the renderer chooses how it looks, so the two never disagree about a character
-  // the engine had to guess at. An unknown kind falls back to a plain bullet.
-  const SENTINEL_TACTIC_ICONS = {
-    mega: '\u2705', z: '\u2705', freedom: '\uD83D\uDFE2', live: '\u26A0'
+  // State and severity use direct labels rather than emoji or pictogram guessing.
+  const SENTINEL_STATES = { burned: 'SPENT', live: 'AVAILABLE' };
+  const SENTINEL_TACTIC_STATES = {
+    mega: 'READY', z: 'READY', freedom: 'OPEN', live: 'CAUTION'
   };
-  const TACTIC_BULLET = '\u2022';
-  const PP_ICON = '\u23F1';
-  const THREAT_ICON = '\u26A0';
   // hud.lethal bands -> the class each one paints (see the lethal block in overlay.css).
   const LETHAL_BANDS = ['guaranteed', 'high', 'mid', 'none'];
 
@@ -92,6 +87,39 @@
     return (v === null || v === undefined) ? '' : String(v);
   }
 
+  /** Resolve a Showdown species display name to its hosted battle-sprite filename. */
+  function spriteSlugs(species) {
+    const rawName = safeString(species).trim();
+    const name = rawName.normalize ? rawName.normalize('NFD').replace(/[\u0300-\u036f]/g, '') : rawName;
+    const id = U.toID(name);
+    const aliases = {
+      ironvaliant: 'ironvaliant', greattusk: 'greattusk', porygon2: 'porygon2',
+      charizardmegax: 'charizard-mega-x', charizardmegay: 'charizard-mega-y',
+      mewtwomegax: 'mewtwo-mega-x', mewtwomegay: 'mewtwo-mega-y',
+      kyuremblack: 'kyurem-black', kyuremwhite: 'kyurem-white',
+      necrozmaduskmane: 'necrozma-dusk-mane', necrozmadawnwings: 'necrozma-dawn-wings',
+      necrozmaultra: 'necrozma-ultra', wishiwashischool: 'wishiwashi-school',
+      greninjaash: 'greninja-ash', zygardecomplete: 'zygarde-complete',
+      flabebe: 'flabebe'
+    };
+    const slug = aliases[id] || name.toLowerCase()
+      .replace(/[.'’]/g, '')
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+    const knownForms = [
+      'alola', 'galar', 'hisui', 'paldea', 'mega', 'mega-x', 'mega-y', 'primal',
+      'therian', 'incarnate', 'origin', 'resolute', 'unbound', 'complete', 'white',
+      'black', 'dusk-mane', 'dawn-wings', 'ultra', 'ash', 'school', 'blade', 'shield',
+      'crowned', 'eternamax', 'rapid-strike', 'single-strike', 'bloodmoon'
+    ];
+    let base = slug;
+    for (let i = 0; i < knownForms.length; i++) {
+      const suffix = '-' + knownForms[i];
+      if (slug.endsWith(suffix)) { base = slug.slice(0, -suffix.length); break; }
+    }
+    return { form: slug, base: base || slug };
+  }
+
   function pct(conf) {
     const n = typeof conf === 'number' && conf === conf ? conf : 0;
     return U.clamp(Math.round(n), 0, 100) + '%';
@@ -109,11 +137,20 @@
         teamStatus: null, candidates: null,
         benchStrip: null, badgeRow: null, receipt: null, overlord: null,
         ppGauge: null, sentinel: null, leadAdvisory: null, cancelAlert: null,
-        console: null, sheet: null, sheetHeader: null, modeToggle: null
+        console: null, sheet: null, sheetHeader: null, modeToggle: null,
+        consoleHeader: null
       };
       this._sheetOpen = false;     // the mobile sheet's collapse/expand state
+      this._panelOpen = false;     // the desktop console's collapse/expand state
+      this._panelX = 0;            // the console's drag offset (0 = docked)
+      this._panelY = 0;
+      this._panelJustDragged = false;  // suppresses the click a drag ends with
+      this._pageKind = null;       // 'battle' | 'idle', drives the unmount gate
+      this._hotkeyBound = false;   // the Ctrl+8 listener is attached at most once
       this._touched = [];        // [{ el, prop, previous }] inline style rollbacks
       this._lastRanked = [];
+      this._recommended = null;   // the banner's 'PLAY: …' line (see _recommendedLine)
+      this._menuWatch = null;     // the move-menu MutationObserver (see bindMoveMenuWatcher)
       this._lastReasonByMove = {};
       this._drawerOpen = false;
       this._bound = false;
@@ -304,6 +341,24 @@
       this._lastRanked = actions;
       this.renderCount++;
 
+      this.lastBadgeCount = this._decorateMoveButtons(actions);
+      // The client rebuilds its move menu after the request, so the buttons this call could see
+      // are not necessarily the ones the player will click. Watch for them from now on.
+      this.bindMoveMenuWatcher();
+
+      this.renderBanner(battleState, actions);
+      this.renderTRChip(this._chipText(battleState, readout, actions), this._chipLevel(battleState, actions));
+      if (battleState) this.setCandidateBreakdown(battleState);
+      return this.lastBadgeCount;
+    }
+
+    /**
+     * _decorateMoveButtons(actions) -> how many Showdown buttons were given an opinion.
+     *
+     * Shared by render() and redecorate(): the ranking is the only input, so the two paths can
+     * never drift into decorating a button differently.
+     */
+    _decorateMoveButtons(actions) {
       const byMove = {};
       const byName = {};
       let optimal = null;
@@ -319,7 +374,6 @@
       if (!optimal) {
         for (let i = 0; i < actions.length; i++) { if (!actions[i].isVetoed) { optimal = actions[i]; break; } }
       }
-
       let decorated = 0;
       const buttons = this._findMoveButtons();
       for (let i = 0; i < buttons.length; i++) {
@@ -329,12 +383,67 @@
         this._decorateButton(btn, action, optimal);
         if (action) decorated++;
       }
-      this.lastBadgeCount = decorated;
-
-      this.renderBanner(battleState);
-      this.renderTRChip(this._chipText(battleState, readout, actions), this._chipLevel(battleState, actions));
-      if (battleState) this.setCandidateBreakdown(battleState);
       return decorated;
+    }
+
+    /**
+     * bindMoveMenuWatcher() — re-decorate when the client builds (or rebuilds) its move menu.
+     *
+     * WHY THIS EXISTS. Our protocol listener runs INSIDE the frame that carries `|request|` —
+     * before the page's own handler has painted anything — so the HUD's one-shot decoration sees
+     * either the PREVIOUS turn's buttons or none at all, and the current client renders the menu
+     * as a component that is thrown away and rebuilt between turns. Without this, a live battle
+     * shows badges only by luck; with it, the last ranking is re-applied the moment Showdown puts
+     * a move button on screen, which is the only moment the player can act on it.
+     *
+     * One observer, attached at most once, filtered to added nodes that ARE (or contain) a move
+     * button — so ordinary log churn never re-decorates anything.
+     */
+    bindMoveMenuWatcher() {
+      if (this._menuWatch) return this._menuWatch;
+      if (typeof MutationObserver !== 'function') return null;
+      const doc = this._document();
+      const root = (doc && (doc.body || doc.documentElement)) || null;
+      if (!root) return null;
+      const self = this;
+      try {
+        this._menuWatch = new MutationObserver(function (records) {
+          for (let i = 0; i < records.length; i++) {
+            const added = records[i] && records[i].addedNodes;
+            if (!added || !added.length) continue;
+            for (let j = 0; j < added.length; j++) {
+              const node = added[j];
+              if (!node || node.nodeType !== 1) continue;
+              const hits = self._isMoveButton(node) ||
+                (node.querySelector && node.querySelector('button[data-move], .movebutton, button[name="chooseMove"]'));
+              if (hits) { self.redecorate(); return; }
+            }
+          }
+        });
+        this._menuWatch.observe(root, { childList: true, subtree: true });
+      } catch (e) { this._menuWatch = null; }
+      return this._menuWatch;
+    }
+
+    /** _isMoveButton(node) — one of Showdown's own move buttons, in either client's markup. */
+    _isMoveButton(node) {
+      if (!node || node.nodeType !== 1) return false;
+      if (node.getAttribute && node.getAttribute('data-move')) return true;
+      if (node.classList && typeof node.classList.contains === 'function' &&
+          node.classList.contains('movebutton')) return true;
+      const name = node.getAttribute ? node.getAttribute('name') : null;
+      return !!(name && U.toID(name) === 'choosemove');
+    }
+
+    /**
+     * redecorate() -> how many buttons were re-decorated from the LAST ranking.
+     * Safe to call at any time: with no ranking yet, or on a menu the engine has no opinion
+     * about, it is a no-op (the per-button reset in _decorateButton keeps it idempotent).
+     */
+    redecorate() {
+      if (!this._lastRanked || !this._lastRanked.length) return 0;
+      this.lastBadgeCount = this._decorateMoveButtons(this._lastRanked);
+      return this.lastBadgeCount;
     }
 
     _decorateButton(btn, action, optimal) {
@@ -434,11 +543,11 @@
       if (heading && typeof card.appendChild === 'function') card.appendChild(heading);
       const self = this;
       let rows = 0;
-      [['st-lead-best', advisory.best, '\uD83D\uDFE2 Top lead'],
-        ['st-lead-risky', advisory.risky, '\uD83D\uDD34 Risky lead']].forEach(function (pair) {
+      [['st-lead-best', advisory.best, 'TOP LEAD'],
+        ['st-lead-risky', advisory.risky, 'RISKY LEAD']].forEach(function (pair) {
         const item = pair[1];
         if (!item || !item.species) return;
-        const text = pair[2] + ': ' + item.species + ' (' + item.favorability + '% favorability) — ' +
+        const text = pair[2] + ' / ' + item.species + ' (' + item.favorability + '% favorability) — ' +
           (item.reason || '');
         const row = self._el('div', pair[0], text);
         if (row && typeof card.appendChild === 'function') { card.appendChild(row); rows++; }
@@ -463,18 +572,24 @@
     /* ------------------------------------------------------------- banner */
 
     /**
-     * renderBanner(info) — accepts a BattleState, a plain info object or a string.
-     * Shows: TR timer, opponent set identity, confirmed item, speed floor.
+     * renderBanner(info, actions) — accepts a BattleState, a plain info object or a string.
+     * Shows: the recommended line, the TR clock, opponent set identity, confirmed item, speed
+     * floor. `actions` is the engine's ranking for the CURRENT window; when it is omitted (the
+     * turn-boundary refresh in src/content.js) the last recommendation is kept, because the
+     * engine's answer for the window that just resolved is still the best description of what
+     * it wanted until the next request replaces it.
      */
-    renderBanner(info) {
+    renderBanner(info, actions) {
       if (!this._document()) return null;
       const banner = this._ensureBanner();
       if (!banner) return null;
-      const text = typeof info === 'string' ? info : this._bannerText(info);
+      const text = typeof info === 'string' ? info : this._bannerText(info, actions);
+      if (typeof text === 'string' && text.indexOf('PLAY: ') === 0) this._recommended = text;
       banner.textContent = text;
       banner.setAttribute && banner.setAttribute('data-turn', safeString(info && info.turn ? info.turn : ''));
-      // On mobile the sheet's collapsed rail mirrors this text as its summary, so refresh it.
-      this._updateSheetHeader();
+      // Every panel rail (the mobile sheet's collapsed bar, the desktop console's title bar)
+      // mirrors this text as its summary, so refresh them both.
+      this._refreshPanelHeaders();
       return banner;
     }
 
@@ -492,19 +607,22 @@
       // like every other band element, instead of as a free-floating viewport-fixed node that
       // would paint over the battle scene on mobile portrait.
       this._nodes.banner = this._mountBand(el);
-      // Once the banner is parented, refresh the sheet header (it reads the banner's text as
-      // the collapsed summary) and re-anchor the sheet to the chip band.
-      this._updateSheetHeader();
+      // Once the banner is parented, refresh the panel rails (each reads the banner's text
+      // as its summary) and re-anchor the sheet to the chip band.
+      this._refreshPanelHeaders();
       return this._nodes.banner;
     }
 
-    _bannerText(state) {
-      if (!state) return 'Showdown Tactician — waiting for a battle';
+    _bannerText(state, actions) {
+      if (!state) return 'Showdown Tactician: waiting for a battle';
       if (state.formatSupported === false) {
-        return 'Unsupported format' + (state.format ? ': ' + state.format : '') +
-          BANNER_SEP + 'engine idle (National Dex OU only)';
+        return 'ENGINE OFFLINE' + (state.format ? ' / ' + state.format : '') +
+          BANNER_SEP + 'National Dex OU only';
       }
       const parts = [];
+      // Keep the live move call easy to scan without dressing it up as a product headline.
+      const pick = this._recommendedLine(actions);
+      if (pick) parts.push(pick);
       const field = state.field || {};
       if (field.trickRoom) parts.push('TR ' + U.clamp(field.trickRoomTurnsLeft || 0, 0, 5) + '/5');
       else parts.push('TR off');
@@ -589,12 +707,20 @@
       if (this.resolvedLayout === 'desktop') {
         const console = this._ensureConsole();
         if (console && typeof console.appendChild === 'function') {
-          try { console.appendChild(el); return el; } catch (e) { /* fall through */ }
+          try {
+            console.appendChild(el);
+            // Re-read the rail after the append: the write inside _ensureConsole happens
+            // before the first card exists and _ensureConsole early-returns forever after,
+            // so without this the count badge would stay stuck on "idle" (and the summary
+            // on whatever the banner said when the console was created).
+            this._refreshPanelHeaders();
+            return el;
+          } catch (e) { /* fall through */ }
         }
       } else if (this.resolvedLayout === 'mobile' && intoSheet !== false) {
         const sheet = this._ensureSheet();
         if (sheet && typeof sheet.appendChild === 'function') {
-          try { sheet.appendChild(el); this._updateSheetHeader(); return el; } catch (e) { /* fall through */ }
+          try { sheet.appendChild(el); this._refreshPanelHeaders(); return el; } catch (e) { /* fall through */ }
         }
       }
       return this._mount(el);
@@ -613,13 +739,48 @@
       return this._nodes.chip;
     }
 
+    /**
+     * _recommendedLine(actions) -> 'PLAY: <move> (<conf>%)' | ''.
+     *
+     * THE HUD NEVER NAMED ITS ANSWER. The badges on Showdown's buttons carry a percentage and the
+     * optimal button a class, so a player had to know which button was the engine's pick before
+     * they could read how sure it was. This is the one line that says it in words, and it lives in
+     * the banner because the mobile rail mirrors that text and is always on screen. A new ranking
+     * replaces the stored pick; a refresh with no ranking (`renderBanner(state)`) keeps the last
+     * one, so the line does not blink out between the request and the next turn.
+     */
+    _recommendedLine(actions) {
+      if (Array.isArray(actions)) {
+        let best = null;
+        for (let i = 0; i < actions.length; i++) {
+          const a = actions[i];
+          if (!a || a.isVetoed) continue;
+          best = a;
+          break;
+        }
+        this._recommended = best ? { name: safeString(best.name), confidence: best.confidence } : null;
+      }
+      const rec = this._recommended;
+      if (!rec || !rec.name) return '';
+      const conf = (typeof rec.confidence === 'number' && rec.confidence === rec.confidence)
+        ? ' (' + Math.round(rec.confidence) + '%)' : '';
+      return 'PLAY: ' + rec.name + conf;
+    }
+
     _chipText(state, readout, actions) {
       if (!state) return '';
       const field = state.field || {};
       const alerts = [];
+      // The chip is the Trick Room readout, not just its last-turn alarm: 'not saying whether TR
+      // is up or not' was the complaint, and the banner that answered it lives inside the
+      // collapsed sheet on a phone. Both states are named, every turn.
       if (field.trickRoom) {
         const left = U.clamp(field.trickRoomTurnsLeft || 0, 0, 5);
-        if (left <= 1) alerts.push('TR EXPIRING NEXT TURN: attack or sack setter, do not hard-switch healthy breakers');
+        if (left <= 1) alerts.push('TR ' + left + '/5 — LAST TURN: attack or sack the setter');
+        else if (left === 2) alerts.push('TR 2/5 — LAST TURN NEXT: land your chip or sack the setter');
+        else alerts.push('TR UP ' + left + '/5 — slower body moves first');
+      } else {
+        alerts.push('TR off — normal speed order');
       }
       const tempo = (readout && (readout.tempo || readout.tempoVector)) || state.__tempo || null;
       const v4 = tempo && typeof tempo.v4 === 'number' ? tempo.v4 : null;
@@ -638,6 +799,7 @@
       if (!state) return 'info';
       const field = state.field || {};
       if (field.trickRoom && (field.trickRoomTurnsLeft || 0) <= 1) return 'danger';
+      if (field.trickRoom && (field.trickRoomTurnsLeft || 0) === 2) return 'warn';
       if (actions && actions.length && actions[0] && actions[0].isVetoed) return 'warn';
       return 'info';
     }
@@ -801,7 +963,7 @@
       if (el && typeof el.remove === 'function') el.remove();
       // Removing a sheet child changes the rail's count, so refresh the header. No-op when
       // the mobile sheet is not mounted (desktop, lobbies, tests without a sheet).
-      try { this._updateSheetHeader(); } catch (e) { /* detached */ }
+      try { this._refreshPanelHeaders(); } catch (e) { /* detached */ }
       return null;
     }
 
@@ -921,9 +1083,9 @@
 
     /**
      * renderBenchTargets(targets, selectedId) -> the strip element (or null).
-     * The opponent's bench as tappable pills: tap one and the move buttons re-preview against
-     * THAT mon, which is the whole point of the sandbox ("what does my Fire Punch do to the
-     * Corviknight that is about to come in?"). An empty list removes the strip.
+     * The opponent's full revealed roster as sprite cards. Tapping an inactive, living body
+     * previews moves against it; the active or fainted cards remain visual roster context.
+     * An empty list removes the strip.
      */
     renderBenchTargets(targets, selectedId) {
       if (!this._document()) return null;
@@ -945,21 +1107,68 @@
         strip = this._mountBand(strip, false);
       }
       this._nodes.benchStrip = strip;
+      if (strip.setAttribute) {
+        strip.setAttribute('role', 'group');
+        strip.setAttribute('aria-label', 'Opponent revealed roster');
+      }
       this.selectedBenchId = (selectedId === undefined || selectedId === null) ? '' : safeString(selectedId);
       this._clearChildren(strip);
       const count = Math.min(list.length, cap > 0 ? cap : list.length);
       for (let i = 0; i < count; i++) {
         const target = list[i];
         const id = U.toID(target.id || target.species || '');
-        const pill = this._el('button', 'st-bench-pill');
+        const pill = this._el(target.fainted || target.isActive ? 'div' : 'button', 'st-bench-pill');
         if (!pill) continue;
         if (pill.setAttribute) {
-          pill.setAttribute('type', 'button');
+          if (!target.fainted && !target.isActive) pill.setAttribute('type', 'button');
           pill.setAttribute(BENCH_PILL_ATTR, id);
-          pill.setAttribute('aria-label', 'Preview our moves against ' + safeString(target.species));
+          pill.setAttribute('aria-label', (target.isActive ? 'Active opponent' : target.fainted ? 'Fainted opponent' : 'Preview our moves against') + ' ' + safeString(target.species));
         }
-        pill.textContent = safeString(target.species) + ' ' + roundPct(target.hpPercent) + '%';
+      const species = safeString(target.species || target.id || 'Unknown');
+      const hp = roundPct(target.hpPercent);
+      const slugs = spriteSlugs(species);
+        const sprite = this._el('img', 'st-bench-sprite');
+        if (sprite) {
+          sprite.setAttribute && sprite.setAttribute('alt', '');
+          sprite.setAttribute && sprite.setAttribute('aria-hidden', 'true');
+          sprite.setAttribute && sprite.setAttribute('loading', 'lazy');
+          sprite.setAttribute && sprite.setAttribute('decoding', 'async');
+          sprite.setAttribute && sprite.setAttribute('data-species-sprite', slugs.form);
+          sprite.src = 'https://play.pokemonshowdown.com/sprites/gen5/' + encodeURIComponent(slugs.form) + '.png';
+          // Some regional and battle forms have no dedicated PNG. Try the base species once,
+          // then remove the image and leave its designed placeholder rather than a broken icon.
+          sprite.onerror = function () {
+            if (slugs.form !== slugs.base && sprite.getAttribute('data-st-base-fallback') !== '1') {
+              sprite.setAttribute('data-st-base-fallback', '1');
+              sprite.src = 'https://play.pokemonshowdown.com/sprites/gen5/' + encodeURIComponent(slugs.base) + '.png';
+              return;
+            }
+              if (sprite.parentNode && typeof sprite.parentNode.removeChild === 'function') {
+              sprite.parentNode.removeChild(sprite);
+            }
+            this.classList && this.classList.add('st-sprite-missing');
+          }.bind(pill);
+          if (typeof pill.appendChild === 'function') pill.appendChild(sprite);
+        }
+        const details = this._el('span', 'st-bench-details');
+        const name = this._el('span', 'st-bench-name', species);
+        const health = this._el('span', 'st-bench-health', hp + '%');
+        const meter = this._el('span', 'st-bench-meter');
+        const fill = this._el('span', 'st-bench-meter-fill');
+        if (fill && fill.style) fill.style.width = U.clamp(hp, 0, 100) + '%';
+        if (meter && fill && typeof meter.appendChild === 'function') meter.appendChild(fill);
+        if (details && typeof details.appendChild === 'function') {
+          if (name) details.appendChild(name);
+          if (health) details.appendChild(health);
+          if (meter) details.appendChild(meter);
+          pill.appendChild(details);
+        }
+        if (pill.setAttribute) {
+          pill.setAttribute('aria-label', 'Preview our moves against ' + species + ', ' + hp + '% HP');
+          pill.setAttribute('title', species + ' · ' + hp + '% HP');
+        }
         if (target.fainted) this._addClass(pill, 'st-fainted');
+        if (target.isActive) this._addClass(pill, 'st-active');
         if (id && id === this.selectedBenchId) this._addClass(pill, 'st-selected');
         if (typeof strip.appendChild === 'function') strip.appendChild(pill);
       }
@@ -1011,7 +1220,9 @@
             pill = target.closest('[' + BENCH_PILL_ATTR + ']') || target;
           }
           const id = pill && pill.getAttribute ? pill.getAttribute(BENCH_PILL_ATTR) : null;
-          if (id) self.benchTapped(id);
+          // Active and fainted roster cards are informational divs. Even a synthetic click
+          // or a future delegated listener must never select a non-bench body.
+          if (id && (!pill.tagName || pill.tagName === 'BUTTON')) self.benchTapped(id);
         });
       } catch (e) { return false; }
       this._benchBound = true;
@@ -1090,7 +1301,7 @@
         if (!r) continue;
         const row = this._el('div', 'st-receipt-row');
         if (!row) continue;
-        row.textContent = safeString(r.icon) + ' ' + safeString(r.label) + ': ' + safeString(r.value);
+        row.textContent = safeString(r.label) + ': ' + safeString(r.value);
         card.appendChild(row);
       }
       const copy = this._el('button', 'st-receipt-copy', cfg('hud.receipt.copyLabel', 'Copy Summary'));
@@ -1151,7 +1362,7 @@
         el = this._mountBand(el);
       }
       this._nodes.overlord = el;
-      el.textContent = '\uD83D\uDC51 Supreme Overlord: +' + roundPct(gauge.percentBoost) + '% (' +
+      el.textContent = 'SUPREME OVERLORD / +' + roundPct(gauge.percentBoost) + '% (' +
         roundPct(gauge.fallen) + ' fallen) \u2014 ' + roundPct(gauge.effectiveAtk) + ' Atk';
       if (el.setAttribute) {
         el.setAttribute('title', safeString(gauge.species) + ' Supreme Overlord gauge');
@@ -1281,7 +1492,13 @@
      */
     _syncChipBand() {
       const doc = this._document();
-      if (!doc || !doc.documentElement || !doc.documentElement.style ||
+      if (!doc || !doc.documentElement) return null;
+      // The panel is only mounted where a panel belongs: a battle. This runs BEFORE the
+      // CSS-var guard below and before any measurement, because the gate has to hold even on a
+      // document where publishing custom properties is impossible (the Node harness's stub
+      // element has no `style.setProperty`) — an unmounted panel must not depend on the var bus.
+      this._syncPageKind();
+      if (!doc.documentElement.style ||
           typeof doc.documentElement.style.setProperty !== 'function') return null;
       // NOTE: the band is the chrome ABOVE the arena, so the top-band elements (banner,
       // overlord, badge row, deduction badges) define its bottom. `.st-lethal-bar` is INTENTIONALLY
@@ -1376,6 +1593,57 @@
     }
 
     /**
+     * _syncPageKind() -> 'battle' | 'idle', published as `data-st-page`.
+     * The dock the console occupies is measured from Showdown's battle chrome, so the panel
+     * only exists where a battle does. Off-battle (the home page, the lobby, the team
+     * builder, the options page) the same 624x834 fixed panel lands squarely on the news
+     * feed and the left menu — measured on the home page at 1440x900: 242k px of
+     * `.leftmenu` and 517k px of the room, with every menu button underneath it and
+     * `pointer-events` swallowing every click ("I can't press through it"). So the
+     * container is hidden outright and only the TAC/mode launchers remain.
+     *
+     * Showdown is a single-page app, so a battle can appear and vanish without a reload;
+     * this is re-evaluated from the same heartbeat that re-renders the banner (2.5s) and
+     * again on every resize, scroll and layout flip.
+     */
+    _syncPageKind() {
+      const doc = this._document();
+      if (!doc || !doc.documentElement) return this._pageKind || 'idle';
+      const kind = this._hasBattle() ? 'battle' : 'idle';
+      if (kind === this._pageKind) return kind;
+      this._pageKind = kind;
+      this._applyPageKind();
+      return kind;
+    }
+
+    _hasBattle() {
+      const doc = this._document();
+      if (!doc || typeof doc.querySelector !== 'function') return false;
+      return !!doc.querySelector('.battle');
+    }
+
+    /**
+     * _applyPageKind() -> show or hide the readout container for the current page kind.
+     * Visibility is a root attribute rather than a DOM move on purpose: re-parenting the
+     * cards back into `<body>` would park a column of `position: fixed` nodes over the
+     * lobby, which is exactly the bug this gate exists to prevent. The cards stay where
+     * they are, the container stops painting, and re-entering a battle brings it all back.
+     */
+    _applyPageKind() {
+      const doc = this._document();
+      if (!doc || !doc.documentElement) return;
+      const battle = (this._pageKind || 'idle') === 'battle';
+      if (doc.documentElement.setAttribute) {
+        doc.documentElement.setAttribute('data-st-page', battle ? 'battle' : 'idle');
+      }
+      if (!battle) {
+        // Leaving a battle drops any drag offset so the panel re-docks from the new room's
+        // measured column instead of reappearing wherever it was parked.
+        this._resetPanelOffset();
+      }
+    }
+
+    /**
      * _bottomBandTop(doc) -> the topmost Y of the always-on bottom band, or 0.
      * The TR chip and the bench strip share the bottom band, but they do NOT share a top: the
      * strip is `touch + 16 + lift` from the bottom and is 65px tall, while the chip is
@@ -1431,7 +1699,7 @@
         safeString(cfg('ppStall.headline', 'suckerpunch'));
 
       const headline = this._el('div', 'st-pp-headline',
-        PP_ICON + ' ' + label + ' ' + prefix + ': ' + this._ppText(move));
+        label + ' ' + prefix + ': ' + this._ppText(move));
       this._appendChild(el, headline);
 
       const threat = gauge.threat || {};
@@ -1495,12 +1763,12 @@
 
     _ppThreatText(threat, species) {
       const read = safeString(threat.read).trim();
-      if (read) return THREAT_ICON + ' ' + read;
+      if (read) return read;
       const moves = Array.isArray(threat.setupMoves) ? threat.setupMoves.filter(Boolean) : [];
       if (!moves.length) return '';
       const hp = typeof threat.theirHp === 'number' && threat.theirHp === threat.theirHp
         ? U.clamp(Math.round(threat.theirHp), 0, 100) + '% HP' : '';
-      return THREAT_ICON + ' setup threat: ' + moves.join(' / ') +
+      return 'SETUP THREAT: ' + moves.join(' / ') +
         (species ? ' on ' + species : '') + (hp ? ' at ' + hp : '');
     }
 
@@ -1571,9 +1839,9 @@
         const limit = Math.max(0, Math.min(tactics.length, typeof cap === 'number' ? cap : 3));
         for (let i = 0; i < limit; i++) {
           const t = tactics[i];
-          const glyph = safeString(t.icon) || SENTINEL_TACTIC_ICONS[safeString(t.kind)] || TACTIC_BULLET;
+          const status = SENTINEL_TACTIC_STATES[safeString(t.kind)] || 'NOTE';
           const row = this._el('div', 'st-sentinel-tactic',
-            glyph + ' ' + safeString(t.label) +
+            status + ' / ' + safeString(t.label) +
             (t.detail ? ' \u2014 ' + safeString(t.detail) : ''));
           if (row && row.setAttribute) {
             row.setAttribute('data-st-tactic', safeString(t.kind) || 'other');
@@ -1607,13 +1875,11 @@
       // for a caller that supplies no name at all.
       const name = safeString(fallbackName || m.label);
       const burned = !!m.burned;
-      const state = burned
-        ? safeString(cfg('sentinel.burnedLabel', 'BURNED'))
-        : safeString(cfg('sentinel.liveLabel', 'LIVE'));
+      const state = SENTINEL_STATES[burned ? 'burned' : 'live'];
       const who = safeString(m.species);
       const turn = typeof m.turn === 'number' && m.turn === m.turn ? Math.round(m.turn) : null;
       const row = this._el('div', 'st-sentinel-row',
-        SENTINEL_ICONS[burned ? 'burned' : 'live'] + ' ' + name + ': ' + state +
+        name + ': ' + state +
         (burned && who ? ' (' + who + (turn === null ? '' : ', turn ' + turn) + ')' : ''));
       this._addClass(row, burned ? 'st-burned' : 'st-live');
       if (row && row.setAttribute) row.setAttribute('data-st-mechanic', safeString(m.id || fallbackName));
@@ -1635,6 +1901,7 @@
         this._bound = true;
         // Adopted, not built — the signals still have to be bound (see _bindLayoutSignals).
         this._bindLayoutSignals();
+        this._bindHotkey();
         this._mountModeToggle();
         return existing;
       }
@@ -1712,6 +1979,10 @@
       // bar in particular) changes height between portrait/landscape and across phone sizes;
       // without this, the banner would stay stuck at the height it was measured at boot.
       this._bindLayoutSignals();
+      // Ctrl+8 toggles the readout panel from any room, the way Pokémon Showdown Helper
+      // summons its popup. Bound here (not in _setLayout) so a HUD that is only constructed
+      // — never bound to a page — installs no listeners at all.
+      this._bindHotkey();
       // The mode toggle is a HUD-wide control, so it is mounted as part of binding the HUD to
       // the page rather than at construction: a HUD that is constructed but never bound (the
       // clipboard fallback tests build one to exercise a pure function) must not leave a
@@ -1734,7 +2005,7 @@
         btn.textContent = '...';
         if (btn.setAttribute) {
           btn.setAttribute('type', 'button');
-          btn.setAttribute('aria-label', 'Switch HUD layout between mobile and desktop');
+          btn.setAttribute('aria-label', 'Switch HUD layout between compact and wide');
           btn.setAttribute('data-st-mode-toggle', '1');
         }
         this._mount(btn);
@@ -1897,6 +2168,9 @@
       // Showdown's control bar sits, the banner re-anchors to the battle top, and the chip
       // band re-anchors with it.
       try { this._syncChipBand(); } catch (e) { /* detached */ }
+      // The page kind decides whether the panel is mounted at all, and it can change
+      // without a layout flip (leaving a battle for the lobby does not resize the window).
+      this._syncPageKind();
       this._updateModeToggle();
       return resolved;
     }
@@ -1910,28 +2184,63 @@
         el = (doc.createElement ? doc.createElement('div') : null);
         if (el) {
           el.className = 'st-console';
-          if (el.setAttribute) el.setAttribute('data-st-console', '1');
+          if (el.setAttribute) {
+            el.setAttribute('data-st-console', '1');
+            el.setAttribute('data-st-console-open', this._panelOpen ? '1' : '0');
+            el.setAttribute('role', 'region');
+            el.setAttribute('aria-label', 'Tactical console');
+          }
           // Mount into body so it can position relative to the viewport.
           const parent = doc.body || doc.documentElement;
           if (parent && parent.appendChild) parent.appendChild(el);
+          // The header is the panel's title bar: it names the panel, counts the cards,
+          // collapses on click and drags the panel (see _bindConsoleDrag). One shared
+          // builder with the mobile sheet so both layouts read identically.
+          const header = this._buildPanelHeader('st-console', function (self) {
+            if (self._panelJustDragged) { self._panelJustDragged = false; return; }
+            self.togglePanel();
+          });
+          if (header && typeof el.appendChild === 'function') {
+            el.appendChild(header);
+            this._nodes.consoleHeader = header;
+            this._bindConsoleDrag(header, el);
+          }
         }
+      } else if (!this._nodes.consoleHeader) {
+        // Adopted console from an earlier instance: keep (or rebuild) its header.
+        const header = (doc.querySelector ? doc.querySelector('.st-console-header') : null)
+          || this._buildPanelHeader('st-console', function (self) {
+            if (self._panelJustDragged) { self._panelJustDragged = false; return; }
+            self.togglePanel();
+          });
+        if (header && typeof el.appendChild === 'function' && !header.parentNode) {
+          el.appendChild(header);
+          this._bindConsoleDrag(header, el);
+        }
+        this._nodes.consoleHeader = header;
       }
       this._nodes.console = el;
+      this._writePanelHeader(el, this._nodes.consoleHeader);
       return el;
     }
 
     /**
-     * _reparentIntoConsole() -> move the bottom band into the console.
-     * The console is a single scrollable column; children flow as flex items. We move ONLY
-     * the band elements (chip, bench strip, PP gauge, sentinel, receipt) — the top
-     * elements (banner, overlord, badges) stay in their viewport-fixed positions and are
-     * repositioned to the arena column by CSS, because they need to float above the
-     * battlefield regardless of the panel's height.
+     * _reparentIntoConsole() -> move the band into the console.
+     * The console is a single scrollable column inside the 640 px arena column, docked
+     * BELOW Showdown's move bar. EVERY readout travels with it — including the banner, the
+     * overlord pill and the badge row, which used to stay `position: fixed` and float over
+     * the top strip of the battle scene (the foe's HP bar and the trainer sprite). The chip
+     * and the bench strip stay in the always-on bottom band: they are the two most-used
+     * interactive bits and must stay thumb/eye accessible without opening a panel.
      */
     _reparentIntoConsole() {
       const doc = this._document();
       if (!doc) return;
-      const sel = '.tactician-tr-chip, .st-bench-strip, .st-pp-gauge, .st-format-sentinel, .st-receipt-card';
+      // Desktop also uses the compact-first sheet pattern: no permanent sidebar competing with
+      // the Showdown log, and no large block occupying the chat column until it is requested.
+      const sel = '.tactician-banner, .st-overlord-gauge, .st-badge-row, .st-deduction-badges, ' +
+        '.tactician-tr-chip, .st-bench-strip, .st-pp-gauge, .st-format-sentinel, .st-receipt-card, ' +
+        '.st-cancel-alert-card';
       const nodes = (typeof doc.querySelectorAll === 'function')
         ? doc.querySelectorAll(sel) : [];
       // Lazy: only build the console when there are band elements to put in it. Constructing
@@ -1945,11 +2254,11 @@
         if (n && n.parentNode !== console && typeof console.appendChild === 'function') {
           try { console.appendChild(n); } catch (e) { /* detached */ }
         }
-      }
-    }
+      }       this._writePanelHeader(console, this._nodes.consoleHeader);
+     }
 
-    /**
-     * _reparentOutOfConsole() -> move the band back into the document body.
+     /**
+      * _reparentOutOfConsole() -> move the band back into the document body.
      * On mobile, the elements are `position: fixed` children of the body, so they can use
      * viewport-relative coordinates again. The console's child collection is walked
      * defensively (it is a real NodeList in the browser and a plain array in the test
@@ -1967,7 +2276,10 @@
       const kids = Array.prototype.slice.call(live || []);
       for (let i = 0; i < kids.length; i++) {
         const n = kids[i];
-        if (n && n.parentNode === console && body && typeof body.appendChild === 'function') {
+        // Don't detach the console's own header — it is chrome, not a band element, and
+        // moving it into the body would leave a floating button in the page.
+        if (!n || n === this._nodes.consoleHeader) continue;
+        if (n.parentNode === console && body && typeof body.appendChild === 'function') {
           try { body.appendChild(n); } catch (e) { /* detached */ }
         }
       }
@@ -1987,6 +2299,59 @@
      * header rail by default (showing the banner summary + a card count + a caret) and expands
      * on tap, so a player who just wants to play can keep the chrome out of the way.
      */
+    /**
+     * _buildPanelHeader(prefix, onToggle) -> the header <button>, or null.
+     * ONE header builder for both containers (the mobile `.st-sheet` and the desktop
+     * `.st-console`), because they should read identically: a rail that names the panel,
+     * counts the cards stacked inside it, and collapses/expands the body on click. It is
+     * `prefix`'-header' with `prefix`'-summary' / '-count' / '-caret' children, so the
+     * console gets `.st-console-*` and the sheet keeps `.st-sheet-*`.
+     *
+     * A <button> is the right tag: Space and Enter activate it, it participates in tab
+      * order, and the focus ring is consistent with the controls. On the desktop
+     * console the header doubles as the drag handle (see _bindConsoleDrag), which is what
+     * makes the panel a popup you can park anywhere rather than a window you have to
+     * live with — the same affordance Pokémon Showdown Helper gives its popup.
+     */
+    _buildPanelHeader(prefix, onToggle) {
+      const header = this._el('button', prefix + '-header');
+      if (!header) return null;
+      if (header.setAttribute) {
+        header.setAttribute('type', 'button');
+        header.setAttribute('aria-expanded', '0');
+      }
+      const identity = this._el('span', prefix + '-identity', 'SHOWDOWN');
+      const label = this._el('span', prefix + '-label', 'TACTICIAN');
+      const summary = this._el('span', prefix + '-summary');
+      const count = this._el('span', prefix + '-count');
+      const caret = this._el('span', prefix + '-caret');
+      if (caret && caret.setAttribute) caret.setAttribute('aria-hidden', 'true');
+      if (header.setAttribute) header.setAttribute('aria-label', 'Showdown Tactician readout');
+      if (typeof header.appendChild === 'function') {
+        if (identity) header.appendChild(identity);
+        if (label) header.appendChild(label);
+        if (summary) header.appendChild(summary);
+        if (count) header.appendChild(count);
+        if (caret) header.appendChild(caret);
+      }
+      const self = this;
+      if (header.addEventListener) {
+        header.addEventListener('click', function (e) {
+          if (e) { e.preventDefault && e.preventDefault(); e.stopPropagation && e.stopPropagation(); }
+          if (typeof onToggle === 'function') { try { onToggle(self); } catch (err) { /* never break */ } }
+        }, true);
+        // Blur on activation so a HUD button can never hold keyboard focus.
+        header.addEventListener('mousedown', function (e) { if (e && e.preventDefault) e.preventDefault(); }, true);
+        header.addEventListener('keydown', function (e) {
+          if (e && (e.key === 'Enter' || e.key === ' ')) {
+            e.preventDefault && e.preventDefault();
+            if (typeof onToggle === 'function') { try { onToggle(self); } catch (err) { /* never break */ } }
+          }
+        });
+      }
+      return header;
+    }
+
     _ensureSheet() {
       if (this._nodes.sheet) return this._nodes.sheet;
       const doc = this._document();
@@ -2001,40 +2366,22 @@
           el.setAttribute('data-st-sheet-open', this._sheetOpen ? '1' : '0');
           el.setAttribute('role', 'region');
           el.setAttribute('aria-label', 'Tactical readouts');
+          el.setAttribute('aria-hidden', this._sheetOpen ? 'false' : 'true');
         }
         const parent = doc.body || doc.documentElement;
         if (parent && parent.appendChild) parent.appendChild(el);
-        // The header is the only piece of chrome that is always visible: it doubles as the
-        // rail content when collapsed and the title bar when expanded. A <button> is the
-        // right tag (Space/Enter activate it, it participates in tab order, the focus ring
-        // is the same teal as the rest of the design).
-        const header = this._el('button', 'st-sheet-header');
-        if (header) {
-          if (header.setAttribute) { header.setAttribute('type', 'button'); header.setAttribute('aria-expanded', '0'); }
-          const summary = this._el('span', 'st-sheet-summary');
-          if (summary && typeof header.appendChild === 'function') header.appendChild(summary);
-          const count = this._el('span', 'st-sheet-count');
-          if (count && typeof header.appendChild === 'function') header.appendChild(count);
-          const caret = this._el('span', 'st-sheet-caret', '\u25BE');  // ▾
-          if (caret && typeof header.appendChild === 'function') header.appendChild(caret);
-          if (typeof el.appendChild === 'function') el.appendChild(header);
-          const self = this;
-          if (header.addEventListener) {
-            header.addEventListener('click', function (e) {
-              if (e) { e.preventDefault && e.preventDefault(); e.stopPropagation && e.stopPropagation(); }
-              self.toggleSheet();
-            }, true);
-            // Blur on activation so a HUD button can never hold keyboard focus.
-            header.addEventListener('mousedown', function (e) { if (e && e.preventDefault) e.preventDefault(); }, true);
-            header.addEventListener('keydown', function (e) {
-              if (e && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault && e.preventDefault(); self.toggleSheet(); }
-            });
-          }
-          this._nodes.sheetHeader = header;
+        const header = this._buildPanelHeader('st-sheet', function (self) { self.toggleSheet(); });
+        if (header && header.setAttribute) {
+          header.setAttribute('data-st-sheet-trigger', '1');
+          header.setAttribute('aria-controls', 'st-readout-sheet');
+          header.setAttribute('aria-haspopup', 'true');
         }
+        if (el.setAttribute) el.setAttribute('id', 'st-readout-sheet');
+        if (header && typeof el.appendChild === 'function') el.appendChild(header);
+        this._nodes.sheetHeader = header;
       }
       this._nodes.sheet = el;
-      this._updateSheetHeader();
+      this._refreshPanelHeaders();
       return el;
     }
 
@@ -2080,7 +2427,7 @@
           try { body.appendChild(n); } catch (e) { /* detached */ }
         }
       }
-      this._updateSheetHeader();
+      this._refreshPanelHeaders();
     }
 
     _reparentOutOfSheet() {
@@ -2105,29 +2452,68 @@
       this._nodes.sheetHeader = null;
     }
 
-    /** Read the banner's text and the count of stacked cards, write them into the header. */
-    _updateSheetHeader() {
-      const header = this._nodes.sheetHeader;
-      const sheet = this._nodes.sheet;
-      if (!header || !sheet) return;
+    /**
+     * _refreshPanelHeaders() -> fill every panel rail from the live band.
+     * The mobile sheet and the desktop console share one header builder, so both rails are
+     * rewritten from the same live state (the banner's line, the number of cards actually
+     * stacked in each container). Called after any mount, drop, re-parent or banner
+     * re-render. Writing a rail that is not mounted is a no-op, so this is safe to call
+     * from either layout's code paths.
+     */
+    _refreshPanelHeaders() {
+      this._writePanelHeader(this._nodes.sheet, this._nodes.sheetHeader);
+      this._writePanelHeader(this._nodes.console, this._nodes.consoleHeader);
+    }
+
+    /**
+     * _writePanelHeader(host, header) -> fill a panel header from the live band.
+     * The summary mirrors the banner (the one line a player actually reads first) and the
+     * count is the number of cards stacked in THIS container minus its own header. Written
+     * on every re-parent so switching layouts relabels the rail for the panel you are
+     * looking at rather than the one you left.
+     */
+    _writePanelHeader(host, header) {
+      if (!host || !header) return;
       const banner = this._qs('.tactician-banner') || this._nodes.banner;
       const summary = header.querySelector
-        ? header.querySelector('.st-sheet-summary') : null;
+        ? (header.querySelector('.st-sheet-summary') || header.querySelector('.st-console-summary'))
+        : null;
       const count = header.querySelector
-        ? header.querySelector('.st-sheet-count') : null;
+        ? (header.querySelector('.st-sheet-count') || header.querySelector('.st-console-count'))
+        : null;
       const summaryText = (banner && banner.textContent)
-        ? String(banner.textContent).trim() : 'TACTICIAN';
-      if (summary) summary.textContent = summaryText;
-      // Count the stacked cards (everything that lives inside the sheet, minus the header).
+        ? String(banner.textContent).trim() : 'AWAITING FIELD DATA';
+      const decision = this._recommended || summaryText;
+      const shortDecision = decision.replace(/^PLAY:\s*/i, '');
+      // Keep the collapsed trigger scannable with a short live summary.
+      if (summary && summary.textContent !== shortDecision) summary.textContent = shortDecision;
+      // Count the stacked cards (everything that lives inside the panel, minus the header).
       let n = 0;
-      const live = sheet.children || sheet.childNodes;
+      const live = host.children || host.childNodes;
       const kids = live ? Array.prototype.slice.call(live) : [];
       for (let i = 0; i < kids.length; i++) {
         if (kids[i] && kids[i] !== header) n++;
       }
+      const canRead = typeof header.getAttribute === 'function';
       if (count) {
-        count.textContent = n > 0 ? (n + (n === 1 ? ' readout' : ' readouts')) : 'idle';
-        if (count.setAttribute) count.setAttribute('data-st-count', String(n));
+        const countText = n > 0 ? (n + (n === 1 ? ' readout' : ' readouts')) : 'idle';
+        if (count.textContent !== countText) {
+          count.textContent = countText;
+          if (count.setAttribute) count.setAttribute('data-st-count', String(n));
+        }
+      }
+      // The rail is the one always-visible affordance on a phone, so it has to announce what
+      // tapping it does rather than leaving the caret to imply it.
+      if (header.setAttribute) {
+        const title = 'Showdown Tactician: ' + decision + ', ' + n + ' readout' + (n === 1 ? '' : 's');
+        const open = (host === this._nodes.sheet)
+          ? this._sheetOpen : this._panelOpen;
+        const expanded = open ? '1' : '0';
+        if (!canRead || header.getAttribute('title') !== title) header.setAttribute('title', title);
+        if (!canRead || header.getAttribute('aria-label') !== title) header.setAttribute('aria-label', title);
+        if (!canRead || header.getAttribute('aria-expanded') !== expanded) {
+          header.setAttribute('aria-expanded', expanded);
+        }
       }
     }
 
@@ -2147,26 +2533,170 @@
       const sheet = this._ensureSheet();
       if (sheet && sheet.setAttribute) {
         sheet.setAttribute('data-st-sheet-open', this._sheetOpen ? '1' : '0');
+        sheet.setAttribute('aria-hidden', this._sheetOpen ? 'false' : 'true');
       }
       const header = this._nodes.sheetHeader;
       if (header && header.setAttribute) {
         header.setAttribute('aria-expanded', this._sheetOpen ? '1' : '0');
+        header.setAttribute('aria-controls', 'st-readout-sheet');
       }
+      if (sheet && sheet.setAttribute) sheet.setAttribute('id', 'st-readout-sheet');
       return this._sheetOpen;
+    }
+
+    /* ------------------------------------------------------------------ desktop panel
+     * The console has three states, mirroring the sheet: open (the default, the full readout
+     * stack), collapsed (the 38 px title bar only) and unmounted (no battle on the page).
+     * Collapsing is the "get out of my way" gesture and Ctrl+8 is its keyboard spelling;
+     * unmounting is the page-kind gate below.
+     */
+
+    /** togglePanel() -> the new open state. On mobile it toggles the sheet instead. */
+    togglePanel() {
+      if ((this.resolvedLayout || this._resolveLayout()) !== 'desktop') return this.toggleSheet();
+      return this.setPanelOpen(!this._panelOpen);
+    }
+
+    /** setPanelOpen(open) -> the resulting state of the desktop console. */
+    setPanelOpen(open) {
+      try { this._syncChipBand(); } catch (e) { /* detached */ }
+      this._panelOpen = !!open;
+      const consoleEl = this._nodes.console;
+      if (!consoleEl && !this._panelOpen) {
+        const doc = this._document();
+        const existing = doc && doc.querySelector ? doc.querySelector('.st-console') : null;
+        if (existing && existing.setAttribute) {
+          this._nodes.console = existing;
+          existing.setAttribute('data-st-console-open', '0');
+        }
+      }
+      if (consoleEl && consoleEl.setAttribute) {
+        consoleEl.setAttribute('data-st-console-open', this._panelOpen ? '1' : '0');
+      }
+      const header = this._nodes.consoleHeader;
+      if (header && header.setAttribute) {
+        header.setAttribute('aria-expanded', this._panelOpen ? '1' : '0');
+      }
+      return this._panelOpen;
+    }
+
+    /** Drop any drag offset so the panel re-docks to its measured column. */
+    _resetPanelOffset() {
+      this._panelX = 0;
+      this._panelY = 0;
+      const consoleEl = this._nodes.console;
+      if (consoleEl && consoleEl.style && typeof consoleEl.style.removeProperty === 'function') {
+        consoleEl.style.removeProperty('--st-panel-x');
+        consoleEl.style.removeProperty('--st-panel-y');
+      }
+    }
+
+    /**
+     * _bindConsoleDrag(header, consoleEl) -> make the title bar draggable.
+     * The console is docked by measurement, but "docked" and "in the way" are the same word
+     * on a small desktop window, so the panel can be parked anywhere (the gesture Pokémon
+     * Showdown Helper gives its popup). Pointer events with explicit capture, a 5 px
+     * threshold so a click is still a click, and a clamp that always keeps at least a
+     * corner of the title bar on screen so the panel can always be dragged back.
+     * Double-clicking the header re-docks.
+     */
+    _bindConsoleDrag(header, consoleEl) {
+      if (!header || !consoleEl || typeof header.addEventListener !== 'function') return;
+      const self = this;
+      let startX = 0, startY = 0, baseX = 0, baseY = 0, dragging = false, moved = false;
+      header.addEventListener('pointerdown', function (e) {
+        if (!e || (typeof e.button === 'number' && e.button !== 0)) return;
+        if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+        dragging = true;
+        moved = false;
+        startX = e.clientX || 0;
+        startY = e.clientY || 0;
+        baseX = self._panelX || 0;
+        baseY = self._panelY || 0;
+        try {
+          if (header.setPointerCapture && e.pointerId !== undefined) header.setPointerCapture(e.pointerId);
+        } catch (err) { /* capture is a nicety, not a requirement */ }
+        if (consoleEl.classList && consoleEl.classList.add) consoleEl.classList.add('st-dragging');
+      });
+      header.addEventListener('pointermove', function (e) {
+        if (!dragging || !e) return;
+        const dx = (e.clientX || 0) - startX;
+        const dy = (e.clientY || 0) - startY;
+        if (!moved && Math.abs(dx) + Math.abs(dy) < 5) return;
+        moved = true;
+        self._panelJustDragged = true;
+        const doc = self._document() || (typeof document !== 'undefined' ? document : null);
+        const view = (doc && doc.defaultView) || (typeof window !== 'undefined' ? window : null);
+        const vw = (view && typeof view.innerWidth === 'number') ? view.innerWidth : 1440;
+        const vh = (view && typeof view.innerHeight === 'number') ? view.innerHeight : 900;
+        // Keep a corner of the title bar reachable: never let the panel leave the viewport.
+        const minX = -Math.min(600, vw * 0.6), maxX = vw - 160;
+        const minY = -Math.min(700, vh * 0.7), maxY = vh - 60;
+        self._panelX = Math.round(Math.max(minX, Math.min(maxX, baseX + dx)));
+        self._panelY = Math.round(Math.max(minY, Math.min(maxY, baseY + dy)));
+        if (consoleEl.style && typeof consoleEl.style.setProperty === 'function') {
+          consoleEl.style.setProperty('--st-panel-x', self._panelX + 'px');
+          consoleEl.style.setProperty('--st-panel-y', self._panelY + 'px');
+        }
+      });
+      const end = function (e) {
+        if (!dragging) return;
+        dragging = false;
+        if (consoleEl.classList && consoleEl.classList.remove) consoleEl.classList.remove('st-dragging');
+        try {
+          if (moved && header.releasePointerCapture && e && e.pointerId !== undefined) {
+            header.releasePointerCapture(e.pointerId);
+          }
+        } catch (err) { /* already released */ }
+      };
+      header.addEventListener('pointerup', end);
+      header.addEventListener('pointercancel', end);
+      header.addEventListener('lostpointercapture', end);
+      // Double-click the title bar to snap back to the measured dock.
+      header.addEventListener('dblclick', function () {
+        self._resetPanelOffset();
+      });
+    }
+
+    /**
+     * _bindHotkey() -> Ctrl+8 (Cmd+8 on macOS) toggles the readout panel.
+     * The same gesture Pokémon Showdown Helper uses for its popup, and it works in any room.
+     * Bound in the capture phase on the document so it fires before Showdown's own key
+     * handlers, and suppressed while the player is typing in the team-paste textarea.
+     */
+    _bindHotkey() {
+      const doc = this._document();
+      if (!doc || this._hotkeyBound || typeof doc.addEventListener !== 'function') return;
+      this._hotkeyBound = true;
+      const self = this;
+      doc.addEventListener('keydown', function (e) {
+        if (!e) return;
+        const el = (e.target || null);
+        const tag = el && el.tagName ? String(el.tagName).toUpperCase() : '';
+        if (tag === 'TEXTAREA' || tag === 'INPUT' || (el && el.isContentEditable)) return;
+        if (!(e.ctrlKey || e.metaKey)) return;
+        const k = String(e.key || '');
+        const code = String(e.code || '');
+        const digit = (k === '8' || k === '&' || code === 'Digit8' || code === 'Numpad8');
+        if (!digit) return;
+        if (e.preventDefault) e.preventDefault();
+        if (e.stopPropagation) e.stopPropagation();
+        try { self.togglePanel(); } catch (err) { /* never break the page */ }
+      }, true);
     }
 
     _updateModeToggle() {
       const btn = this._nodes.modeToggle;
       if (!btn) return;
       const resolved = this.resolvedLayout || this._resolveLayout();
-      const icon = (resolved === 'desktop') ? '\uD83D\uDDA5\uFE0F' : '\uD83D\uDCF1';
-      const label = (resolved === 'desktop') ? 'Desktop' : 'Mobile';
-      if (btn.textContent !== undefined) btn.textContent = icon + ' ' + label;
-      const title = (this.layoutMode === 'auto')
-        ? 'Switch HUD layout (currently auto, resolved to ' + label.toLowerCase() + ')'
-        : 'Switch HUD layout (currently ' + this.layoutMode + ')';
-      if (btn.setAttribute) btn.setAttribute('title', title);
-      btn.setAttribute && btn.setAttribute('data-st-resolved', resolved);
+      const label = (resolved === 'desktop') ? 'WIDE' : 'FIELD';
+      if (btn.textContent !== undefined) btn.textContent = label;
+      const title = 'Switch HUD layout (currently ' + (resolved === 'desktop' ? 'wide' : 'compact') + ')';
+      if (btn.setAttribute) {
+        btn.setAttribute('title', title);
+        btn.setAttribute('aria-label', 'Switch HUD layout to ' + (resolved === 'desktop' ? 'compact' : 'wide'));
+        btn.setAttribute('data-st-resolved', resolved);
+      }
     }
 
     /**
@@ -2357,6 +2887,11 @@
       // reference to. It also un-flags the Cancel button, which the sweep cannot do because that
       // button belongs to the PAGE, not to us.
       this.clearCancelAlert();
+      // ...and the containers themselves. An empty `.st-console` / `.st-sheet` left behind
+      // would keep painting its background and eating clicks in the column it docks into,
+      // so the teardown removes the panels along with everything that was in them.
+      this._reparentOutOfConsole();
+      this._reparentOutOfSheet();
       const buttons = this._findMoveButtons();
       const cls = [BADGES.high.cls, BADGES.mid.cls, BADGES.low.cls, BADGES.veto.cls, 'st-optimal',
         'st-lethal-guaranteed', 'st-lethal-high', 'st-lethal-mid', 'st-lethal-none'];
@@ -2385,14 +2920,24 @@
         banner: null, chip: null, drawer: null, toggle: null,
         teamStatus: null, candidates: null,
         benchStrip: null, badgeRow: null, receipt: null, overlord: null,
-        ppGauge: null, sentinel: null, leadAdvisory: null, cancelAlert: null
+        ppGauge: null, sentinel: null, leadAdvisory: null, cancelAlert: null,
+        console: null, sheet: null, sheetHeader: null, modeToggle: null,
+        consoleHeader: null
       };
       this._drawerOpen = false;
       this._bound = false;
       this._benchBound = false;
       this._receiptText = null;
       this.selectedBenchId = null;
+      if (this._menuWatch && typeof this._menuWatch.disconnect === 'function') {
+        try { this._menuWatch.disconnect(); } catch (e) { /* detached */ }
+      }
+      this._menuWatch = null;
+      this._lastRanked = [];
+      this._recommended = null;   // the banner's 'PLAY: …' line is per-battle too
       this.lastBadgeCount = 0;
+      this._panelX = 0;
+      this._panelY = 0;
       return true;
     }
   }

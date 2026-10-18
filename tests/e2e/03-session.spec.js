@@ -199,9 +199,11 @@ test('tapping a bench body re-previews and marks it, tapping again clears it', a
 
   const pills = function () {
     return page.evaluate(function () {
-      return Array.from(document.querySelectorAll('[data-st-bench]')).map(function (p) {
-        return { id: p.getAttribute('data-st-bench'), selected: p.classList.contains('st-selected') };
-      });
+      return Array.from(document.querySelectorAll('[data-st-bench]'))
+        .filter(function (p) { return p.tagName === 'BUTTON'; })
+        .map(function (p) {
+          return { id: p.getAttribute('data-st-bench'), selected: p.classList.contains('st-selected') };
+        });
     });
   };
   const lethal = function () {
@@ -216,12 +218,12 @@ test('tapping a bench body re-previews and marks it, tapping again clears it', a
   expect(before[0].selected).toBe(false);
   const lethalBefore = await lethal();
 
-  await page.click('[data-st-bench]');
+  await page.click('[data-st-bench]:not(.st-active):not(.st-fainted)');
   const after = await pills();
   expect(after[0].selected, 'the tapped pill is marked').toBe(true);
   expect(await lethal(), 'the preview switched to the benched body').not.toBe(lethalBefore);
 
-  await page.click('[data-st-bench]');
+  await page.click('[data-st-bench]:not(.st-active):not(.st-fainted)');
   const cleared = await pills();
   expect(cleared[0].selected, 'a second tap deselects').toBe(false);
   expect(await lethal(), 'and the preview returns to the active pair').toBe(lethalBefore);

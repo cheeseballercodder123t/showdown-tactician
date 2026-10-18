@@ -458,7 +458,7 @@ function sectionAdoptedDrawerStillBindsLayoutSignals() {
   // about the subscription itself, so the stub has to be able to fail.
   const listeners = [];
   const doc = makeDoc();
-  doc.addEventListener = function (type, fn, opts) { listeners.push({ type: type, capture: !!(opts && opts.capture) }); };
+  doc.addEventListener = function (type, fn, opts) { listeners.push({ type: type, capture: (opts === true || !!(opts && opts.capture)) }); };
   // makeDoc's querySelectorAll searches only the button registry, so a node the HUD MOUNTED
   // into the body is invisible to it. A browser searches the whole document — and the case
   // this section is about is precisely "the node is already in the document" — so this doc's
@@ -593,12 +593,12 @@ function sectionLayoutModeResolvesAndReparents() {
   // (it is the kind of button PS's keyboard input would be sensitive to).
   const btn = doc.querySelector('.st-mode-toggle');
   check('the mode toggle is mounted', !!btn);
-  check('its label matches the resolved layout', /mobile/i.test(btn.textContent), btn.textContent);
+  check('its field label matches the resolved layout', /field/i.test(btn.textContent), btn.textContent);
   eq('its resolved attribute matches', btn.getAttribute('data-st-resolved'), 'mobile');
 
   // The mobile sheet is collapsed by default and exposes a header rail the user can tap to
   // expand. The header mirrors the banner's text as its summary and a count of stacked cards,
-  // both kept in sync by _updateSheetHeader.
+  // both kept in sync by _refreshPanelHeaders.
   const sheet = doc.querySelector('.st-sheet');
   check('mobile sheet exists on the mobile layout', !!sheet);
   eq('mobile sheet is collapsed by default', sheet.getAttribute('data-st-sheet-open'), '0');
@@ -608,16 +608,180 @@ function sectionLayoutModeResolvesAndReparents() {
   // the summary and count spans directly.
   const summaryEl = doc.querySelector('.st-sheet-summary');
   const countEl = doc.querySelector('.st-sheet-count');
-  check('the header summary mirrors the banner', /TACTICIAN|Showdown/.test(summaryEl ? summaryEl.textContent : ''), summaryEl && summaryEl.textContent);
+  check('the header summary carries the current decision', !!summaryEl && summaryEl.textContent.length > 0, summaryEl && summaryEl.textContent);
   // 3 cards ended up in the sheet (gauge, sent, recpt); chip and strip are in the body.
   check('the count badge reflects 3 stacked cards', /3\s*readouts/.test(countEl ? countEl.textContent : ''), countEl && countEl.textContent);
   // The header is a real button so Space/Enter can activate it, and tapping it toggles the
   // open state without stealing focus.
   eq('header tag is BUTTON', header.tagName, 'BUTTON');
+  eq('the rail has the Showdown identifier', doc.querySelector('.st-sheet-identity').textContent, 'SHOWDOWN');
+  eq('the rail names the HUD', doc.querySelector('.st-sheet-label').textContent, 'TACTICIAN');
+  eq('the sheet caret is decorative and hidden from assistive technology', doc.querySelector('.st-sheet-caret').getAttribute('aria-hidden'), 'true');
+  check('the rail identity contains no emoji', !/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(header.textContent));
+  eq('the collapsed sheet is hidden from assistive technology', sheet.getAttribute('aria-hidden'), 'true');
   hud.toggleSheet();
+  eq('opening reveals the readout to assistive technology', sheet.getAttribute('aria-hidden'), 'false');
   eq('toggleSheet flips the open attribute to 1', sheet.getAttribute('data-st-sheet-open'), '1');
   hud.toggleSheet();
   eq('toggleSheet flips back to 0', sheet.getAttribute('data-st-sheet-open'), '0');
+}
+
+/**
+ * The desktop console rework. Three properties the old layout did not have, and each one was
+ * measured on the real page before it was designed for:
+ *
+ *  1. EVERY readout travels with the panel. The banner, overlord pill and badge row used to stay
+ *     `position: fixed` children of the console and paint over the top strip of the battle scene
+ *     (the foe's HP bar and the trainer sprite) — measured coverage 93–98% on a live battle.
+ *  2. The panel only exists on a battle. Off-battle the same 624x834 fixed column landed on the
+ *     news feed and the left menu (242k px of `.leftmenu`, 517k px of the room, every menu button
+ *     underneath it, and `pointer-events` swallowing every click).
+ *  3. The panel is dismissible and relocatable: a collapsible title bar, a Ctrl+8 hotkey, and a
+ *     drag handle, so a player who needs that strip for something else can have it.
+ */
+function sectionDesktopConsoleCarriesEveryReadoutAndOnlyOnBattles() {
+  section('11. the desktop console carries every readout, and only exists on a battle');
+
+  // A document that RECORDS what was subscribed to (the hotkey is a document-level keydown) and
+  // that searches the whole tree (makeDoc's only covers its button registry, and everything this
+  // section is about lives in the body).
+  const listeners = [];
+  const doc = makeDoc();
+  doc.addEventListener = function (type, fn, opts) {
+    listeners.push({ type: type, fn: fn, capture: (opts === true || !!(opts && opts.capture)) });
+  };
+  doc.querySelectorAll = function (sel) {
+    const parts = String(sel).split(',').map(function (p) { return p.trim(); });
+    const out = [];
+    const walk = function (el) {
+      for (let i = 0; i < parts.length; i++) {
+        if (matchesSelector(el, parts[i])) { out.push(el); break; }
+      }
+      (el.children || []).forEach(walk);
+    };
+    (doc.body.children || []).forEach(walk);
+    return out;
+  };
+  doc.querySelector = function (sel) { const all = doc.querySelectorAll(sel); return all.length ? all[0] : null; };
+
+  const hud = new ST.MobileHUD({ doc: doc, layoutMode: 'desktop' });
+  hud.bindDrawer();
+
+  // Stand up the whole band by hand: all ten nodes, including the three that used to stay
+  // fixed over the arena and the two that only appear mid-battle.
+  const mk = function (cls) {
+    const el = doc.createElement('div');
+    el.className = cls;
+    doc.body.appendChild(el);
+    return el;
+  };
+  const band = {
+    banner: mk('tactician-banner'), overlord: mk('st-overlord-gauge'),
+    badgeRow: mk('st-badge-row'), deduction: mk('st-deduction-badges'),
+    chip: mk('tactician-tr-chip'), strip: mk('st-bench-strip'),
+    gauge: mk('st-pp-gauge'), sentinel: mk('st-format-sentinel'),
+    receipt: mk('st-receipt-card'), cancelAlert: mk('st-cancel-alert-card')
+  };
+  // ...and no battle at all: this is the lobby.
+  eq('with no battle in the document the page kind is idle', doc.documentElement.getAttribute('data-st-page'), 'idle');
+
+  // Drain-then-fill: mobile first, then desktop, so the migration is exercised rather than
+  // assumed (a no-op early return in _applyResolvedLayout would hide a stale reparent here).
+  hud.setLayoutMode('mobile');
+  hud.setLayoutMode('desktop');
+  eq('the document reports the desktop layout', doc.documentElement.getAttribute('data-st-layout'), 'desktop');
+
+  const consoleEl = doc.querySelector('.st-console');
+  check('the console exists on the desktop layout', !!consoleEl);
+  const keys = Object.keys(band);
+  for (let i = 0; i < keys.length; i++) {
+    check(band[keys[i]].className + ' is a static child of the console', band[keys[i]].parentNode === consoleEl);
+  }
+  eq('and none of them is left directly under the body',
+    keys.filter(function (k) { return band[k].parentNode === doc.body; }).length, 0);
+
+  /* ---- the title bar ---- */
+  const header = doc.querySelector('.st-console-header');
+  check('the console has a title bar', !!header);
+  eq('and it is a real button', header.tagName, 'BUTTON');
+  check('it carries the Showdown identifier and Tactician identity',
+    !!doc.querySelector('.st-console-identity') && doc.querySelector('.st-console-identity').textContent === 'SHOWDOWN' &&
+    !!doc.querySelector('.st-console-label') && doc.querySelector('.st-console-label').textContent === 'TACTICIAN');
+  eq('the console caret is decorative and hidden from assistive technology',
+    doc.querySelector('.st-console-caret').getAttribute('aria-hidden'), 'true');
+  const summaryEl = doc.querySelector('.st-console-summary');
+  const countEl = doc.querySelector('.st-console-count');
+  check('the summary carries the current decision', !!summaryEl && summaryEl.textContent.length > 0, summaryEl && summaryEl.textContent);
+  // 10 cards are stacked; the header itself is chrome and is not counted.
+  check('the count badge reads 10 readouts', /10\s*readouts/.test(countEl ? countEl.textContent : ''), countEl && countEl.textContent);
+  check('the title identifies the Tactician and current decision', /Showdown Tactician/i.test(header.getAttribute('title') || ''), header.getAttribute('title'));
+  check('...and says so for screen readers too', /Showdown Tactician/i.test(header.getAttribute('aria-label') || ''));
+
+  /* ---- collapsible ---- */
+  eq('the desktop readout starts as a collapsed battle-first rail',
+    consoleEl.getAttribute('data-st-console-open'), '0');
+  hud.togglePanel();
+  eq('togglePanel expands the requested readout', consoleEl.getAttribute('data-st-console-open'), '1');
+  hud.togglePanel();
+  eq('togglePanel collapses it again', consoleEl.getAttribute('data-st-console-open'), '0');
+  hud.setPanelOpen(true);
+  eq('setPanelOpen(true) expands it too', consoleEl.getAttribute('data-st-console-open'), '1');
+  hud.setPanelOpen(false);
+  eq('setPanelOpen(false) collapses it too', consoleEl.getAttribute('data-st-console-open'), '0');
+  eq('and the header follows', header.getAttribute('aria-expanded'), '0');
+
+  /* ---- the page-kind gate ---- */
+  // A battle appears with no reload (Showdown is a single-page app): the panel comes back.
+  const battle = doc.createElement('div');
+  battle.className = 'battle';
+  doc.body.appendChild(battle);
+  hud._syncChipBand();
+  eq('entering a battle flips the page kind', doc.documentElement.getAttribute('data-st-page'), 'battle');
+  // ...and leaving it takes the panel with it, without touching the DOM: the cards stay where
+  // they are and the root attribute stops the container painting.
+  battle.parentNode.removeChild(battle);
+  hud._syncChipBand();
+  eq('leaving it flips the page kind back', doc.documentElement.getAttribute('data-st-page'), 'idle');
+  check('the cards are still parented to the console (nothing was re-homed into the body)',
+    band.banner.parentNode === consoleEl && band.strip.parentNode === consoleEl);
+
+  /* ---- the hotkey ---- */
+  const keys2 = listeners.filter(function (l) { return l.type === 'keydown'; });
+  check('Ctrl+8 is bound on the document', keys2.length >= 1);
+  eq('and it is bound in the capture phase, ahead of Showdown\'s own handlers',
+    keys2.length ? keys2[keys2.length - 1].capture : null, true);
+  // Fire it the way the browser would.
+  let fired = 0;
+  const realToggle = hud.togglePanel;
+  hud.togglePanel = function () { fired++; return realToggle.call(hud); };
+  keys2[keys2.length - 1].fn({ ctrlKey: true, key: '8', preventDefault: function () {}, stopPropagation: function () {} });
+  eq('a synthetic Ctrl+8 toggles the panel', fired, 1);
+  keys2[keys2.length - 1].fn({ ctrlKey: false, key: '8', preventDefault: function () {}, stopPropagation: function () {} });
+  eq('a plain 8 does not (only Ctrl/Cmd arms it)', fired, 1);
+  keys2[keys2.length - 1].fn({ ctrlKey: true, key: 'q', preventDefault: function () {}, stopPropagation: function () {} });
+  eq('and neither does Ctrl+Q', fired, 1);
+  hud.togglePanel = realToggle;
+  // Typing in the team box must never be intercepted.
+  const textarea = doc.createElement('textarea');
+  doc.body.appendChild(textarea);
+  keys2[keys2.length - 1].fn({
+    ctrlKey: true, key: '8', target: textarea,
+    preventDefault: function () {}, stopPropagation: function () {}
+  });
+  eq('Ctrl+8 while typing in the team box is left to the page', fired, 1);
+
+  /* ---- the drag handle ---- */
+  const drag = hud._bindConsoleDrag;
+  check('the title bar is a drag handle', typeof drag === 'function');
+  check('the drag starts from a zeroed offset', hud._panelX === 0 && hud._panelY === 0);
+  hud._panelX = 120;
+  hud._panelY = -40;
+  hud._resetPanelOffset();
+  eq('re-docking zeroes the offset', hud._panelX + ',' + hud._panelY, '0,0');
+
+  /* ---- and the teardown ---- */
+  hud.clear();
+  check('clear() removes the console too', !doc.querySelector('.st-console'));
 }
 
 /**
@@ -647,8 +811,61 @@ function searchWholeBody(doc) {
  * the player to press, so the flag has to land ON it — and come back off when the window closes,
  * because that button belongs to the PAGE and a flag left there would outlive our teardown.
  */
+function sectionDesktopConsoleCountBadgeTracksTheStack() {
+  section('12. the desktop count badge tracks the cards actually stacked');
+
+  // A fresh, EMPTY document. The real extension creates the console lazily: the first band
+  // element to be MOUNTED is what builds it, and at the moment _ensureConsole runs that
+  // element has not been appended yet. The header used to be written exactly then — count 0,
+  // "idle" — and never again, because _ensureConsole early-returns forever after. The rail
+  // therefore claimed an empty console while a full stack of cards sat inside it (seen in a
+  // live battle capture: "[ENGINE] TACTICIAN … [idle]" over ten cards). Mount through the
+  // public render path so the creation order is the live one, not the test-built one.
+  const doc = makeDoc();
+  doc.querySelectorAll = function (sel) {
+    const parts = String(sel).split(',').map(function (p) { return p.trim(); });
+    const out = [];
+    const walk = function (el) {
+      for (let i = 0; i < parts.length; i++) {
+        if (matchesSelector(el, parts[i])) { out.push(el); break; }
+      }
+      (el.children || []).forEach(walk);
+    };
+    (doc.body.children || []).forEach(walk);
+    return out;
+  };
+  doc.querySelector = function (sel) { const all = doc.querySelectorAll(sel); return all.length ? all[0] : null; };
+
+  const hud = new ST.MobileHUD({ doc: doc, layoutMode: 'desktop' });
+  hud.bindDrawer();
+  check('nothing is mounted before the first readout', !doc.querySelector('.st-console'));
+
+  hud.renderBanner('PLAY: Dragon Dance (71%)');
+  const consoleEl = doc.querySelector('.st-console');
+  check('the first readout creates the console', !!consoleEl);
+  let countEl = doc.querySelector('.st-console-count');
+  check('the badge reads 1 readout, not idle',
+    /^1\s*readout\b/.test(countEl && countEl.textContent ? countEl.textContent.trim() : ''),
+    countEl && countEl.textContent);
+
+  hud._ensureChip();
+  countEl = doc.querySelector('.st-console-count');
+  check('a second card bumps it to 2 readouts',
+    /2\s*readouts/.test(countEl ? countEl.textContent : ''), countEl && countEl.textContent);
+
+  // The summary is not a mount-time snapshot either: a fresh banner line is re-read into the
+  // rail (the desktop rail used to keep the text from whenever the console was created).
+  hud.renderBanner('PLAY: Close Combat (88%)');
+  const summaryEl = doc.querySelector('.st-console-summary');
+  eq('the summary trims the play prefix but preserves the latest move',
+    summaryEl ? summaryEl.textContent : '', 'Close Combat (88%)');
+
+  hud.clear();
+  check('clear() takes the console down', !doc.querySelector('.st-console'));
+}
+
 function sectionCancelAlertLifecycle() {
-  section('11. the Cancel-window alert flags the button, and every teardown path releases it');
+  section('13. the Cancel-window alert flags the button, and every teardown path releases it');
   const doc = searchWholeBody(makeDoc());
   const hud = new ST.MobileHUD({ doc: doc });
   const undo = makeEl('button');
@@ -747,6 +964,8 @@ function main() {
   sectionInitResetsTheEvaluationLatch();
   sectionAdoptedDrawerStillBindsLayoutSignals();
   sectionLayoutModeResolvesAndReparents();
+  sectionDesktopConsoleCarriesEveryReadoutAndOnlyOnBattles();
+  sectionDesktopConsoleCountBadgeTracksTheStack();
   sectionCancelAlertLifecycle();
 
   section('summary');

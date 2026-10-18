@@ -841,18 +841,19 @@
       return this.engine.preview(state.active ? state.active.opp : null, state);
     }
 
-    /** The tappable bench bodies: every living, non-active opponent mon. */
+    /** The revealed opponent roster cards; only bench cards can be selected for previews. */
     _benchTargets(state) {
       const team = (state && state.oppTeam) || [];
       const out = [];
       for (let i = 0; i < team.length; i++) {
         const mon = team[i];
-        if (!mon || mon.fainted || mon.isActive) continue;
+        if (!mon) continue;
         out.push({
           id: mon.id || U.toID(mon.species),
           species: mon.species || mon.id || '',
-          hpPercent: typeof mon.hpPercent === 'number' ? mon.hpPercent : 100,
-          fainted: !!mon.fainted
+          hpPercent: typeof mon.hpPercent === 'number' ? mon.hpPercent : (mon.fainted ? 0 : 100),
+          fainted: !!mon.fainted,
+          isActive: !!mon.isActive
         });
       }
       return out;
@@ -882,7 +883,7 @@
         if (!mon || mon.confirmedItem !== 'Heavy-Duty Boots') continue;
         out.push({
           id: 'boots-' + mon.id, cls: 'unmasked',
-          label: '🕵️ UNMASKED: Heavy-Duty Boots (100% Confirmed)',
+          label: 'ITEM CONFIRMED / HEAVY-DUTY BOOTS',
           detail: mon.species + ' entered with hazards up and took no damage: it is holding Heavy-Duty Boots.'
         });
       }
@@ -891,7 +892,7 @@
         if (!mon || !mon.cannotBeChoice) continue;
         out.push({
           id: 'choice-' + mon.id, cls: 'choice-broken',
-          label: '❌ CHOICE-LOCK BROKEN: Band / Specs / Scarf Eliminated',
+          label: 'CHOICE LOCK BROKEN / Band · Specs · Scarf ruled out',
           detail: mon.species + ' used two different moves in one stint without switching: no Choice item is possible.'
         });
       }
@@ -903,7 +904,7 @@
         const bench = (state.bench && state.bench.opp ? state.bench.opp.length : Math.max(0, opp.length - 1));
         out.push({
           id: 'lockout', cls: 'lockout',
-          label: '🔒 LOCKOUT ACTIVE: Remaining ' + bench + ' Bench Mons Cannot Hold Stones/Crystals',
+          label: 'FORMAT LOCK / ' + bench + ' bench slots cannot hold Stones or Crystals',
           detail: spent.join(' + ') + ' is already spent in this format: no unrevealed body can carry a Mega Stone or Z-Crystal.'
         });
       }
@@ -922,7 +923,7 @@
       if (this._trAlerted) return false;
       this._trAlerted = true;
       if (this.hud && typeof this.hud.renderTRChip === 'function') {
-        this.hud.renderTRChip('📳 TR: 1/5 — LAST TURN: attack or sack your setter!', 'gold');
+        this.hud.renderTRChip('TR 1/5 / LAST TURN: attack or sack your setter', 'gold');
       }
       const pattern = ST.configGet ? ST.configGet('hud.vibrate.pattern', [40, 60, 40]) : [40, 60, 40];
       if (!ST.configGet || ST.configGet('hud.vibrate.trLastTurn', true) !== false) {
@@ -974,7 +975,7 @@
         if (kos > mvpKos || (kos === mvpKos && dmg > mvpDamage)) { mvp = mon; mvpKos = kos; mvpDamage = dmg; }
       }
       rows.push({
-        icon: '👑', label: 'Match MVP',
+        label: 'MATCH MVP',
         value: mvp ? (mvp.species + ' — ' + Math.max(0, mvpKos) + ' KO' + (mvpKos === 1 ? '' : 's') +
           ', ' + Math.round(Math.max(0, mvpDamage)) + '% damage dealt') : 'no damage recorded'
       });
@@ -982,21 +983,21 @@
       const used = stats.trAttackTurns || 0;
       const efficiency = active ? Math.round((used / active) * 100) : 0;
       rows.push({
-        icon: '⏳', label: 'Trick Room Efficiency',
+        label: 'TR EFFICIENCY',
         value: used + ' / ' + active + ' active turns utilised (' + efficiency + '%)'
       });
       rows.push({
-        icon: '🛡️', label: 'Magic Bounce Value',
+        label: 'MAGIC BOUNCE',
         value: (stats.magicBounce || 0) + ' activation' + ((stats.magicBounce || 0) === 1 ? '' : 's')
       });
       rows.push({
-        icon: '❄️', label: 'Snow Turns Active',
+        label: 'SNOW TURNS',
         value: (stats.snowTurns || 0) + ' turn' + ((stats.snowTurns || 0) === 1 ? '' : 's') +
           ((stats.snowTurns || 0) > 0 ? ' (+50% Def on Ice bodies)' : '')
       });
       if (stats.bestHit) {
         rows.push({
-          icon: '⚡', label: 'Highest Damage Hit',
+          label: 'HIGHEST DAMAGE',
           value: nameOf(stats.bestHit.monId) + ' ' + (stats.bestHit.moveId || 'hit') +
             ' (' + stats.bestHit.percent + '% on turn ' + stats.bestHit.turn + ')'
         });
@@ -1005,12 +1006,12 @@
       const shown = rows.slice(0, Math.max(3, max));
       const outcome = state.result === 'win' ? 'Victory!' : (state.result === 'loss' ? 'Defeat' : 'Draw');
       return {
-        title: '🏆 MATCH RECEIPT (Turn ' + (state.turn || 0) + ' — ' + outcome + ')',
+        title: 'MATCH RECEIPT / TURN ' + (state.turn || 0) + ' / ' + outcome,
         headline: mvp ? (mvp.species + ' led the team with ' + Math.max(0, mvpKos) + ' KO' +
           (mvpKos === 1 ? '' : 's') + ' and ' + Math.round(Math.max(0, mvpDamage)) + '% of the damage.') : '',
         rows: shown,
         copyText: 'SHOWDOWN TACTICIAN — MATCH RECEIPT\n' + shown.map(function (r) {
-          return r.icon + ' ' + r.label + ': ' + r.value;
+          return r.label + ': ' + r.value;
         }).join('\n')
       };
     }

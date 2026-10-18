@@ -614,9 +614,7 @@ eq('...with one row per mechanic', mechanicRows.length, 2);
 eq('...keyed by the mechanic, not by its state',
   mechanicRows.map(function (r) { return String(attr(r, 'data-st-mechanic')); }).sort(),
   ['Mega Evolution', 'Z-Move'].sort());
-/* The glyph belongs to the renderer: the engine names the tactic (`kind`) and the bar picks the
- * character. The bug this pins: the engine used to ship ASCII placeholders ('X', '.', 'o'), which
- * rendered as literal text in the bar. */
+/* The engine reports semantic tactic kinds; the HUD renders plain status labels, never emoji. */
 check('every tactic names its kind, so the renderer never has to parse a bullet',
   (fullSent.tactics || []).every(function (t) { return t && typeof t.kind === 'string' && t.kind; }),
   JSON.stringify(fullSent.tactics));
@@ -624,8 +622,8 @@ check('...and no tactic carries a character the engine invented',
   (fullSent.tactics || []).every(function (t) { return !t || t.icon === undefined; }),
   JSON.stringify(fullSent.tactics));
 const tacticRows = byClass('st-sentinel-tactic');
-check('...so no rendered tactic row leads with an ASCII placeholder',
-  tacticRows.every(function (r) { var t = String(r.textContent).trim(); return t.charCodeAt(0) > 127; }),
+check('...so each tactic uses an explicit text status',
+  tacticRows.every(function (r) { return /^(READY|OPEN|CAUTION|NOTE) \/ /.test(String(r.textContent).trim()); }),
   JSON.stringify(tacticRows.map(function (r) { return String(r.textContent).slice(0, 30); })));
 check('...and the freedom row is tagged for the CSS with the kind it was given',
   tacticRows.some(function (r) { return String(attr(r, 'data-st-tactic')) === 'freedom'; }),
@@ -633,10 +631,10 @@ check('...and the freedom row is tagged for the CSS with the kind it was given',
 
 const sentText = allText(sentEl).join(' | ');
 check('the burned Mega row names the body and the turn', /turn 1/.test(sentText), sentText);
-check('...and the burned label is on the row', new RegExp(cfg('sentinel.burnedLabel', 'BURNED')).test(sentText), sentText);
+check('...and the spent state is named on the row', /Mega Evolution:\s*SPENT/.test(sentText), sentText);
 check('the freedom tactic is rendered', (byClass('st-sentinel-tactic').length >= 1), String(byClass('st-sentinel-tactic').length));
 check('the row names the MECHANIC and states its condition, rather than printing the label twice',
-  /Mega Evolution:\s*BURNED/.test(sentText) && !/BURNED:\s*BURNED/.test(sentText),
+  /Mega Evolution:\s*SPENT/.test(sentText) && !/SPENT:\s*SPENT/.test(sentText),
   sentText);
 eq('renderFormatSentinel(null) removes the bar',
   call('renderFormatSentinel(null) does not throw', function () { return sentHud && sentHud.renderFormatSentinel(null); }), null);

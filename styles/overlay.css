@@ -1,18 +1,11 @@
 /* Showdown Tactician — styles/overlay.css
  *
- * THE DESIGN LANGUAGE: "tactical broadcast telemetry".
+ * DESIGN LANGUAGE: NIGHTSHIFT — a bespoke battle instrument in smoked navy, signal cyan,
+ * and warm threat amber. Opponent roster cards use the sprite art already served by Showdown.
+ * The mobile battle remains unobstructed; the tactical readout opens on demand.
  *
- *   This HUD is a *broadcast* on top of Pokémon Showdown's own page — not a co-design of it.
- *   The references are F1 timing graphics, football scorebugs and the lower-thirds of a
- *   fighting-game tournament cast: high-density, high-contrast, all on near-black, with a single
- *   signature accent (ice teal) doing the work that gradients and drop-shadows usually do on
- *   the web. The shape vocabulary is precise rectangles with small radii and color-coded left
- *   rails — NOT pill-everything, NOT glassmorphism, NOT the generic AI-flat-illustration
- *   purple-gradient.
- *
- *   Mobile (411x891, S24 FE) is the primary design; desktop docks a single console into the
- *   640 px arena column (see the bottom of the file). Every desktop rule is scoped to
- *   `[data-st-layout="desktop"]` so the mobile layout is the default and a real, complete one.
+ * Geometry, stacking, hit targets and battle non-interference are behavior contracts. Visual
+ * rules may change; fixed anchors and layout reparenting must not.
  *
  *   Geometry: every element's position, offset, z-index, pointer-events, min touch size, and
  *   viewport-bound max-height are non-negotiable — they are the non-interference contract with
@@ -23,32 +16,23 @@
 /* ============================================================ design tokens */
 
 :root {
-  /* surfaces — layered ink, not flat, and *not* glassmorphism (too expensive on mid-range
-   * Android and it gives the generic "AI SaaS" look). The vertical gradient is the depth cue. */
-  --st-ink-1: rgba(8, 12, 22, 0.96);
-  --st-ink-2: rgba(14, 20, 34, 0.94);
-  --st-ink-3: rgba(20, 28, 44, 0.92);   /* lifted surfaces (drawer, receipt) */
-  --st-ink-strip: rgba(8, 12, 22, 0.55);/* translucent band surfaces */
-
-  /* hairlines — cool steel, not warm gray. This is the "broadcast" detail. */
-  --st-hairline:      rgba(148, 178, 212, 0.14);
-  --st-hairline-soft: rgba(148, 178, 212, 0.08);
-  --st-hairline-bold: rgba(148, 178, 212, 0.24);
-
-  /* the ONE signature accent: ice teal. Used on the active rail, focus rings, the optimal
-   * star and the Save button. Everything else is semantic (green/amber/red/slate). */
-  --st-rail:     #5eead4;
-  --st-rail-dim: rgba(94, 234, 212, 0.55);
-
-  /* semantic states — refined to feel designed, not "Tailwind defaults". */
-  --st-text:   #f1f5fb;
-  --st-muted:  #8aa0bd;
-  --st-quiet:  #5d6e8a;
-  --st-high:   #3ddc97;
-  --st-mid:    #ffc857;
-  --st-low:    #7a8ba6;
-  --st-veto:   #ff5d5d;
-  --st-gold:   #fbbf24;
+  --st-ink-1: #101722;
+  --st-ink-2: #151e2b;
+  --st-ink-3: #1d2938;
+  --st-ink-strip: rgba(10,16,25,.95);
+  --st-hairline: rgba(147,178,202,.18);
+  --st-hairline-soft: rgba(147,178,202,.1);
+  --st-hairline-bold: rgba(147,178,202,.34);
+  --st-rail: #54ead1;
+  --st-rail-dim: rgba(84,234,209,.58);
+  --st-text: #edf4f8;
+  --st-muted: #9eb1c3;
+  --st-quiet: #66798d;
+  --st-high: #8be0a4;
+  --st-mid: #f0c66f;
+  --st-low: #95a4b4;
+  --st-veto: #ff7085;
+  --st-gold: #f0c66f;
 
   /* type */
   --st-font:     -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -89,9 +73,7 @@ button[data-move],
   overflow: visible;
 }
 
-/* Confidence states — these are the engine's own semantics, so the colors are pinned. The
- * look is sharpened, not changed: thicker outer ring + inner glow so a 2HKO/OHKO/etc verdict
- * reads from a meter away. */
+/* Confidence states use the same material language as the field folio; verdict semantics stay explicit. */
 button[data-move].conf-high { border-color: var(--st-high) !important; box-shadow: 0 0 0 1px var(--st-high) inset !important; }
 button[data-move].conf-mid  { border-color: var(--st-mid)  !important; box-shadow: 0 0 0 1px var(--st-mid)  inset !important; }
 button[data-move].conf-low  { border-color: var(--st-low)  !important; }
@@ -107,10 +89,7 @@ button[data-move].conf-veto .movebutton-name {
   text-decoration-thickness: 1.5px;
 }
 button[data-move].st-optimal {
-  box-shadow:
-    0 0 0 2px var(--st-high) inset,
-    0 0 18px rgba(61, 220, 151, 0.45),
-    0 0 4px rgba(61, 220, 151, 0.6) !important;
+  box-shadow: 0 0 0 2px var(--st-high) inset, 0 0 0 1px rgba(140,175,131,.52) !important;
 }
 
 /* Showdown fixes its own `.movebutton` at `height: 40px` and the lethal bar is a block child
@@ -124,7 +103,7 @@ button[data-st-lethal] {
 
 /* ============================================================ move badge & reason */
 
-/* The confidence badge: a tight monospace pill in the top-right of the button. */
+/* The confidence badge: a compact datum anchored to the move's upper-right corner. */
 .elo-helper-badge {
   position: absolute;
   top: 2px;
@@ -136,7 +115,7 @@ button[data-st-lethal] {
   min-width: 32px;
   height: 18px;
   padding: 0 6px;
-  border-radius: var(--st-r-sm);
+  border-radius: 2px;
   font-family: var(--st-font-mono);
   font-size: 10.5px;
   font-weight: 800;
@@ -150,9 +129,9 @@ button[data-st-lethal] {
   box-shadow: 0 1px 0 rgba(0, 0, 0, 0.5) inset, 0 1px 3px rgba(0, 0, 0, 0.4);
   font-variant-numeric: tabular-nums;
 }
-.elo-helper-badge.conf-high { background: var(--st-high); color: #062b1b; box-shadow: 0 1px 0 rgba(0,0,0,.4) inset, 0 0 0 1px rgba(61, 220, 151, 0.35), 0 0 8px rgba(61, 220, 151, 0.4); }
-.elo-helper-badge.conf-mid  { background: var(--st-mid);  color: #3a2700; box-shadow: 0 1px 0 rgba(0,0,0,.4) inset, 0 0 0 1px rgba(255, 200, 87, 0.35), 0 0 8px rgba(255, 200, 87, 0.4); }
-.elo-helper-badge.conf-low  { background: var(--st-low);  color: #0a1224; }
+.elo-helper-badge.conf-high { background: var(--st-high); color: #182117; box-shadow: 0 0 0 1px rgba(140,175,131,.22); }
+.elo-helper-badge.conf-mid  { background: var(--st-mid);  color: #302315; box-shadow: 0 0 0 1px rgba(216,173,112,.24); }
+.elo-helper-badge.conf-low  { background: var(--st-low);  color: #201e19; }
 .elo-helper-badge.conf-veto {
   background: transparent;
   color: var(--st-veto);
@@ -164,11 +143,12 @@ button[data-st-lethal] {
   min-width: 36px;
 }
 .elo-helper-badge.st-optimal::after {
-  content: "★";
+  content: "PICK";
   margin-left: 4px;
-  font-size: 10px;
+  font-size: 8px;
+  letter-spacing: 0.08em;
   color: inherit;
-  text-shadow: 0 0 6px currentColor;
+  text-shadow: none;
 }
 
 /* The LLM's one-line justification, injected under the move name. */
@@ -186,9 +166,7 @@ button[data-st-lethal] {
 
 /* ==================================================================== banner */
 
-/* The status strip. Lives just above the arena (--st-battle-top), pinned to the full width.
- * Reads as a single broadcast line. The left accent rail + a live status pip (::before) are
- * the only chrome: no glass, no border-radius bulge. */
+/* The battle status line. Mobile tucks it into the tactical sheet; desktop places it in the dock. */
 .tactician-banner {
   position: fixed;
   top: var(--st-battle-top, 0px);
@@ -196,11 +174,9 @@ button[data-st-lethal] {
   right: 0;
   z-index: 2147483000;
   box-sizing: border-box;
-  padding: 6px 12px 6px 16px;
-  background:
-    linear-gradient(180deg, rgba(10, 14, 26, 0.97) 0%, rgba(14, 20, 34, 0.94) 100%);
+  padding: 6px 12px 6px 16px;  background: #201a1a;
   border: 0;
-  border-bottom: 1px solid var(--st-hairline);
+  border-bottom: 1px solid rgba(231,218,191,.16);
   border-left: 3px solid var(--st-rail);
   color: var(--st-text);
   font-family: var(--st-font);
@@ -217,22 +193,16 @@ button[data-st-lethal] {
   font-variant-numeric: var(--st-tnum);
   padding-top: max(6px, env(safe-area-inset-top));
 }
-/* Live status pip on the left edge, before the rail: a single soft teal dot. */
+/* A stationary marker keeps the eye on the next play without adding decorative motion. */
 .tactician-banner::before {
   content: "";
   position: absolute;
-  left: 6px; top: 50%;
-  width: 4px; height: 4px;
-  margin-top: -2px;
+  left: 7px; top: 50%;
+  width: 3px; height: 3px;
+  margin-top: -1.5px;
   background: var(--st-rail);
   border-radius: 50%;
-  box-shadow: 0 0 6px var(--st-rail-dim);
   pointer-events: none;
-  animation: st-live 2.4s ease-in-out infinite;
-}
-@keyframes st-live {
-  0%, 100% { box-shadow: 0 0 4px var(--st-rail-dim); }
-  50%      { box-shadow: 0 0 8px var(--st-rail); }
 }
 
 /* ==================================================================== TR chip */
@@ -249,9 +219,8 @@ button[data-st-lethal] {
   z-index: 2147483001;
   box-sizing: border-box;
   padding: 8px 14px 8px 18px;
-  border-radius: var(--st-r-md);
-  background:
-    linear-gradient(180deg, rgba(12, 18, 32, 0.96) 0%, rgba(18, 24, 40, 0.94) 100%);
+  border-radius: 3px;
+  background: #2c2322;
   border: 1px solid var(--st-hairline);
   border-left: 3px solid var(--st-rail);
   color: var(--st-text);
@@ -265,21 +234,19 @@ button[data-st-lethal] {
   pointer-events: none;
   font-variant-numeric: var(--st-tnum);
 }
-.tactician-tr-chip.tr-info  { border-left-color: #7a8ba6; }
+.tactician-tr-chip.tr-info  { border-left-color: #989083; }
 .tactician-tr-chip.tr-warn  { border-left-color: var(--st-mid); color: #ffe2a3; }
 .tactician-tr-chip.tr-danger {
   border-left-color: var(--st-veto);
   color: #ffd2d2;
-  background:
-    linear-gradient(180deg, rgba(34, 10, 14, 0.96) 0%, rgba(20, 10, 14, 0.94) 100%);
+  background: #301c1c;
   animation: st-pulse 1.6s ease-in-out infinite;
 }
 /* The last Trick Room turn: gold, and it breathes rather than blinks. */
 .tactician-tr-chip.tr-gold {
   border-left-color: var(--st-gold);
   color: #ffe7a3;
-  background:
-    linear-gradient(180deg, rgba(36, 26, 8, 0.96) 0%, rgba(22, 16, 6, 0.94) 100%);
+  background: #30281b;
   animation: st-glow 2.2s ease-in-out infinite;
 }
 
@@ -309,9 +276,7 @@ button[data-st-lethal] {
   padding: 0;
   border-radius: 50%;
   border: 1px solid var(--st-hairline-bold);
-  background:
-    radial-gradient(circle at 30% 28%, rgba(94, 234, 212, 0.22) 0%, rgba(94, 234, 212, 0) 55%),
-    linear-gradient(180deg, var(--st-ink-1) 0%, var(--st-ink-2) 100%);
+  background: radial-gradient(circle at 30% 28%, rgba(198,161,107,.2) 0%, rgba(198,161,107,0) 58%), #201a1a;
   color: var(--st-rail);
   font-family: var(--st-font);
   font-size: 12.5px;
@@ -332,9 +297,8 @@ button[data-st-lethal] {
   box-shadow: 0 1px 0 rgba(190, 215, 255, 0.08) inset, 0 0 0 2px rgba(61, 220, 151, 0.18), 0 6px 18px rgba(0, 0, 0, 0.5);
 }
 
-/* The team-drawer sheet. Tabs to the bottom of the screen with safe-area padding, a hairline
- * top divider and a "grab handle" painted on the top edge (::before) so the sheet is
- * unambiguously a sheet (touch UX). The header has the rail on the left. */
+/* The team-drawer sheet docks above the action rail with safe-area padding and a painted
+ * grab handle. Its equipment-panel styling matches the Nightshift instrument. */
 .team-drawer {
   position: fixed;
   left: 0;
@@ -346,8 +310,7 @@ button[data-st-lethal] {
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   padding: 18px 14px calc(14px + env(safe-area-inset-bottom) + var(--st-touch) + 8px);
-  background:
-    linear-gradient(180deg, rgba(10, 14, 26, 0.97) 0%, rgba(14, 20, 34, 0.96) 100%);
+  background: #201a1a;
   border: 0;
   border-top: 1px solid var(--st-hairline);
   border-radius: 14px 14px 0 0;
@@ -455,11 +418,11 @@ button[data-st-lethal] {
 .drawer-save:active, .drawer-close:active { transform: scale(0.98); }
 .drawer-save:focus-visible, .drawer-close:focus-visible { outline: 2px solid var(--st-rail); outline-offset: 2px; }
 .drawer-save {
-  background: linear-gradient(180deg, var(--st-rail) 0%, #2dd4bf 100%);
+  background: var(--st-rail);
   border-color: transparent;
-  color: #062b29;
-  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.2);
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.15) inset, 0 4px 12px rgba(45, 212, 191, 0.25);
+  color: #302322;
+  text-shadow: none;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.2), 0 4px 12px rgba(198,161,107,.2);
 }
 .drawer-save:hover { filter: brightness(1.05); }
 
@@ -556,7 +519,7 @@ button[data-st-lethal="none"] .st-lethal-bar::before {
 
 /* ============================================================== bench sandbox */
 
-/* The opponent bench as a row of "roster cards". The strip is tap-transparent (so a
+/* The opponent roster as a sprite-first recon board. The strip is tap-transparent (so a
  * residual overlap with the PS move bar never eats a move-button tap); the pills are the
  * actual touch targets.
  *
@@ -589,35 +552,41 @@ button[data-st-lethal="none"] .st-lethal-bar::before {
 }
 .st-bench-strip::-webkit-scrollbar { display: none; }
 
-/* A roster card: a single tight monospace line of "Species HP%" on a deep ink card, with
- * a left rail (color = state) and a 2px baseline accent in the rail teal. The bottom
- * scanline and the rail together are the "broadcast" detail. */
+/* The roster is a two-column tactical portrait board: actual sprite, species, HP and a compact
+ * live meter replace the old name-only chips while keeping the same safe touch targets. */
 .st-bench-pill {
   position: relative;
   flex: 0 0 auto;
-  min-width: 96px;
-  min-height: var(--st-touch);
-  padding: 0 12px;
+  width: calc(50% - 4px);
+  min-width: 0;
+  min-height: 60px;
+  padding: 5px 8px 5px 5px;
   border: 1px solid var(--st-hairline);
-  border-left: 3px solid var(--st-quiet);
-  border-radius: var(--st-r-sm);
-  background:
-    linear-gradient(180deg, rgba(14, 20, 34, 0.96) 0%, rgba(8, 12, 22, 0.96) 100%);
+  border-left: 2px solid var(--st-quiet);
+  border-radius: 9px;
+  background: linear-gradient(145deg, #1a2939, #101823);
   color: var(--st-text);
-  font-family: var(--st-font-mono);
-  font-size: 11.5px;
+  font-family: var(--st-font);
+  font-size: 11px;
   font-weight: 700;
-  line-height: 1;
-  letter-spacing: 0.02em;
+  line-height: 1.2;
   white-space: nowrap;
   pointer-events: auto;
   text-align: left;
   display: flex;
   align-items: center;
-  box-shadow: 0 1px 0 rgba(190, 215, 255, 0.04) inset, 0 4px 10px rgba(0, 0, 0, 0.35);
+  gap: 8px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.055), 0 5px 13px rgba(0,0,0,.2);
   transition: transform 120ms ease, border-color 120ms ease, background-color 120ms ease;
   font-variant-numeric: var(--st-tnum);
 }
+.st-bench-sprite { display:block; flex:0 0 48px; width:48px; height:48px; object-fit:contain; filter:drop-shadow(0 3px 5px rgba(0,0,0,.5)); }
+.st-bench-details { display:flex; flex:1 1 auto; min-width:0; flex-direction:column; gap:3px; }
+.st-bench-name { overflow:hidden; color:#e8f2f9; font:750 10px/1.25 var(--st-font); text-overflow:ellipsis; white-space:nowrap; }
+.st-bench-health { color:#9fb3c4; font:800 9px/1 var(--st-font-mono); font-variant-numeric:tabular-nums; }
+.st-bench-meter { display:block; width:100%; height:3px; overflow:hidden; border-radius:4px; background:rgba(142,177,203,.16); }
+.st-bench-meter-fill { display:block; height:100%; border-radius:inherit; background:#55ebd0; box-shadow:0 0 9px rgba(85,235,208,.5); }
+.st-bench-pill.st-sprite-missing::before { content:"?"; flex:0 0 48px; width:48px; color:#55ebd0; font:900 24px/48px var(--st-font-mono); text-align:center; }
 .st-bench-pill::after {
   content: "";
   position: absolute;
@@ -631,21 +600,35 @@ button[data-st-lethal="none"] .st-lethal-bar::before {
 .st-bench-pill:focus-visible { outline: 2px solid var(--st-rail); outline-offset: 2px; }
 
 .st-bench-pill.st-selected {
-  border-color: var(--st-mid);
-  border-left-color: var(--st-mid);
-  color: #ffe2a3;
-  background:
-    linear-gradient(180deg, rgba(38, 28, 8, 0.96) 0%, rgba(22, 16, 6, 0.96) 100%);
-  box-shadow: 0 0 0 1px rgba(255, 200, 87, 0.4) inset, 0 0 14px rgba(255, 200, 87, 0.18);
+  border-color: rgba(85,235,208,.65);
+  border-left-color: #55ebd0;
+  color: #f5fffe;
+  background: linear-gradient(145deg, #17403f, #152938 72%);
+  box-shadow: 0 0 0 1px rgba(85,235,208,.18) inset, 0 0 18px rgba(85,235,208,.1);
 }
+.st-bench-pill.st-active { border-left-color:#f2ca71; border-color:rgba(242,202,113,.36); }
+.st-bench-pill.st-active::after { content:"ACTIVE"; position:absolute; top:4px; right:5px; color:#f2ca71; font:800 7px/1 var(--st-font-mono); letter-spacing:.08em; }
+.st-bench-pill.st-active .st-bench-name { padding-right:26px; }
+.st-bench-pill.st-selected .st-bench-name { color:#fff; }
+.st-bench-pill.st-selected .st-bench-health { color:#8df4dd; }
 .st-bench-pill.st-selected::after { background: var(--st-mid); }
 
 .st-bench-pill.st-fainted {
   border-style: dashed;
   opacity: 0.5;
-  text-decoration: line-through;
-  text-decoration-color: var(--st-veto);
+  filter: grayscale(.9);
 }
+.st-bench-pill.st-active { border-left-color:#f2ca71; border-color:rgba(242,202,113,.36); }
+.st-bench-pill.st-active::after {
+  content:"ACTIVE";
+  position:absolute;
+  top:4px;
+  right:5px;
+  color:#f2ca71;
+  font:800 7px/1 var(--st-font-mono);
+  letter-spacing:.08em;
+}
+.st-bench-pill.st-active .st-bench-name { padding-right:26px; }
 
 /* ============================================================== deduction row */
 
@@ -689,10 +672,13 @@ button[data-st-lethal="none"] .st-lethal-bar::before {
   font-variant-numeric: var(--st-tnum);
 }
 .st-unmask-badge::before {
-  content: "▸";
-  color: inherit;
-  font-size: 9px;
-  opacity: 0.7;
+  content: "";
+  flex: 0 0 6px;
+  width: 6px;
+  height: 6px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  opacity: 0.8;
 }
 .st-unmask-badge.st-unmasked     { border-left-color: var(--st-high); color: #c8f5dc; }
 .st-unmask-badge.st-choice-broken { border-left-color: var(--st-veto); color: #ffd2d2; }
@@ -731,9 +717,8 @@ button[data-st-lethal="none"] .st-lethal-bar::before {
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.02em;
 }
-/* Each row is a monospace key + value on a hairline divider, prefixed with its icon glyph.
- * The icon, label and value are all set by the JS as a single text node ("⚔ KOs: 3"), so
- * the styling works on the block — monospace, tabular numerals, hairline above. */
+/* Each row is a monospace key + value on a hairline divider, prefixed with its icon glyph.  * The label and value are all set by the JS as plain text, so the styling works on the
+  * block — monospace, tabular numerals, hairline above — without pictograms. */
 .st-receipt-row {
   display: block;
   padding: 6px 0;
@@ -753,8 +738,8 @@ button[data-st-lethal="none"] .st-lethal-bar::before {
   margin-top: 12px;
   border: 1px solid transparent;
   border-radius: var(--st-r-sm);
-  background: linear-gradient(180deg, var(--st-rail) 0%, #2dd4bf 100%);
-  color: #062b29;
+  background: linear-gradient(135deg, #d8c1ff, #b491f2);
+  color: #21172f;
   font-family: var(--st-font);
   font-size: 13px;
   font-weight: 800;
@@ -893,9 +878,15 @@ button[data-st-lethal="none"] .st-lethal-bar::before {
   border-bottom: 1px solid var(--st-hairline-soft);
 }
 .st-sentinel-head::before {
-  content: "▸";
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border: 1px solid currentColor;
+  border-left: 0;
+  border-bottom: 0;
+  transform: rotate(45deg);
   color: var(--st-rail);
-  font-size: 9px;
 }
 .st-sentinel-head:first-child { margin-top: 0; }
 
@@ -909,8 +900,10 @@ button[data-st-lethal="none"] .st-lethal-bar::before {
   color: var(--st-text);
 }
 .st-sentinel-row.st-burned { color: #ffd2d2; }
+:root[data-st-layout="mobile"] .st-sentinel-row.st-burned { color: #ffc1cb; }
 .st-sentinel-row.st-burned .st-sentinel-name { text-decoration: line-through; text-decoration-color: rgba(255, 93, 93, 0.6); text-decoration-thickness: 1.5px; }
 .st-sentinel-row.st-live   { color: #c8f5dc; }
+:root[data-st-layout="mobile"] .st-sentinel-row.st-live { color: #b9eddb; }
 
 .st-sentinel-tactic {
   display: flex;
@@ -921,7 +914,7 @@ button[data-st-lethal="none"] .st-lethal-bar::before {
   line-height: 1.45;
   font-weight: 600;
 }
-.st-sentinel-tactic::before { content: "•"; color: var(--st-rail); margin-right: 4px; }
+.st-sentinel-tactic::before { content: ""; display: inline-block; width: 10px; height: 1px; background: var(--st-rail); margin-right: 4px; }
 .st-sentinel-bench {
   margin-top: 4px;
   padding-top: 4px;
@@ -972,7 +965,7 @@ button[data-st-lethal="none"] .st-lethal-bar::before {
   right: 0;
   margin-left: auto;
   margin-right: auto;
-  max-width: 520px;
+  max-width: min(520px, calc(100vw - 16px));
   /* Docked directly above the always-on bottom band. `--st-band-top` is the LIVE top Y of
    * that band (the TR chip and the bench strip), published by ui_overlay.js, so the sheet
    * clears both instead of sliding under the taller bench strip. The 6px gap gives the band
@@ -980,10 +973,10 @@ button[data-st-lethal="none"] .st-lethal-bar::before {
    * exists yet (a lobby, or the first frame before the first render). */
   bottom: calc(100vh - var(--st-band-top, 400px) + 6px);
   z-index: 39;
-  max-height: 36px;            /* collapsed: just the header rail */
+  max-height: 48px;            /* collapsed: just the header rail */
   padding: 0;
   border: 0;
-  border-radius: 12px;
+  border-radius: 11px;
   background: transparent;
   box-shadow: none;
   overflow: hidden;
@@ -997,10 +990,7 @@ button[data-st-lethal="none"] .st-lethal-bar::before {
   display: flex;
 }
 .st-sheet[data-st-sheet-open="1"] {
-  /* 58vh by default, but never tall enough to reach the battle scene: --st-sheet-max is
-   * published by ui_overlay.js from the chip's live top minus the arena's bottom, so the
-   * expanded panel can never cover a sprite, an HP bar or a party icon. The 120px floor
-   * keeps a usable panel on the clients where the measurement is unavailable. */
+  /* The clearance cap is measured live from the action row, arena and thumb rail. */
   max-height: min(58vh, var(--st-sheet-max, 220px));
   padding: 8px;
   overflow-y: auto;
@@ -1011,6 +1001,7 @@ button[data-st-lethal="none"] .st-lethal-bar::before {
   /* The backdrop dims the log behind the sheet on purpose; it is a modal surface, not a
    * passive decoration, so it earns its own shadow. */
 }
+:root[data-st-layout="mobile"] .st-sheet[data-st-sheet-open="0"] { max-height: 48px; }
 @media (prefers-reduced-motion: reduce) {
   .st-sheet { transition: none; }
 }
@@ -1026,8 +1017,9 @@ button[data-st-lethal="none"] .st-lethal-bar::before {
   align-items: center;
   gap: 10px;
   width: 100%;
+  max-width: 100%;
   box-sizing: border-box;
-  min-height: 32px;
+  min-height: 48px;
   flex: 0 0 auto;
   position: sticky;
   top: 0;
@@ -1055,6 +1047,23 @@ button[data-st-lethal="none"] .st-lethal-bar::before {
   transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
 }
 .st-sheet-header:active { transform: scale(0.995); }
+/* The chip is the rail's only fixed-width content: it stops the summary from being the first
+ * thing the eye lands on and makes the rail read as a labelled button ("ENGINE … 7 readouts ▾")
+ * rather than a status strip that happens to be tappable. */
+.st-sheet-chip,
+.st-console-chip {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: rgba(94, 234, 212, 0.14);
+  border: 1px solid rgba(94, 234, 212, 0.32);
+  color: var(--st-rail);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
 .st-sheet-header:focus { outline: none; }
 .st-sheet-header:focus-visible {
   outline: 2px solid var(--st-rail);
@@ -1079,6 +1088,10 @@ button[data-st-lethal="none"] .st-lethal-bar::before {
   text-transform: uppercase;
   color: var(--st-text);
 }
+:root[data-st-layout="mobile"] .st-sheet-summary {
+  font-size: 10px;
+  letter-spacing: 0.035em;
+}
 .st-sheet-count {
   flex: 0 0 auto;
   font-family: var(--st-font-mono);
@@ -1098,10 +1111,35 @@ button[data-st-lethal="none"] .st-lethal-bar::before {
   background: transparent;
   border-color: var(--st-hairline-soft);
 }
+/* --- mobile readability ---
+ * The sheet is a max-520px column on a 411px phone. The base card styles are 11-11.5px with
+ * 5-8px padding, so a 30px-tall card carries a single line of text. Bump the typography and
+ * the per-card min-height, and stop the flex column from compressing any card below its
+ * intrinsic size. The rail stays a single full-width pill. */
+:root[data-st-layout="mobile"] .st-sheet .tactician-banner,
+:root[data-st-layout="mobile"] .st-sheet .st-overlord-gauge,
+:root[data-st-layout="mobile"] .st-sheet .st-pp-gauge,
+:root[data-st-layout="mobile"] .st-sheet .st-format-sentinel,
+:root[data-st-layout="mobile"] .st-sheet .st-receipt-card,
+:root[data-st-layout="mobile"] .st-sheet .st-cancel-alert-card,
+:root[data-st-layout="mobile"] .st-sheet .st-deduction-badges,
+:root[data-st-layout="mobile"] .st-sheet .tactician-banner + .st-pp-gauge,
+:root[data-st-layout="mobile"] .st-sheet .tactician-banner + .st-format-sentinel {
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 8px 12px 8px 14px;
+  min-height: 28px;
+  flex-shrink: 0;
+}
+:root[data-st-layout="mobile"] .st-sheet .st-sheet-header { min-height: 48px; }
+:root[data-st-layout="mobile"] .st-sheet-summary { font-size: 12px; }
+:root[data-st-layout="mobile"] .st-sheet-count { font-size: 11px; }
+
 .st-sheet-caret {
   flex: 0 0 auto;
-  font-family: var(--st-font-mono);
-  font-size: 12px;
+  font-family: var(--st-font);
+  font-size: 14px;
+  line-height: 1;
   color: var(--st-rail);
   transition: transform 220ms cubic-bezier(.2,.7,.2,1);
   display: inline-block;
@@ -1156,87 +1194,303 @@ button[data-st-lethal="none"] .st-lethal-bar::before {
  * ever set by ui_overlay.js, so lobbies, the options page and the test harness keep the
  * mobile layout untouched. */
 
-:root[data-st-layout="desktop"] .tactician-banner {
-  top: var(--st-battle-top, 56px);
-  left: 8px; right: auto;
-  width: 624px;
-  border-radius: var(--st-r-md) var(--st-r-md) 0 0;
-  border-left-width: 3px;
-}
-:root[data-st-layout="desktop"] .st-overlord-gauge {
-  top: calc(var(--st-battle-top, 56px) + 22px);
-  left: 16px; right: auto;
-  width: auto;
-  max-width: calc(640px - 32px);
-  text-align: left;
-}
-:root[data-st-layout="desktop"] .st-badge-row {
-  top: calc(var(--st-battle-top, 56px) + 56px);
-  left: 8px; right: auto;
-  width: 624px;
-  max-height: 84px;
-  overflow-y: auto;
-}
-
-/* The console is the desktop anchor: a single scrollable column inside the 640 px arena
- * column. Below the move bar, clear of the log, the topbar and the chrome. */
-.st-console {
-  position: fixed;
-  top: max(58px, calc(var(--st-controls-bottom, 0px) + 8px));
-  left: 8px; right: auto;
-  width: 624px;
-  bottom: max(8px, env(safe-area-inset-bottom, 0px));
-  z-index: 50;
-  box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px;
-  background:
-    linear-gradient(180deg, rgba(10, 14, 26, 0.96) 0%, rgba(14, 20, 34, 0.94) 100%);
-  border: 1px solid var(--st-hairline);
-  border-radius: var(--st-r-lg);
-  box-shadow: var(--st-shadow-2);
-  overflow-y: auto;
-  overflow-x: hidden;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(148, 178, 212, 0.35) transparent;
-  -webkit-overflow-scrolling: touch;
-}
-.st-console::-webkit-scrollbar { width: 6px; }
-.st-console::-webkit-scrollbar-thumb { background: rgba(148, 178, 212, 0.35); border-radius: 3px; }
-
-[data-st-layout="desktop"] .st-console .tactician-tr-chip,
-[data-st-layout="desktop"] .st-console .st-bench-strip,
-[data-st-layout="desktop"] .st-console .st-pp-gauge,
-[data-st-layout="desktop"] .st-console .st-format-sentinel,
-[data-st-layout="desktop"] .st-console .st-receipt-card,
-[data-st-layout="desktop"] .st-console .st-cancel-alert-card {
+/* Every readout becomes a static child of the desktop console, leaving the arena and move controls untouched. */
+:root[data-st-layout="desktop"] .st-console .tactician-banner,
+:root[data-st-layout="desktop"] .st-console .st-overlord-gauge,
+:root[data-st-layout="desktop"] .st-console .st-badge-row,
+:root[data-st-layout="desktop"] .st-console .st-deduction-badges,
+:root[data-st-layout="desktop"] .st-console .tactician-tr-chip,
+:root[data-st-layout="desktop"] .st-console .st-bench-strip,
+:root[data-st-layout="desktop"] .st-console .st-pp-gauge,
+:root[data-st-layout="desktop"] .st-console .st-format-sentinel,
+:root[data-st-layout="desktop"] .st-console .st-receipt-card,
+:root[data-st-layout="desktop"] .st-console .st-cancel-alert-card {
   position: static;
   left: auto; right: auto; top: auto; bottom: auto;
-  width: auto;
   z-index: auto;
-  margin: 0;
+  width: auto;
+  max-width: 100%;
+  margin: 0 8px;
 }
-[data-st-layout="desktop"] .st-console .tactician-tr-chip   { border-radius: var(--st-r-md); }
-[data-st-layout="desktop"] .st-console .st-bench-strip {
+:root[data-st-layout="desktop"] .st-console .tactician-banner {
+  border-radius: var(--st-r-sm);
+  border-left-width: 3px;
+}
+:root[data-st-layout="desktop"] .st-console .st-badge-row { max-height: 96px; overflow-y: auto; }
+:root[data-st-layout="desktop"] .st-console .tactician-tr-chip   { border-radius: var(--st-r-md); }
+:root[data-st-layout="desktop"] .st-console .st-bench-strip {
   border-top: none;
   border: 1px solid var(--st-hairline);
   border-radius: var(--st-r-md);
   background: rgba(10, 14, 26, 0.6);
   padding: 6px;
+  pointer-events: auto;
 }
-[data-st-layout="desktop"] .st-console .st-bench-strip     { pointer-events: auto; }
-[data-st-layout="desktop"] .st-console .st-bench-pill      { pointer-events: auto; }
-[data-st-layout="desktop"] .st-console .st-bench-strip     { background: rgba(10, 14, 26, 0.65); }
-[data-st-layout="desktop"] .st-console .st-receipt-card    { background: var(--st-ink-1); }
+:root[data-st-layout="desktop"] .st-console .st-bench-pill      { pointer-events: auto; }
+:root[data-st-layout="desktop"] .st-console .st-receipt-card    { background: var(--st-ink-1); }
+/* the last card's bottom margin is the panel's bottom padding */
+:root[data-st-layout="desktop"] .st-console > :last-child      { margin-bottom: 8px; }
 
-/* --st-band-lift is no-op in desktop (the console clears the move bar by construction). */
-[data-st-layout="desktop"] .st-console .tactician-tr-chip,
-[data-st-layout="desktop"] .st-console .st-receipt-card,
-[data-st-layout="desktop"] .st-console .st-bench-strip {
+/* --- desktop readability ---
+ * The 420px console overlays the chat/log column, leaving the 640px battle arena and move
+ * bar clear. These card styles are sized for that dedicated column: a little more type and
+ * padding than the phone layout, with a hard minimum so dense readouts never collapse. */
+:root[data-st-layout="desktop"] .st-console { gap: 8px; }
+:root[data-st-layout="desktop"] .st-console .tactician-banner,
+:root[data-st-layout="desktop"] .st-console .st-overlord-gauge,
+:root[data-st-layout="desktop"] .st-console .st-pp-gauge,
+:root[data-st-layout="desktop"] .st-console .st-format-sentinel,
+:root[data-st-layout="desktop"] .st-console .st-receipt-card,
+:root[data-st-layout="desktop"] .st-console .st-cancel-alert-card,
+:root[data-st-layout="desktop"] .st-console .tactician-tr-chip,
+:root[data-st-layout="desktop"] .st-console .st-deduction-badges {
+  font-size: 12.5px;
+  line-height: 1.5;
+  padding: 8px 14px 8px 16px;
+  min-height: 30px;
+  flex-shrink: 0;
+  white-space: normal;
+}
+:root[data-st-layout="desktop"] .st-console .st-bench-strip {
+  font-size: 12.5px;
+  padding: 8px 14px;
+  min-height: 56px;
+  flex-shrink: 0;
+}
+:root[data-st-layout="desktop"] .st-console .st-bench-pill { width:calc(50% - 4px); min-height:60px; }
+:root[data-st-layout="desktop"] .st-console .st-bench-sprite { flex-basis:48px; width:48px; height:48px; }
+:root[data-st-layout="desktop"] .st-console-header {
+  font-size: 12.5px;
+  padding: 10px 14px;
+  min-height: 42px;
+}
+:root[data-st-layout="desktop"] .st-console .st-badge-row {
+  max-height: 120px;
+  flex-shrink: 0;
+}
+:root[data-st-layout="desktop"] .st-console .st-bench-strip::before {
+  content: "OPPONENT BENCH  /  TAP TO INSPECT";
+  flex: 0 0 100%;
+  padding: 0 4px 2px;
+  color: var(--st-muted);
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.15em;
+}
+:root[data-st-layout="desktop"] .st-console .st-pp-gauge::before {
+  content: "RESOURCE PRESSURE";
+  display: block;
+  margin: 0 0 5px;
+  color: var(--st-rail);
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.15em;
+}
+
+/* --st-band-lift is no-op in desktop (the console is on the right, not docked to the bar). */
+:root[data-st-layout="desktop"] .st-console .tactician-tr-chip,
+:root[data-st-layout="desktop"] .st-console .st-receipt-card,
+:root[data-st-layout="desktop"] .st-console .st-bench-strip {
   --st-band-lift: 0px;
 }
+
+/* --------------------------------------------------------------- the console
+ * The desktop anchor: ONE panel docked to the RIGHT side of the page, overlaying the chat
+ * column (the Showdex pattern). The battle scene and move bar stay unobstructed; the right
+ * column carries the engine readouts. At 1440x900 the console is 420px wide and leaves a
+ * useful strip of the battle log visible at its left edge.
+ *
+ * It is collapsible (click the title bar, or press Ctrl+8) and draggable (grab the title
+ * bar) so a player who needs the chat back can have it. */
+.st-console {
+  position: fixed;
+  top: auto;
+  left: auto; right: 18px;
+  width: min(390px, calc(100vw - 680px));
+  max-width: 390px;
+  /* Compact by default: keep Showdown's arena, controls and log in the foreground. */
+  bottom: max(16px, env(safe-area-inset-bottom, 0px));
+  max-height: min(72vh, 720px);
+  z-index: 50;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 0 0 0;
+  background:
+    linear-gradient(180deg, rgba(10, 14, 26, 0.97) 0%, rgba(12, 17, 30, 0.97) 100%);
+  border: 1px solid var(--st-hairline);
+  border-radius: var(--st-r-md);
+  box-shadow: var(--st-shadow-1);
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 178, 212, 0.35) transparent;
+  -webkit-overflow-scrolling: touch;
+  transform: translate(var(--st-panel-x, 0px), var(--st-panel-y, 0px));
+  transition: max-height 200ms cubic-bezier(.2,.7,.2,1);
+}
+.st-console::-webkit-scrollbar { width: 6px; }
+.st-console::-webkit-scrollbar-thumb { background: rgba(148, 178, 212, 0.35); border-radius: 3px; }
+.st-console.st-dragging { transition: none; box-shadow: var(--st-shadow-2); }
+
+/* Collapsed: the title bar alone. It stays docked, stays visible, and stops covering. */
+.st-console[data-st-console-open="0"] {
+  height: 48px;
+  max-height: 48px;
+  min-height: 48px;
+  bottom: max(16px, env(safe-area-inset-bottom, 0px));
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
+}
+
+/* The title bar: summary, card count, caret — and the drag handle. Sticky, so it stays put
+ * while the stack scrolls under it. */
+.st-console-header {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  min-height: 38px;
+  margin: -8px 0 2px 0;
+  padding: 0 10px 0 14px;
+  font-family: var(--st-font);
+  text-align: left;
+  color: var(--st-muted);
+  background:
+    linear-gradient(180deg, rgba(17, 25, 43, 0.99) 0%, rgba(12, 18, 32, 0.99) 100%);
+  border: 0;
+  border-bottom: 1px solid var(--st-hairline);
+  border-left: 3px solid var(--st-rail);
+  border-radius: var(--st-r-sm) var(--st-r-sm) 0 0;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+.st-console[data-st-console-open="0"] .st-console-header {
+  margin: 0;
+  border-radius: var(--st-r-sm);
+}
+.st-console.st-dragging .st-console-header { cursor: grabbing; }
+.st-console-header:focus-visible {
+  outline: 2px solid var(--st-rail);
+  outline-offset: -2px;
+}
+.st-console-summary {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+.st-console-count {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(94, 234, 212, 0.14);
+  border: 1px solid rgba(94, 234, 212, 0.3);
+  color: var(--st-rail);
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.st-console-count[data-st-count="0"] {
+  background: rgba(148, 178, 212, 0.12);
+  border-color: var(--st-hairline);
+  color: var(--st-quiet);
+}
+.st-console-caret {
+  flex: 0 0 auto;
+  color: var(--st-muted);
+  font-size: 11px;
+  transition: transform 200ms cubic-bezier(.2,.7,.2,1);
+}
+.st-console[data-st-console-open="1"] .st-console-caret { transform: rotate(180deg); }
+
+/* The expanded rail stays deliberately compact: the live recommendation is promoted into
+ * the first card below it, rather than repeated in a one-line summary that gets ellipsized. */
+.st-console[data-st-console-open="1"] .st-console-summary { display: none; }
+
+/* The play call is the visual anchor of the panel. Its bright action rail answers the first
+ * question immediately: what should I click? The recommendation remains plain accessible text. */
+:root[data-st-layout="desktop"] .st-console > .tactician-banner {
+  order: 0;
+  position: relative;
+  padding: 10px 14px 11px;
+  border: 1px solid rgba(94, 234, 212, 0.34);
+  border-left: 3px solid var(--st-rail);
+  border-radius: var(--st-r-sm);
+  background: linear-gradient(115deg, rgba(11, 45, 43, 0.98) 0%, rgba(12, 27, 39, 0.98) 64%, rgba(12, 19, 33, 0.98) 100%);
+  color: #effffb;
+  font-size: 13px;
+  font-weight: 750;
+  line-height: 1.5;
+  letter-spacing: 0.01em;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  box-shadow: 0 1px 0 rgba(190, 255, 242, 0.08) inset, 0 5px 14px rgba(0, 0, 0, 0.22);
+}
+:root[data-st-layout="desktop"] .st-console > .tactician-banner::before {
+  content: "RECOMMENDED ACTION";
+  position: static;
+  display: block;
+  width: auto;
+  height: auto;
+  margin: 0 0 5px;
+  color: var(--st-rail);
+  background: none;
+  border-radius: 0;
+  box-shadow: none;
+  animation: none;
+  font-size: 9px;
+  font-weight: 900;
+  line-height: 1.2;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+/* Stable reading order, independent of which async readout arrived first:
+ * recommendation → turn urgency → opponent read → proven deductions → bench → analysis → recap.
+ * Header remains first; the receipt is deliberately last so it cannot bury a live play call. */
+:root[data-st-layout="desktop"] .st-console-header          { order: -1; }
+:root[data-st-layout="desktop"] .st-console > .tactician-tr-chip { order: 1; }
+:root[data-st-layout="desktop"] .st-console > .st-cancel-alert-card { order: 2; }
+:root[data-st-layout="desktop"] .st-console > .st-overlord-gauge { order: 3; }
+:root[data-st-layout="desktop"] .st-console > .st-deduction-badges,
+:root[data-st-layout="desktop"] .st-console > .st-badge-row { order: 4; }
+:root[data-st-layout="desktop"] .st-console > .st-bench-strip { order: 5; }
+:root[data-st-layout="desktop"] .st-console > .st-pp-gauge { order: 6; }
+:root[data-st-layout="desktop"] .st-console > .st-format-sentinel { order: 7; }
+:root[data-st-layout="desktop"] .st-console > .st-receipt-card { order: 8; }
+:root[data-st-layout="desktop"] .st-console .st-overlord-gauge {
+  border-radius: var(--st-r-sm);
+  text-align: left;
+  box-shadow: 0 1px 0 rgba(255, 200, 87, 0.08) inset, 0 4px 12px rgba(0, 0, 0, 0.24);
+}
+:root[data-st-layout="desktop"] .st-console .st-badge-row::before {
+  content: "CONFIRMED READS";
+  flex: 0 0 100%;
+  padding: 0 4px 2px;
+  color: var(--st-muted);
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.15em;
+}
+
+/* The page-kind gate itself lives with the launchers, at the bottom of the mode-toggle
+ * section: it hides the console, the sheet, the drawer AND both launchers in one rule, so
+ * there is exactly one place to look for "what the HUD shows off a battle page". */
 
 :root[data-st-layout="desktop"] .team-drawer {
   left: 8px; right: auto;
@@ -1287,9 +1541,33 @@ button[data-st-lethal="none"] .st-lethal-bar::before {
   outline: 2px solid var(--st-rail);
   outline-offset: 2px;
 }
-@media (min-width: 1024px) {
-  .st-mode-toggle { left: 10px; bottom: 10px; }
-}
+
+/* The launcher cluster shares the strip the console leaves free at the bottom of the battle
+ * column: TAC (the 48px circle) on the left, the mode switch beside it. They are the only
+ * always-on chrome in either layout, and they must never sit on top of each other or on top
+ * of the page. A previous rule pinned the mode switch to `left: 10px` on desktop, which is
+ * exactly where the TAC button is — they overlapped completely and the team drawer could not
+ * be opened at all (measured: 62 of 64 sample points across the TAC button landed on the mode
+ * switch). Both launchers are also gated off non-battle pages below, because on the home page
+ * the cluster sat on Showdown's own menu/footer. */
+
+/* ------------------------------------------------------------------ page kind
+ * The console is docked by Showdown's battle chrome, so it only exists where a battle
+ * does. Off-battle (home, lobby, team builder, options) the panel is not painted at all:
+ * measured on the home page at 1440x900 the same fixed panel covered 242k px of the left
+ * menu and 517k px of the room, with every menu button underneath it. The mobile sheet is
+ * gated the same way — leaving a battle for the lobby should take the chrome with it.
+ *
+ * The launchers go with it. They are HUD controls: nothing to switch or open on a page with
+ * no battle, and the cluster measured 5136 px2 of `.leftmenu` at 1280x800. The team box is
+ * still reachable from the browser action (options page), which is where a player who is
+ * looking for it will find it.
+ */
+:root[data-st-page="idle"] .st-console,
+:root[data-st-page="idle"] .st-sheet,
+:root[data-st-page="idle"] .team-drawer,
+:root[data-st-page="idle"] .team-drawer-toggle,
+:root[data-st-page="idle"] .st-mode-toggle { display: none !important; }
 
 /* =============================================================== cancel window */
 
@@ -1368,4 +1646,841 @@ button[data-st-lethal="none"] .st-lethal-bar::before {
   .st-mode-toggle, .team-drawer-toggle, .tactician-tr-chip { transition: none; }
   .st-cancel-alert, .st-cancel-alert-card { animation: none; }
   .st-lethal-bar::before { transition: none; }
+}
+
+/* ====================================================== NIGHTSHIFT / tactical HUD redesign
+ * A dark split-field cockpit: the foe's party becomes a six-slot silhouette map, condition
+ * meters read like telemetry, and the recommended line owns a high-contrast action rail. */
+:root {
+  --st-ink-1: #0a1018;
+  --st-ink-2: #111a26;
+  --st-ink-3: #1a2736;
+  --st-ink-strip: rgba(6,11,18,.96);
+  --st-hairline: rgba(131,169,198,.18);
+  --st-hairline-soft: rgba(131,169,198,.1);
+  --st-hairline-bold: rgba(131,169,198,.34);
+  --st-rail: #55ebd0;
+  --st-rail-dim: rgba(85,235,208,.48);
+  --st-text: #eff6fc;
+  --st-muted: #9bafc1;
+  --st-quiet: #607589;
+  --st-shadow-1: 0 16px 42px rgba(0,0,0,.45);
+  --st-shadow-2: 0 26px 74px rgba(0,0,0,.6);
+  --st-high: #91e3a6;
+  --st-mid: #f2ca71;
+  --st-low: #9cabbc;
+  --st-veto: #ff7187;
+  --st-gold: #f2ca71;
+}
+
+.st-sheet, .st-console {
+  color: var(--st-text);
+  font-family: var(--st-font);
+  scrollbar-color: rgba(216,173,112,.35) transparent;
+  scrollbar-width: thin;
+}
+.st-sheet { gap: 0; }
+.st-sheet[data-st-sheet-open="1"] {
+  padding: 0;
+  background: linear-gradient(145deg, rgba(17,26,38,.99), rgba(8,14,22,.99));
+  border: 1px solid rgba(85,235,208,.3);
+  border-radius: 12px;
+  box-shadow: 0 0 0 1px rgba(85,235,208,.055), 0 22px 70px rgba(0,0,0,.68);
+}
+.st-sheet-header, .st-console-header {
+  gap: 10px;
+  min-height: 48px;
+  padding: 6px 14px;
+  color: var(--st-text);
+  background: linear-gradient(100deg, #19283a, #111a27 72%);
+  border: 1px solid rgba(142,177,203,.2);
+  border-top: 2px solid #55ebd0;
+  border-radius: 9px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.055);
+  pointer-events: auto;
+}
+.st-sheet-header:focus-visible, .st-console-header:focus-visible { outline: 2px solid #e9c996; outline-offset: 2px; }
+.st-sheet[data-st-sheet-open="1"] .st-sheet-header,
+.st-console[data-st-console-open="1"] .st-console-header {
+  border-color: rgba(216,173,112,.36);
+  border-top-color: var(--st-rail);
+  border-bottom: 1px solid rgba(216,173,112,.36);
+  border-radius: 0;
+  background: #201e19;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.055);
+}
+.st-sheet-identity, .st-console-identity {
+  display: inline-grid;
+  flex: 0 0 72px;
+  width: 72px;
+  height: 30px;
+  place-items: center;
+  color: #241b13;
+  background: var(--st-rail);
+  border-radius: 1px;
+  font-family: var(--st-font-mono);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: .06em;
+}
+.st-sheet-label, .st-console-label { color: var(--st-muted); font-size: 9px; font-weight: 800; letter-spacing: .18em; }
+.st-sheet-chip, .st-console-chip { display: none; }
+.st-sheet-summary, .st-console-summary {
+  flex: 1 1 5rem;
+  min-width: 0;
+  color: #f8f1e4;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.st-sheet-count, .st-console-count {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  color: var(--st-rail);
+  background: rgba(216,173,112,.07);
+  border: 1px solid rgba(216,173,112,.32);
+  border-radius: 2px;
+  font-family: var(--st-font-mono);
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.st-sheet-caret, .st-console-caret {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  border-right: 1.5px solid var(--st-rail);
+  border-bottom: 1.5px solid var(--st-rail);
+  transform: rotate(45deg) translateY(-3px);
+  transition: transform 180ms ease;
+}
+.st-sheet[data-st-sheet-open="1"] .st-sheet-caret,
+.st-console[data-st-console-open="1"] .st-console-caret { transform: rotate(225deg) translate(-2px,-2px); }
+.st-sheet[data-st-sheet-open="1"] .st-sheet-summary,
+.st-console[data-st-console-open="1"] .st-console-summary { display: none; }
+
+/* Shared tactical readouts: telemetry cards, strong hierarchy, restrained semantic color. */
+.st-sheet .st-overlord-gauge, .st-console .st-overlord-gauge {
+  color: #f2d58f;
+  border-color: rgba(242,202,113,.25);
+  border-left-color: var(--st-rail);
+  border-radius: 8px;
+  background: linear-gradient(145deg, #263041, #171e2a);
+}
+.st-sheet .st-pp-gauge, .st-sheet .st-format-sentinel,
+.st-console .st-pp-gauge, .st-console .st-format-sentinel {
+  color: var(--st-text);
+  border-color: var(--st-hairline);
+  border-left-color: #55ebd0;
+  border-radius: 8px;
+  background: linear-gradient(145deg, #172332, #101822);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.035);
+  text-shadow: none;
+}
+.st-sheet .st-pp-headline, .st-console .st-pp-headline { color: #f3f8fc; }
+.st-sheet .st-pp-threat, .st-console .st-pp-threat { color: #f2ca71; }
+.st-sheet .st-pp-advice, .st-console .st-pp-advice { color: var(--st-muted); }
+.st-sheet .st-sentinel-head, .st-console .st-sentinel-head { color: var(--st-rail); letter-spacing: .15em; border-bottom-color: var(--st-hairline); }
+.st-sheet .st-sentinel-head::before, .st-console .st-sentinel-head::before { content: ""; display: inline-block; width: 12px; height: 1px; background: var(--st-rail); }
+.st-sheet .st-sentinel-row, .st-console .st-sentinel-row { color: #e7dfd0; }
+.st-sheet .st-sentinel-row.st-burned, .st-console .st-sentinel-row.st-burned { color: #ff9ba8; }
+.st-sheet .st-sentinel-row.st-live, .st-console .st-sentinel-row.st-live { color: #9fe9b1; }
+.st-sheet .st-sentinel-tactic, .st-console .st-sentinel-tactic { color: #d4e3ef; }
+.st-sheet .st-sentinel-tactic::before, .st-console .st-sentinel-tactic::before { background: var(--st-rail); }
+.st-sheet .st-sentinel-bench, .st-console .st-sentinel-bench { color: var(--st-muted); }
+.st-sheet .st-receipt-title, .st-console .st-receipt-title { color: #f8f1e4; }
+.st-sheet .st-receipt-headline, .st-sheet .st-receipt-row,
+.st-console .st-receipt-headline, .st-console .st-receipt-row { color: var(--st-muted); border-top-color: var(--st-hairline); }
+.st-sheet .st-unmask-badge, .st-console .st-unmask-badge { color: #dceaf3; background: #1b2938; border-color: var(--st-hairline); }
+.st-sheet .st-unmask-badge.st-unmasked, .st-console .st-unmask-badge.st-unmasked { color: #a1ecb5; border-left-color: #91e3a6; }
+.st-sheet .st-unmask-badge.st-choice-broken, .st-console .st-unmask-badge.st-choice-broken { color: #ff9ba8; border-left-color: #ff7187; }
+.st-sheet .st-unmask-badge.st-lockout, .st-console .st-unmask-badge.st-lockout { color: #afc0ce; border-left-color: #95a4b4; }
+
+.st-sheet > .tactician-banner, .st-console > .tactician-banner {
+  color: #f5fffe;
+  background: linear-gradient(112deg, #123d42 0%, #132c3b 57%, #172332 100%);
+  border: 1px solid rgba(85,235,208,.3);
+  border-left: 4px solid #55ebd0;
+  border-radius: 8px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.07), 0 10px 28px rgba(0,0,0,.25);
+  font-size: 15px;
+  line-height: 1.5;
+  font-weight: 700;
+}
+.st-sheet > .tactician-banner::before, .st-console > .tactician-banner::before {
+  content: "TACTICAL LINE";
+  display: block;
+  position: static;
+  width: auto;
+  height: auto;
+  margin: 0 0 7px;
+  color: var(--st-rail);
+  background: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  animation: none;
+  font-size: 9px;
+  font-weight: 850;
+  line-height: 1.2;
+  letter-spacing: .2em;
+}
+
+.st-console {
+  border: 1px solid rgba(85,235,208,.3);
+  border-radius: 12px;
+  background: linear-gradient(145deg, rgba(17,26,38,.99), rgba(8,14,22,.99));
+  box-shadow: 0 0 0 1px rgba(85,235,208,.055), 0 22px 70px rgba(0,0,0,.68);
+}
+.st-console .st-console-header { min-height: 48px; padding: 7px 12px; cursor: pointer; touch-action: manipulation; }
+.st-console .st-console-label { color: var(--st-muted); }
+.st-console .st-console-summary { color: #f3f9fd; text-transform: none; }
+.st-console .st-console-count { color: var(--st-rail); background: rgba(85,235,208,.08); border-color: rgba(85,235,208,.28); }
+.st-console .st-console-caret { color: var(--st-rail); }
+.st-console .st-console-identity { color: #08151a; background: var(--st-rail); border-color: transparent; }
+.st-console > .tactician-banner { color: #f5fffe; border-color: rgba(85,235,208,.3); background: linear-gradient(112deg, #123d42, #132c3b 57%, #172332); }
+.st-console > .tactician-banner::before { content: "TACTICAL LINE"; color: var(--st-rail); }
+.st-console .st-badge-row::before, .st-console .st-bench-strip::before, .st-console .st-pp-gauge::before { color: var(--st-rail); }
+.st-console .st-bench-strip { border: 1px solid var(--st-hairline); border-radius: 8px; background: rgba(255,255,255,.02); }
+.st-console .st-bench-pill, .st-bench-pill { color: #e8f2f9; background: linear-gradient(145deg, #1a2939, #101823); border-color: rgba(131,169,198,.2); border-left-color: rgba(131,169,198,.38); border-radius: 9px; box-shadow: inset 0 1px 0 rgba(255,255,255,.055), 0 5px 13px rgba(0,0,0,.2); }
+.st-console .st-bench-pill.st-selected, .st-bench-pill.st-selected { color: #f5fffe; border-color: rgba(85,235,208,.65); border-left-color: var(--st-rail); background: linear-gradient(145deg, #17403f, #152938 72%); }
+.st-console .tactician-tr-chip { color: #eff8ff; border-color: rgba(85,235,208,.26); border-left-color: var(--st-rail); background: linear-gradient(110deg, #193142, #15202e); }
+.st-console .st-cancel-alert-card { color: #f5d68d; border-color: rgba(242,202,113,.28); border-left-color: var(--st-rail); background: #202a38; }
+
+.team-drawer-toggle, .st-mode-toggle {
+  color: #e8f3fa;
+  background: linear-gradient(145deg, #1b2938, #101722);
+  border: 1px solid rgba(85,235,208,.38);
+  box-shadow: 0 8px 24px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.06);
+}
+.team-drawer-toggle { color: var(--st-rail); }
+.team-drawer-toggle:hover, .st-mode-toggle:hover { border-color: var(--st-rail); color: #fff; }
+.team-drawer-toggle.active { border-color: #91e3a6; color: #a8f1bb; }
+.team-drawer {
+  color: var(--st-text);
+  background: #1d1b16;
+  border-color: rgba(216,173,112,.32);
+  box-shadow: 0 18px 50px rgba(5,4,3,.48);
+}
+.drawer-header { color: var(--st-rail); }
+.drawer-header::before { background: var(--st-rail); }
+.drawer-team-status, .drawer-candidates { color: var(--st-muted); background: rgba(255,255,255,.025); border-color: var(--st-hairline); }
+.drawer-team-input { color: var(--st-text); background: #0b121b; border-color: var(--st-hairline-bold); }
+.drawer-team-input::placeholder { color: var(--st-quiet); }
+.drawer-save { color: #07161a; background: var(--st-rail); box-shadow: 0 4px 14px rgba(85,235,208,.16); }
+.drawer-close { color: var(--st-text); background: rgba(255,255,255,.035); border-color: var(--st-hairline); }
+
+.st-sheet .st-overlord-gauge, .st-console .st-overlord-gauge { border: 1px solid rgba(216,173,112,.26); border-left: 3px solid var(--st-rail); }
+.st-sheet .st-format-sentinel, .st-sheet .st-pp-gauge { max-height: none; overflow: visible; }
+.st-sheet .st-sentinel-row, .st-console .st-sentinel-row { color: #d6e2ec; }
+.st-sheet .st-sentinel-row.st-burned, .st-console .st-sentinel-row.st-burned { color: #ff9ba8; }
+.st-sheet .st-sentinel-row.st-live, .st-console .st-sentinel-row.st-live { color: #9fe9b1; }
+.st-sheet .st-sentinel-tactic, .st-console .st-sentinel-tactic { color: #d4e3ef; }
+.st-sheet .st-sentinel-head { color: var(--st-rail); letter-spacing: .15em; }
+.st-sheet .st-sentinel-head::before { content: ""; display: inline-block; width: 12px; height: 1px; background: var(--st-rail); }
+.st-sheet .st-sentinel-row { color: #e7dfd0; }
+.st-sheet .st-sentinel-row.st-burned { color: #e39a91; }
+.st-sheet .st-sentinel-row.st-live { color: #b2ccaa; }
+.st-sheet .st-sentinel-tactic { padding-left: 4px; color: #dec69f; }
+.st-sheet .st-sentinel-tactic::before { content: ""; display: inline-block; width: 10px; height: 1px; margin-right: 3px; background: var(--st-rail); }
+.st-sheet .st-unmask-badge { border-left-color: #9c835e; background: #25221c; color: #eee6d8; }
+.st-sheet .st-receipt-title { font-size: 13px; letter-spacing: .06em; }
+.st-sheet .st-receipt-row { color: var(--st-muted); font-size: 11px; }
+.st-sheet .st-sheet-header { min-height: 48px; }
+.st-console .st-unmask-badge::before, .st-sheet .st-unmask-badge::before { border-color: currentColor; background: transparent; }
+.st-console .st-cancel-alert-card { color: #f0d2a5; }
+
+@media (max-width: 420px) {
+  .st-sheet[data-st-sheet-open="1"] { max-height: min(52vh, var(--st-sheet-max, 220px)); }
+  :root[data-st-layout="mobile"] .st-sheet .st-bench-pill { width:calc(50% - 4px); min-height:54px; }
+  :root[data-st-layout="mobile"] .st-sheet .st-bench-sprite { flex-basis:42px; width:42px; height:42px; }
+  .st-sheet-label { display: none; }
+  .st-sheet .st-sheet-header { gap: 8px; padding-left: 9px; padding-right: 9px; }
+  .st-sheet .st-sheet-identity { flex-basis: 64px; width: 64px; height: 28px; font-size: 9px; }
+  .st-sheet .st-sheet-summary { font-size: 10.5px; }
+  .st-sheet .st-sheet-count { font-size: 8px; padding: 4px 6px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .st-sheet, .st-console, .st-sheet-header, .st-console-header, .st-mode-toggle, .team-drawer-toggle { transition: none; }
+}
+
+/* Mobile field folio: quiet print-like hierarchy over Showdown's native battle UI.
+ * Keep the layout anchors and touch targets above intact; this block changes visual treatment only. */
+:root {
+  --st-ink-1: #101722;
+  --st-ink-2: #151e2b;
+  --st-ink-3: #1d2938;
+  --st-ink-strip: rgba(10,16,25,.95);
+  --st-hairline: rgba(147,178,202,.18);
+  --st-hairline-soft: rgba(147,178,202,.1);
+  --st-hairline-bold: rgba(147,178,202,.34);
+  --st-rail: #54ead1;
+  --st-rail-dim: rgba(84,234,209,.58);
+  --st-text: #edf4f8;
+  --st-muted: #9eb1c3;
+  --st-quiet: #66798d;
+  --st-high: #8be0a4;
+  --st-mid: #f0c66f;
+  --st-low: #95a4b4;
+  --st-veto: #ff7085;
+  --st-gold: #f0c66f;
+}
+
+/* Plain instrument controls. State is conveyed through text and a single rule, not glow. */
+.team-drawer-toggle, .st-mode-toggle {
+  color: #eee8de;
+  background: #282522;
+  border: 1px solid #655e55;
+  border-radius: 0;
+  box-shadow: none;
+}
+.team-drawer-toggle { color: #d3c4aa; }
+.team-drawer-toggle:hover, .st-mode-toggle:hover { border-color: #a9997d; color: #fff; box-shadow: none; }
+.team-drawer-toggle.active { border-color: #d3c4aa; color: #e7dbc6; }
+.st-mode-toggle { letter-spacing: .08em; }
+
+/* The open mobile surface is an opaque, flat folio. Desktop's dock keeps its own layout. */
+:root[data-st-layout="mobile"] .st-sheet[data-st-sheet-open="1"] {
+  color: #292722;
+  background: #e7e0d3;
+  border: 1px solid #837b6d;
+  border-radius: 0;
+  box-shadow: none;
+  scrollbar-color: #aaa18f transparent;
+}
+:root[data-st-layout="desktop"] .st-console {
+  color: #eff6fc;
+  background: #101722;
+  border: 1px solid rgba(85,235,208,.3);
+  border-radius: 12px;
+  box-shadow: 0 0 0 1px rgba(85,235,208,.055), 0 22px 70px rgba(0,0,0,.68);
+  scrollbar-color: rgba(85,235,208,.35) transparent;
+}
+.st-sheet { gap: 0; }
+.st-sheet[data-st-sheet-open="1"] { padding: 7px; }
+.st-sheet-header, .st-console-header {
+  gap: 9px;
+  color: #eee8de;
+  background: #312f2b;
+  border: 1px solid #655e55;
+  border-radius: 0;
+  box-shadow: none;
+}
+.st-sheet[data-st-sheet-open="1"] .st-sheet-header,
+.st-console[data-st-console-open="1"] .st-console-header {
+  color: #eee8de;
+  background: #312f2b;
+  border: 1px solid #655e55;
+  border-radius: 0;
+  box-shadow: none;
+}
+.st-sheet-header:focus-visible, .st-console-header:focus-visible { outline: 2px solid #8c7c61; outline-offset: 2px; }
+:root[data-st-layout="mobile"] .st-sheet-header,
+:root[data-st-layout="mobile"] .st-sheet[data-st-sheet-open="1"] .st-sheet-header { background: #303232; color: #e7e5df; }
+.st-sheet-identity, .st-console-identity {
+  display: inline-grid;
+  flex: 0 0 64px;
+  width: 64px;
+  height: 28px;
+  place-items: center;
+  color: #292722;
+  background: #c9bea9;
+  border: 1px solid #c9bea9;
+  border-radius: 0;
+  font-family: var(--st-font-mono);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .04em;
+}
+.st-sheet-label, .st-console-label { color: #d6cbb8; font-size: 9px; font-weight: 700; letter-spacing: .1em; }
+.st-sheet-summary, .st-console-summary {
+  flex: 1 1 5rem;
+  min-width: 0;
+  color: #f3f9fd;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.st-sheet-count, .st-console-count {
+  flex: 0 0 auto;
+  padding: 3px 6px;
+  color: #ded5c6;
+  background: transparent;
+  border: 1px solid #70695e;
+  border-radius: 0;
+  font-family: var(--st-font-mono);
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: .04em;
+}
+.st-sheet-caret, .st-console-caret {
+  flex: 0 0 auto;
+  width: auto;
+  height: auto;
+  border: 0;
+  color: #d6cbb8;
+  font-size: 10px;
+  transform: none;
+}
+.st-sheet-caret::before, .st-console-caret::before { content: "DETAILS"; letter-spacing: .06em; }
+.st-sheet[data-st-sheet-open="1"] .st-sheet-caret::before,
+.st-console[data-st-console-open="1"] .st-console-caret::before { content: "CLOSE"; }
+.st-sheet[data-st-sheet-open="1"] .st-sheet-summary,
+.st-console[data-st-console-open="1"] .st-console-summary { display: none; }
+
+/* A quiet recommendation block. It reads as a sentence, not a glowing action tile. */
+:root[data-st-layout="mobile"] .st-sheet[data-st-sheet-open="1"] > .tactician-banner {
+  color: #302e29;
+  background: #ddd5c7;
+  border: 0;
+  border-bottom: 1px solid #c4baaa;
+  border-radius: 0;
+  box-shadow: none;
+  font-family: var(--st-font);
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.4;
+  letter-spacing: 0;
+  text-shadow: none;
+}
+:root[data-st-layout="mobile"] .st-sheet[data-st-sheet-open="1"] > .tactician-banner::before { content: "NEXT PLAY"; }
+:root[data-st-layout="mobile"] .st-sheet[data-st-sheet-open="1"] > .tactician-banner::before,
+:root[data-st-layout="desktop"] .st-console > .tactician-banner::before {
+  display: block;
+  position: static;
+  width: auto;
+  height: auto;
+  margin: 0 0 5px;
+  color: #766d5e;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  animation: none;
+  font-family: var(--st-font);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: .12em;
+}
+.st-sheet .st-overlord-gauge, .st-console .st-overlord-gauge,
+.st-sheet .st-pp-gauge, .st-sheet .st-format-sentinel,
+.st-sheet .st-receipt-card, .st-sheet .st-cancel-alert-card,
+.st-console .st-pp-gauge, .st-console .st-format-sentinel,
+.st-console .st-receipt-card, .st-console .st-cancel-alert-card {
+  color: #302e29;
+  background: #ded7cb;
+  border: 0;
+  border-top: 1px solid #bcb3a4;
+  border-bottom: 1px solid #bcb3a4;
+  border-left: 0;
+  border-radius: 0;
+  box-shadow: none;
+  text-shadow: none;
+}
+:root[data-st-layout="mobile"] .st-sheet .st-overlord-gauge,
+:root[data-st-layout="mobile"] .st-sheet .st-pp-gauge,
+:root[data-st-layout="mobile"] .st-sheet .st-format-sentinel,
+:root[data-st-layout="mobile"] .st-sheet .st-receipt-card,
+:root[data-st-layout="mobile"] .st-sheet .st-cancel-alert-card { background: transparent; }
+.st-sheet .st-overlord-gauge, .st-console .st-overlord-gauge { color: #5b4d3a; border-left-color: #f2ca71; }
+:root[data-st-layout="mobile"] .st-sheet .st-overlord-gauge { color: #514a3f; border-color: #bcb3a4; }
+.st-sheet .st-pp-headline, .st-console .st-pp-headline { color: #f3f8fc; }
+.st-sheet .st-pp-threat, .st-console .st-pp-threat { color: #f2ca71; }
+.st-sheet .st-pp-advice, .st-console .st-pp-advice { color: #bac6d1; }
+.st-sheet .st-sentinel-head, .st-console .st-sentinel-head { color: #756a57; border-bottom-color: #c8beae; }
+.st-sheet .st-sentinel-head::before, .st-console .st-sentinel-head::before { display: none; }
+.st-sheet .st-sentinel-row, .st-console .st-sentinel-row { color: #403d36; }
+.st-sheet .st-sentinel-row.st-burned, .st-console .st-sentinel-row.st-burned { color: #ff9ba8; }
+.st-sheet .st-sentinel-row.st-live, .st-console .st-sentinel-row.st-live { color: #9fe9b1; }
+.st-sheet .st-sentinel-tactic, .st-console .st-sentinel-tactic { color: #d4e3ef; }
+.st-sheet .st-sentinel-tactic::before, .st-console .st-sentinel-tactic::before { display: none; }
+.st-sheet .st-sentinel-bench, .st-console .st-sentinel-bench { color: #736b5f; border-top-color: #c8beae; }
+.st-sheet .st-receipt-title, .st-console .st-receipt-title { color: #39362f; }
+.st-sheet .st-receipt-headline, .st-sheet .st-receipt-row,
+.st-console .st-receipt-headline, .st-console .st-receipt-row { color: #736b5f; border-top-color: #c8beae; }
+.st-sheet .st-receipt-copy, .st-console .st-receipt-copy { color: #302322; background: #c6a16b; border-color: rgba(77,54,43,.12); border-radius: 2px; box-shadow: inset 0 1px 0 rgba(255,255,255,.2); text-shadow: none; }
+.st-sheet .st-unmask-badge, .st-console .st-unmask-badge { color: #4a3c32; background: #e2d9c9; border-color: rgba(77,54,43,.16); box-shadow: none; }
+.st-sheet .st-unmask-badge.st-unmasked, .st-console .st-unmask-badge.st-unmasked { color: #526c49; border-left-color: #7d9a71; }
+.st-sheet .st-unmask-badge.st-choice-broken, .st-console .st-unmask-badge.st-choice-broken { color: #954d47; border-left-color: #b45f58; }
+.st-sheet .st-unmask-badge.st-lockout, .st-console .st-unmask-badge.st-lockout { color: #645a4e; border-left-color: #989083; }
+.st-sheet .st-bench-pill, .st-console .st-bench-pill, .st-bench-pill {
+  color: #eee8de;
+  background: #302e2a;
+  border-color: #59554d;
+  border-left-color: #59554d;
+  border-radius: 0;
+  box-shadow: none;
+}
+.st-sheet .st-bench-pill.st-selected, .st-console .st-bench-pill.st-selected, .st-bench-pill.st-selected {
+  color: #fff;
+  background: #46423a;
+  border-color: #928671;
+  border-left-color: #928671;
+}
+.st-sheet .st-bench-pill.st-fainted, .st-console .st-bench-pill.st-fainted, .st-bench-pill.st-fainted { color: #bc9f96; }
+.st-sheet .tactician-tr-chip, .st-console .tactician-tr-chip {
+  color: #eee8de;
+  background: #302e2a;
+  border-color: #59554d;
+  border-left-color: #59554d;
+  border-radius: 0;
+  box-shadow: none;
+}
+.st-sheet .st-cancel-alert-card, .st-console .st-cancel-alert-card { color: #69452c; border-left-color: #bd8d54; }
+.st-sheet .drawer-header, .st-console .drawer-header { color: #78583c; }
+.st-sheet .drawer-team-status, .st-sheet .drawer-candidates,
+.st-console .drawer-team-status, .st-console .drawer-candidates { color: #6f6252; background: rgba(77,54,43,.04); border-color: rgba(77,54,43,.17); }
+.st-sheet .drawer-team-input, .st-console .drawer-team-input { color: #382e29; background: #f1eadb; border-color: rgba(77,54,43,.26); }
+.st-sheet .drawer-team-input::placeholder, .st-console .drawer-team-input::placeholder { color: #897b67; }
+.st-sheet .drawer-save, .st-console .drawer-save { color: #302322; background: #c6a16b; box-shadow: none; }
+.st-sheet .drawer-close, .st-console .drawer-close { color: #473b32; background: rgba(77,54,43,.05); border-color: rgba(77,54,43,.2); }
+.st-sheet .st-sheet-header { min-height: 48px; }
+:root[data-st-layout="mobile"] .tactician-tr-chip {
+  padding: 7px 12px;
+  border-radius: 0;
+  background: #302e2a;
+  border-color: #59554d;
+  border-left: 0;
+  border-top: 1px solid #59554d;
+  border-bottom: 1px solid #59554d;
+  box-shadow: none;
+}
+:root[data-st-layout="mobile"] .tactician-tr-chip.tr-info { color: #eee8de; }
+:root[data-st-layout="mobile"] .tactician-tr-chip.tr-warn { color: #e3cfaa; }
+:root[data-st-layout="mobile"] .tactician-tr-chip.tr-danger { color: #e5c1ba; background: #382c29; }
+:root[data-st-layout="mobile"] .st-bench-strip {
+  gap: 6px;
+  padding: 7px 8px calc(7px + env(safe-area-inset-bottom, 0px));
+  background: #252522;
+  border-top: 1px solid #4f4c45;
+}
+:root[data-st-layout="mobile"] .st-bench-pill {
+  min-height: 56px;
+  padding: 4px 7px 4px 4px;
+  gap: 6px;
+  border-radius: 0;
+  background: #33312d;
+  border-color: #5a554d;
+  border-left: 1px solid #5a554d;
+  box-shadow: none;
+}
+:root[data-st-layout="mobile"] .st-bench-pill.st-active {
+  border-color: #928671;
+  border-left-color: #928671;
+}
+:root[data-st-layout="mobile"] .st-bench-pill.st-active::after { color: #d3c4aa; }
+:root[data-st-layout="mobile"] .st-bench-sprite { flex-basis: 42px; width: 42px; height: 42px; }
+:root[data-st-layout="mobile"] .st-bench-name { color: #eee8de; }
+:root[data-st-layout="mobile"] .st-bench-health { color: #c0b8aa; }
+
+.team-drawer {
+  color: #eee3d0;
+  background: #282120;
+  border-color: rgba(198,161,107,.34);
+  box-shadow: 0 18px 50px rgba(20,13,12,.45);
+}
+.drawer-header { color: #d2ae77; }
+.drawer-header::before { background: #c6a16b; }
+.drawer-team-status, .drawer-candidates { color: #c6b8a2; background: rgba(255,255,255,.025); border-color: rgba(231,218,191,.14); }
+.drawer-team-input { color: #f1e8d9; background: #1d1919; border-color: rgba(231,218,191,.2); }
+.drawer-team-input::placeholder { color: #8e8170; }
+.drawer-save { color: #302322; background: #c6a16b; box-shadow: inset 0 1px 0 rgba(255,255,255,.2); }
+.drawer-close { color: #eee3d0; background: rgba(255,255,255,.04); border-color: rgba(231,218,191,.16); }
+
+@media (max-width: 420px) {
+  .st-sheet[data-st-sheet-open="1"] { max-height: min(52vh, var(--st-sheet-max, 220px)); }
+  :root[data-st-layout="mobile"] .st-sheet[data-st-sheet-open="1"] > .tactician-banner {
+    padding: 7px 10px 8px;
+    border-radius: 7px 7px 0 0;
+    font-size: 16px;
+    line-height: 1.35;
+  }
+  :root[data-st-layout="mobile"] .st-sheet[data-st-sheet-open="1"] > .tactician-banner::before {
+    margin-bottom: 4px;
+    font-size: 8px;
+  }
+  :root[data-st-layout="mobile"] .st-sheet[data-st-sheet-open="1"] > .st-format-sentinel {
+    background: #121b27;
+    border-radius: 0 0 7px 7px;
+    padding: 6px 10px 7px;
+  }
+  :root[data-st-layout="mobile"] .st-sheet[data-st-sheet-open="1"] .st-sentinel-head {
+    margin-top: 2px;
+    padding-bottom: 2px;
+    font-size: 8px;
+    letter-spacing: .1em;
+  }
+  :root[data-st-layout="mobile"] .st-sheet[data-st-sheet-open="1"] .st-sentinel-head:first-child {
+    margin-top: 0;
+  }
+  :root[data-st-layout="mobile"] .st-sheet[data-st-sheet-open="1"] .st-sentinel-row {
+    margin-top: 2px;
+    padding: 1px 0;
+    font-size: 10px;
+  }
+  :root[data-st-layout="mobile"] .st-sheet[data-st-sheet-open="1"] .st-sentinel-tactic {
+    padding-top: 1px;
+    padding-bottom: 1px;
+    font-size: 10px;
+    line-height: 1.25;
+  }
+  :root[data-st-layout="mobile"] .st-sheet[data-st-sheet-open="1"] .st-sentinel-bench {
+    margin-top: 2px;
+    padding-top: 3px;
+    font-size: 9px;
+  }
+  :root[data-st-layout="mobile"] .st-sheet[data-st-sheet-open="1"] {
+    padding: 5px;
+    border-radius: 10px;
+  }
+  :root[data-st-layout="mobile"] .st-sheet > .st-format-sentinel {
+    padding: 7px 10px 8px;
+  }
+  :root[data-st-layout="mobile"] .st-sheet .st-bench-pill { width: calc(50% - 4px); min-height: 54px; }
+  :root[data-st-layout="mobile"] .st-sheet .st-bench-sprite { flex-basis: 42px; width: 42px; height: 42px; }
+  .st-sheet-label { display: none; }
+  .st-sheet .st-sheet-header { gap: 8px; padding-left: 9px; padding-right: 9px; }
+  .st-sheet .st-sheet-identity { flex-basis: 60px; width: 60px; height: 27px; font-size: 8px; }
+  .st-sheet .st-sheet-summary { font-size: 10.5px; }
+  .st-sheet .st-sheet-count { font-size: 8px; padding: 4px 5px; }
+}@media (prefers-reduced-motion: reduce) {
+  .st-sheet-caret, .st-console-caret { transition: none; }
+}
+
+/* Stripped-back live readout. Keep the measured dock geometry, use familiar match controls,
+ * and let the game UI remain the visual focus. */
+:root[data-st-layout="mobile"] .st-sheet {
+  gap: 0;
+  font-family: var(--st-font);
+}
+:root[data-st-layout="mobile"] .st-sheet[data-st-sheet-open="1"] {
+  padding: 0;
+  color: #ecebe7;
+  background: #292b2c;
+  border: 1px solid #5b5d5c;
+  border-radius: 0;
+  background-image: none;
+  box-shadow: none;
+  scrollbar-color: #777973 transparent;
+}
+:root[data-st-layout="mobile"] .st-sheet-header,
+:root[data-st-layout="mobile"] .st-sheet[data-st-sheet-open="1"] .st-sheet-header {
+  gap: 9px;
+  min-height: 48px;
+  padding: 6px 10px;
+  color: #ecebe7;
+  background: #303233;
+  border: 0;
+  border-bottom: 1px solid #5b5d5c;
+  border-radius: 0;
+  box-shadow: none;
+  transition: none;
+  outline-offset: -3px;
+}
+:root[data-st-layout="mobile"] .st-sheet-identity {
+  flex: 0 0 auto;
+  width: auto;
+  height: auto;
+  padding: 0;
+  color: #c8c4ba;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  font: 700 9px/1.2 var(--st-font-mono);
+  letter-spacing: .05em;
+}
+:root[data-st-layout="mobile"] .st-sheet-label { display: none; }
+:root[data-st-layout="mobile"] .st-sheet-count {
+  padding: 0;
+  color: #aaa9a2;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  font: 600 9px/1.2 var(--st-font-mono);
+}
+:root[data-st-layout="mobile"] .st-sheet-summary {
+  color: #ecebe7;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+:root[data-st-layout="mobile"] .st-sheet[data-st-sheet-open="1"] .st-sheet-summary {
+  display: block;
+  color: #bcbab3;
+  font-size: 9px;
+  font-weight: 500;
+}
+:root[data-st-layout="mobile"] .st-sheet-caret {
+  width: auto;
+  height: auto;
+  flex: 0 0 auto;
+  border: 0;
+  color: #c7c5bd;
+  font: 600 9px/1.2 var(--st-font);
+  transform: none;
+  transition: none;
+}
+:root[data-st-layout="mobile"] .st-sheet-caret::before { content: "DETAILS"; }
+:root[data-st-layout="mobile"] .st-sheet[data-st-sheet-open="1"] .st-sheet-caret::before { content: "CLOSE"; }
+:root[data-st-layout="mobile"] .st-sheet > .tactician-banner,
+:root[data-st-layout="mobile"] .st-sheet[data-st-sheet-open="1"] > .tactician-banner {
+  padding: 9px 12px 10px;
+  color: #ecebe7;
+  background: #292b2c;
+  border: 0;
+  border-bottom: 1px solid #5b5d5c;
+  border-radius: 0;
+  box-shadow: none;
+  font: 600 15px/1.4 var(--st-font);
+  letter-spacing: 0;
+  text-shadow: none;
+  white-space: normal;
+}
+:root[data-st-layout="mobile"] .st-sheet > .tactician-banner::before { content: "PLAY"; }
+:root[data-st-layout="mobile"] .st-sheet[data-st-sheet-open="1"] > .tactician-banner::before {
+  content: "PLAY";
+  color: #c8c6bd;
+}
+:root[data-st-layout="mobile"] .st-sheet > .tactician-banner::before {
+  margin: 0 0 4px;
+  color: #c8c6bd;
+  font: 700 9px/1.2 var(--st-font);
+  letter-spacing: .1em;
+}
+:root[data-st-layout="mobile"] .st-sheet .st-overlord-gauge,
+:root[data-st-layout="mobile"] .st-sheet .st-pp-gauge,
+:root[data-st-layout="mobile"] .st-sheet .st-format-sentinel,
+:root[data-st-layout="mobile"] .st-sheet .st-receipt-card,
+:root[data-st-layout="mobile"] .st-sheet .st-cancel-alert-card {
+  color: #e3e1dc;
+  background: #292b2c;
+  border: 0;
+  border-top: 1px solid #5b5d5c;
+  border-radius: 0;
+  box-shadow: none;
+  text-shadow: none;
+}
+:root[data-st-layout="mobile"] .st-sheet .st-overlord-gauge,
+:root[data-st-layout="mobile"] .st-sheet .st-pp-gauge,
+:root[data-st-layout="mobile"] .st-sheet .st-format-sentinel {
+  padding: 8px 12px;
+}
+:root[data-st-layout="mobile"] .st-sheet .st-pp-headline { color: #ecebe7; }
+:root[data-st-layout="mobile"] .st-sheet .st-pp-threat { color: #d4d0c5; }
+:root[data-st-layout="mobile"] .st-sheet .st-pp-advice { color: #c0c0bb; }
+:root[data-st-layout="mobile"] .st-sheet .st-sentinel-head {
+  margin-top: 5px;
+  padding-bottom: 3px;
+  color: #bcbab3;
+  border-bottom: 1px solid #5b5d5c;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .08em;
+}
+:root[data-st-layout="mobile"] .st-sheet .st-sentinel-head:first-child { margin-top: 0; }
+:root[data-st-layout="mobile"] .st-sheet .st-sentinel-head::before,
+:root[data-st-layout="mobile"] .st-sheet .st-sentinel-tactic::before { display: none; }
+:root[data-st-layout="mobile"] .st-sheet .st-sentinel-row,
+:root[data-st-layout="mobile"] .st-sheet .st-sentinel-row.st-live,
+:root[data-st-layout="mobile"] .st-sheet .st-sentinel-row.st-burned,
+:root[data-st-layout="mobile"] .st-sheet .st-sentinel-tactic {
+  margin-top: 3px;
+  padding: 1px 0;
+  color: #e3e1dc;
+  font-size: 11px;
+  line-height: 1.35;
+}
+:root[data-st-layout="mobile"] .st-sheet .st-sentinel-row.st-live { color: #c8d0c3; }
+:root[data-st-layout="mobile"] .st-sheet .st-sentinel-row.st-burned { color: #d0b5b0; }
+:root[data-st-layout="mobile"] .st-sheet .st-sentinel-bench {
+  margin-top: 4px;
+  padding-top: 4px;
+  color: #bcbab3;
+  border-top: 1px solid #5b5d5c;
+  font-size: 9px;
+}
+:root[data-st-layout="mobile"] .st-sheet .st-receipt-title { color: #ecebe7; }
+:root[data-st-layout="mobile"] .st-sheet .st-receipt-headline,
+:root[data-st-layout="mobile"] .st-sheet .st-receipt-row { color: #c0c0bb; border-color: #5b5d5c; }
+:root[data-st-layout="mobile"] .tactician-tr-chip {
+  padding: 7px 12px;
+  color: #e3e1dc;
+  background: #333535;
+  border: 0;
+  border-top: 1px solid #5b5d5c;
+  border-bottom: 1px solid #5b5d5c;
+  border-radius: 0;
+  box-shadow: none;
+  font: 600 11px/1.35 var(--st-font);
+  text-shadow: none;
+  animation: none;
+}
+:root[data-st-layout="mobile"] .tactician-tr-chip.tr-info,
+:root[data-st-layout="mobile"] .tactician-tr-chip.tr-warn,
+:root[data-st-layout="mobile"] .tactician-tr-chip.tr-danger { color: #e3e1dc; }
+:root[data-st-layout="mobile"] .tactician-tr-chip.tr-danger { background: #393332; }
+:root[data-st-layout="mobile"] .st-bench-strip {
+  gap: 6px;
+  padding: 7px 8px calc(7px + env(safe-area-inset-bottom, 0px));
+  background: #242626;
+  border-top: 1px solid #5b5d5c;
+}
+:root[data-st-layout="mobile"] .st-bench-pill {
+  min-height: 56px;
+  padding: 4px 7px 4px 4px;
+  gap: 6px;
+  color: #e6e5e0;
+  background: #333535;
+  border: 1px solid #5b5d5c;
+  border-radius: 0;
+  box-shadow: none;
+  transition: none;
+}
+:root[data-st-layout="mobile"] .st-bench-pill::after { display: none; }
+:root[data-st-layout="mobile"] .st-bench-pill.st-active,
+:root[data-st-layout="mobile"] .st-bench-pill.st-selected {
+  color: #f0efeb;
+  background: #424444;
+  border-color: #8b8d89;
+  border-left-color: #8b8d89;
+}
+:root[data-st-layout="mobile"] .st-bench-pill.st-active::after {
+  display: block;
+  top: 4px;
+  right: 5px;
+  bottom: auto;
+  width: auto;
+  height: auto;
+  color: #c5a56b;
+  background: transparent;
+  content: "ACTIVE";
+  font: 700 7px/1 var(--st-font);
+  letter-spacing: .06em;
+}
+:root[data-st-layout="mobile"] .st-bench-sprite {
+  flex-basis: 40px;
+  width: 40px;
+  height: 40px;
+  filter: none;
+}
+:root[data-st-layout="mobile"] .st-bench-name { color: #e6e5e0; }
+:root[data-st-layout="mobile"] .st-bench-health { color: #c0c0bb; }
+@media (max-width: 420px) {
+  :root[data-st-layout="mobile"] .st-sheet[data-st-sheet-open="1"] > .tactician-banner {
+    font-size: 15px;
+  }
+  :root[data-st-layout="mobile"] .st-sheet[data-st-sheet-open="1"] > .st-format-sentinel {
+    padding: 7px 10px 8px;
+  }
 }

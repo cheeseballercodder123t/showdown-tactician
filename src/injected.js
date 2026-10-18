@@ -43,7 +43,7 @@
   var POLL_INTERVAL_MS = 250;
   var MAX_MIRROR_CHARS = 4000;
 
-  var counters = { sent: 0, received: 0, polled: 0, dispatched: 0, errors: 0, ppSnapshots: 0, accuracy: 0 };
+  var counters = { sent: 0, received: 0, polled: 0, dispatched: 0, errors: 0, ppSnapshots: 0, accuracy: 0, frames: 0 };
   window.__ST_INJECTED_DEBUG = counters;
 
   /* The last line handed to the pipeline, and WHICH path handed it over.
@@ -102,6 +102,9 @@
   function captureInbound(event) {
     if (event && event === lastInboundEvent) return;
     lastInboundEvent = event || null;
+    // One frame, one forwarder. Once app.receive is hooked it sees the same bytes (and sees
+    // them on every transport), so this path must stand down rather than deliver twice.
+    if (appReceiveHooked) return;
     try {
       counters.received++;
       forwardBatch(typeof event.data === 'string' ? event.data : '', 'recv');
@@ -142,9 +145,9 @@
     mirror(rawLine, kind);
   }
 
-  function forwardBatch(text, kind) {
+  function forwardBatch(text, kind, claimable) {
     if (typeof text !== 'string' || !text) return;
-    // A single WebSocket frame can carry several newline separated protocol lines.
+    // A single frame can carry several newline separated protocol lines.
     var parts = text.split('\n');
     var delivered = [];
     for (var i = 0; i < parts.length; i++) {
@@ -155,9 +158,11 @@
         delivered.push(line);
       }
     }
-    // Only INBOUND battle traffic is mirrored into battle.log, so only that needs claiming; see
-    // pendingSocketBatches for why the whole run has to be remembered and not just its last line.
-    if (kind === 'recv' && delivered.length) pendingSocketBatches.push(delivered);
+    // Only INBOUND battle traffic is mirrored into the client's line buffer, so only that needs
+    // claiming; see pendingSocketBatches for why the whole run has to be remembered and not just
+    // its last line. A caller that owns the ONLY inbound path (`claimable === false`) has nothing
+    // for the poll to claim.
+    if (kind === 'recv' && delivered.length && claimable !== false) pendingSocketBatches.push(delivered);
   }
 
   /* ------------------------------------------------------------------ websocket capture */
@@ -269,6 +274,70 @@
       wrappedAdd.__stWrapped = true;
       try { NativeWebSocket.prototype.addEventListener = wrappedAdd; } catch (e) { counters.errors++; }
     }
+  }
+
+  /* -------------------------------------------------------- app.receive capture
+   *
+   * WHY THIS EXISTS. The WebSocket patch above is the OLD client's path. The client served at
+   * play.pokemonshowdown.com today does not expose the connection as a page WebSocket at all:
+   * `window.app.socket` is a SockJS object (`_transports` / `_transport`, no `.socket`), and the
+   * runtime check `WebSocket.prototype.send.__stWrapped` is FALSE on the live page. Measured
+   * with this extension side-loaded: after joining a real battle room the counters were still
+   * `{sent:2, received:4, polled:0}` — not one battle line ever reached the parser, so the HUD
+   * never got a `|request|`, a `|fieldstart|` or a `|-mega|` and sat on its Turn-0 text forever.
+   *
+   * `app.receive(data)` is the transport-agnostic entry point: the client hands the RAW server
+   * text to it (worker, SockJS or plain socket — all of them end here, client-core receive()).
+   * `data` is `>roomid\n|line\n|line...` for room traffic; a payload with no `>` header belongs
+   * to `app.curRoom`. Only battle rooms are forwarded, so chat / PM / lobby traffic stays out of
+   * the parser's hot path.
+   *
+   * Once this hook is live it becomes the ONLY inbound path — the WebSocket forwarder stands
+   * down (see captureInbound) so one frame can never be delivered twice, and the poll stops
+   * reading the buffer once a line has actually come through here. The hook is installed from
+   * the 250 ms tick, so it is in place well before the player's first battle join.
+   */
+  var appReceiveHooked = false;
+  var appReceiveLines = 0;
+
+  function forwardFrame(data) {
+    if (typeof data !== 'string' || !data) return 0;
+    var body = data;
+    if (body.charAt(0) === '>') {
+      var nl = body.indexOf('\n');
+      if (nl < 0) return 0;
+      var roomid = body.slice(1, nl).trim();
+      body = body.slice(nl + 1);
+      if (!/^battle-/.test(roomid)) return 0;
+    } else {
+      var room = window.app && window.app.curRoom;
+      if (!room || !/^battle-/.test(String(room.id || ''))) return 0;
+    }
+    if (!body) return 0;
+    counters.frames++;
+    // `claimable: false` — the poll never reads this delivery back (it is the authority once a
+    // line has arrived here), so the batch bookkeeping would only grow without bound.
+    forwardBatch(body, 'recv', false);
+    appReceiveLines += body.split('\n').length;
+    return true;
+  }
+
+  /** Wrap window.app.receive once. Idempotent; returns true when the hook is live. */
+  function hookAppReceive() {
+    if (appReceiveHooked) return true;
+    try {
+      var app = window.app;
+      if (!app || typeof app.receive !== 'function') return false;
+      var nativeReceive = app.receive;
+      var wrapped = function receive(data) {
+        try { forwardFrame(data); } catch (e) { counters.errors++; }
+        return nativeReceive.apply(this, arguments);
+      };
+      wrapped.__stWrapped = true;
+      app.receive = wrapped;
+      appReceiveHooked = true;
+      return true;
+    } catch (e) { counters.errors++; return false; }
   }
 
   /* ------------------------------------------------------------------ PP snapshot */
@@ -420,29 +489,60 @@
     }
   }
 
+  /**
+   * battleLogOf(battle) -> the raw protocol-line array, or null.
+   *
+   * THE NEW CLIENT DOES NOT KEEP THE LOG IN `battle.log`. There, `log(args, kwArgs, preempt)` is
+   * a METHOD that paints a step into the scene, and the raw text lives in `battle.stepQueue`.
+   * The old guard here asked `typeof log.length !== 'number'` and returned early — but a
+   * function's `.length` is its ARITY, which is 3, so the guard PASSED and the loop then read
+   * `log[0]`, `log[1]`, `log[2]` — all `undefined` — forever. That is why the fallback delivered
+   * exactly nothing on the live client (observed: `polled: 0` while `battle.log.length` read 3 and
+   * `battle.stepQueue` grew normally). Accept either shape, but never a function.
+   */
+  function battleLogOf(battle) {
+    if (!battle) return null;
+    var queue = battle.stepQueue;
+    if (queue && typeof queue.length === 'number' && (queue.length === 0 || typeof queue[0] === 'string')) return queue;
+    var log = battle.log;
+    if (log && typeof log !== 'function' && typeof log.length === 'number' &&
+        (log.length === 0 || typeof log[0] === 'string')) return log;
+    return null;
+  }
+
+  /** The buffer fallback: read the client's own line queue behind a cursor. */
+  function pollBattleBuffer(battle) {
+    var log = battleLogOf(battle);
+    if (!log) return;
+    if (log.length < pollCursor) { // room reset / new battle
+      pollCursor = 0;
+      pendingSocketBatches.length = 0;
+    }
+    claimPendingSocketBatches(log);
+    for (; pollCursor < log.length; pollCursor++) {
+      var line = log[pollCursor];
+      if (typeof line !== 'string' || !line) continue;
+      // The polling path is the only one that can duplicate a line, because another path may
+      // already have delivered it. Only the OTHER path counts as "already delivered":
+      // two identical lines in the buffer are two things that happened, and dropping the
+      // second one corrupts the state for the rest of the battle.
+      if (line === lastForwarded.line && lastForwarded.kind !== 'poll') continue;
+      counters.polled++;
+      forward(line, 'poll');
+    }
+  }
+
   function pollBattleLog() {
     try {
       var app = window.app;
       var room = app && app.curRoom;
       var battle = room && room.battle;
-      var log = battle && battle.log;
-      if (!log || typeof log.length !== 'number') return;
-      if (log.length < pollCursor) { // room reset / new battle
-        pollCursor = 0;
-        pendingSocketBatches.length = 0;
-      }
-      claimPendingSocketBatches(log);
-      for (; pollCursor < log.length; pollCursor++) {
-        var line = log[pollCursor];
-        if (typeof line !== 'string' || !line) continue;
-        // The polling path is the only one that can duplicate a line, because the socket
-        // path may already have delivered it. Only the SOCKET counts as "already delivered":
-        // two identical lines in the log are two things that happened, and dropping the
-        // second one corrupts the state for the rest of the battle.
-        if (line === lastForwarded.line && lastForwarded.kind !== 'poll') continue;
-        counters.polled++;
-        forward(line, 'poll');
-      }
+      // Install the robust hook as soon as the page exposes its app — this tick is the retry
+      // loop, so no separate timer is needed.
+      hookAppReceive();
+      // The buffer is a FALLBACK: it only speaks while app.receive has not delivered a line, so
+      // the two paths never hand the same frame to the parser twice.
+      if (!appReceiveHooked || !appReceiveLines) pollBattleBuffer(battle);
       pollPpSnapshot();
       pollAccuracySnapshot(battle);
     } catch (e) {

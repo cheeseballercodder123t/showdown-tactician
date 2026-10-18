@@ -33,7 +33,7 @@
   const TR_TURNS = cfg('trickRoom.turns', 5);
   const SPEED_RANK_BASE = cfg('trickRoom.speedRankBase', 10000);
   const TR_ALERT_FINAL = cfg('trickRoom.alertFinal',
-    '⚠️ TR EXPIRING NEXT TURN: Attack or sack setter; DO NOT hard-switch healthy breakers!');
+    'TR 1/5 / LAST TURN: attack or sack your setter');
   const TR_ALERT_TWO_LEFT = cfg('trickRoom.alertTwoLeft',
     'TR: 2 turns left — land your chip now; the last turn is for the sack.');
   const TR_MAX_HISTORY = cfg('trickRoom.maxHistory', 40);

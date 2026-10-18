@@ -168,12 +168,22 @@ check('every pill is addressable by id',
   pills.every(function (p) { return typeof attr(p, 'data-st-bench') === 'string' && attr(p, 'data-st-bench').length > 0; }),
   JSON.stringify(pills.map(function (p) { return attr(p, 'data-st-bench'); })));
 check('a pill names the mon and how healthy it is',
-  /Corviknight/.test(textOf(pills[0])) && /100/.test(textOf(pills[0])), textOf(pills[0]));
+  !!findAll(pills[0], function (n) { return hasClass(n, 'st-bench-name'); })[0] &&
+    /Corviknight/.test(textOf(findAll(pills[0], function (n) { return hasClass(n, 'st-bench-name'); })[0])) &&
+    /100/.test(textOf(findAll(pills[0], function (n) { return hasClass(n, 'st-bench-health'); })[0])), textOf(pills[0]));
+const sprites = pills.map(function (p) { return findAll(p, function (n) { return hasClass(n, 'st-bench-sprite'); })[0]; });
+eq('every visible opponent card has a sprite image', sprites.length, 3);
+eq('sprite source uses the local Showdown gen5 asset path', sprites[0].src,
+  'https://play.pokemonshowdown.com/sprites/gen5/corviknight.png');
+eq('sprite carries the normalized form identifier', attr(sprites[0], 'data-species-sprite'), 'corviknight');
+check('the sprite is decorative for screen readers', attr(sprites[0], 'aria-hidden') === 'true' && attr(sprites[0], 'alt') === '');
 const selected = pills.filter(function (p) { return hasClass(p, 'st-selected'); });
 eq('exactly one pill is selected', selected.length, 1);
 eq('the selected pill is the tapped one', selected[0] && attr(selected[0], 'data-st-bench'), 'greattusk');
 const fainted = pills.filter(function (p) { return hasClass(p, 'st-fainted'); });
 eq('a fainted bench mon is marked', fainted.length, 1);
+const healthFill = findAll(pills[1], function (n) { return hasClass(n, 'st-bench-meter-fill'); })[0];
+eq('the card health meter reflects the target HP', healthFill && healthFill.style.width, '62%');
 eq('...and it is the right one', fainted[0] && attr(fainted[0], 'data-st-bench'), 'gholdengo');
 
 const handled = call('benchTapped does not throw', function () { return hud2.benchTapped('corviknight'); });
@@ -189,6 +199,25 @@ for (let i = 0; i < benchCap + 3; i++) {
 const strip2 = call('re-rendering the strip does not throw', function () { return hud2.renderBenchTargets(manyTargets, null); }) || byClass('st-bench-strip')[0];
 const pills2 = findAll(strip2, function (n) { return hasClass(n, 'st-bench-pill'); });
 eq('the strip is capped at hud.benchStripMax', pills2.length, benchCap);
+const formCard = call('a regional-form sprite card renders', function () {
+  return hud2.renderBenchTargets([{ species: 'Zoroark-Hisui', id: 'zoroarkhisui', hpPercent: 48 }], null);
+});
+const formSprite = findAll(formCard, function (n) { return hasClass(n, 'st-bench-sprite'); })[0];
+eq('regional form resolves to a hyphenated sprite filename', formSprite && formSprite.src,
+  'https://play.pokemonshowdown.com/sprites/gen5/zoroark-hisui.png');
+eq('a known forme falls back to the base species slug', formSprite && formSprite.getAttribute('data-species-sprite'), 'zoroark-hisui');
+const punctuated = call('a punctuation-safe sprite card renders', function () {
+  return hud2.renderBenchTargets([{ species: "Farfetch’d-Galar", id: 'farfetchdgalar', hpPercent: 100 }], null);
+});
+const punctuatedSprite = findAll(punctuated, function (n) { return hasClass(n, 'st-bench-sprite'); })[0];
+eq('unicode apostrophe and accents never become URL characters', punctuatedSprite && punctuatedSprite.src,
+  'https://play.pokemonshowdown.com/sprites/gen5/farfetchd-galar.png');
+const activeCardStrip = call('the active opponent card renders as a non-interactive roster tile', function () {
+  return hud2.renderBenchTargets([{ species: 'Landorus-Therian', id: 'landorustherian', hpPercent: 37, isActive: true }], null);
+});
+const activeCard = findAll(activeCardStrip, function (n) { return hasClass(n, 'st-bench-pill'); })[0];
+eq('active roster card is informational, not a bench-selection button', activeCard && activeCard.tagName, 'DIV');
+check('active roster card is visibly state-tagged', !!activeCard && hasClass(activeCard, 'st-active'));
 eq('re-rendering replaces the pills instead of appending to them', byClass('st-bench-strip').length, 1);
 
 call('clearing the strip does not throw', function () { return hud2.renderBenchTargets(null); });
@@ -273,7 +302,7 @@ call('renderOverlordGauge does not throw', function () {
 const gauges = byAttr('data-st-overlord');
 eq('one gauge node', gauges.length, 1);
 const gaugeText = textOf(gauges[0]);
-check('it names Supreme Overlord', /Supreme Overlord/.test(gaugeText), gaugeText);
+check('it names Supreme Overlord', /SUPREME OVERLORD/.test(gaugeText), gaugeText);
 check('it shows the percent boost', /\+50/.test(gaugeText), gaugeText);
 check('it shows the effective Attack', /607/.test(gaugeText), gaugeText);
 check('it shows how many allies fell', /5/.test(gaugeText), gaugeText);
@@ -724,7 +753,9 @@ if (TAP_BOOT && TAP_BOOT.hud && TAP_BOOT.state) {
   function rangeOf(btn) { return barOf(btn).replace(/\s+/g, ''); }
   function benchPills() {
     const strip = byClass('st-bench-strip')[0];
-    return strip ? findAll(strip, function (n) { return hasClass(n, 'st-bench-pill'); }) : [];
+    return strip ? findAll(strip, function (n) {
+      return hasClass(n, 'st-bench-pill') && n.tagName === 'BUTTON';
+    }) : [];
   }
   function selectedPillIds() {
     return benchPills().filter(function (p) { return hasClass(p, 'st-selected'); })

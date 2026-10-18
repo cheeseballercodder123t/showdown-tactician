@@ -5,12 +5,25 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>[Gen 9] National Dex OU</title>
 <style>
-  html, body { margin: 0; padding: 0; background: #f4f4f4; font-family: Verdana, sans-serif; }
+  html, body { margin: 0; padding: 0; background: #ecebe7; font-family: Verdana, sans-serif; }
+  .battle-log { padding: 10px 12px; background: #f1f0ec; border-color: #cccac4; }
+  .fixture-event { margin: 3px 0; color: #333; font: 12px/1.35 Verdana, sans-serif; }
+  .fixture-event + .fixture-event { border-top: 1px solid #d8d7d2; padding-top: 4px; }
+  .battle-log::before { content: "BATTLE LOG"; margin-bottom: 7px; color: #696b6d; font: 700 9px/1.2 Verdana, sans-serif; letter-spacing: .12em; }
+  .fixture-event[data-kind="turn"] { color: #666; font-weight: 700; }
+  .fixture-event[data-side="opponent"] { color: #495868; }
+  .fixture-event[data-side="player"] { color: #514d45; }
+  .fixture-event[data-kind="move"] { color: #343536; }
+  .fixture-event[data-kind="faint"] { color: #6d3e39; }
   .battle { padding: 8px; }
-  .battle-log { height: 200px; overflow: auto; background: #fff; border: 1px solid #ccc; font-size: 12px; white-space: pre-wrap; }
+  @media (min-width: 1024px) { .battle { width: 640px; } }
+  .battle-log { height: 200px; overflow: auto; background: #f1f0ec; border: 1px solid #cccac4; font-size: 12px; white-space: pre-wrap; }
+  .fixture-event { display: block; margin: 2px 5px; color: #333; font: 12px/1.35 Verdana, sans-serif; }
+  .fixture-event strong { font-weight: 700; }
+  .fixture-event em { color: #777; font-style: normal; }
   .battle-controls { margin-top: 8px; }
   .movemenu { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-  button.movebutton { min-height: 56px; font-size: 15px; border: 1px solid #999; background: #fff; border-radius: 6px; }
+  button.movebutton { min-height: 56px; font-size: 15px; border: 1px solid #898984; background: #f1f0ec; border-radius: 0; }
   button.switchbutton { min-height: 44px; width: 100%; margin-top: 6px; }
 </style>
 </head>
@@ -85,7 +98,40 @@
     logLine: function (line) {
       battle.log.push(line);
       var el = document.getElementById('log');
-      if (el) el.appendChild(document.createTextNode(line + '\n'));
+      if (el) {
+        var event = document.createElement('span');
+        event.className = 'fixture-event';
+        var fields = line.split('|');
+        var command = fields[1] || '';
+        var actor = fields[2] || '';
+        if (command === 'turn') {
+          event.dataset.kind = 'turn';
+          event.textContent = 'TURN ' + (fields[2] || '');
+        } else if (command === 'start') {
+          event.dataset.kind = 'start';
+          event.textContent = 'BATTLE START  NATIONAL DEX OU';
+        } else if (command === 'switch' || command === 'drag') {
+          var isPlayer = /^p1[a-z]*:/i.test(actor);
+          event.dataset.kind = 'switch';
+          event.dataset.side = isPlayer ? 'player' : 'opponent';
+          event.textContent = (isPlayer ? 'YOUR ACTIVE' : 'OPPONENT ACTIVE') + '  ' + actor.replace(/^p[12][a-z]*:\s*/i, '');
+        } else if (command === 'move') {
+          event.dataset.kind = 'move';
+          event.dataset.side = /^p1[a-z]*:/i.test(actor) ? 'player' : 'opponent';
+          event.textContent = actor.replace(/^p[12][a-z]*:\s*/i, '') + ' USED ' + (fields[3] || 'A MOVE');
+        } else if (command === 'faint') {
+          event.dataset.kind = 'faint';
+          event.dataset.side = /^p1[a-z]*:/i.test(actor) ? 'player' : 'opponent';
+          event.textContent = actor.replace(/^p[12][a-z]*:\s*/i, '') + ' FAINTED';
+        } else if (command === 'player' || command === 'teamsize' || command === 'poke' || command === 'teampreview' || command === 'gametype' || command === 'gen' || command === 'tier' || command === 'clearpoke' || command === 'request') {
+          return battle.log.length;
+        } else if (line.charAt(0) === '|') {
+          return battle.log.length;
+        } else {
+          event.textContent = line;
+        }
+        el.appendChild(event);
+      }
       return battle.log.length;
     },
     logLines: function (lines) {
