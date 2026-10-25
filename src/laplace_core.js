@@ -592,7 +592,18 @@
       const field = (state && state.field) || {};
       const actions = this.getMyActions(state);
       const lines = [];
-      const opts = this._believedTargetOpts(targetMon);
+      /* THE RANGE HAS TO SPAN THE SETS WE BELIEVE, NOT JUST THE FAVOURITE ONE.
+       *
+       * One set is a guess, and the HUD printed it as if it were the board: a 0 HP / 0 Def
+       * Serperior spread read "Fire Punch 101.7-120.3% — guaranteed OHKO" on a hit that left
+       * the real (252 HP) Serperior at 2%, while the 252 HP / 252 Def candidate in the SAME
+       * pool said 61%. Both were in the pruner's answer; only the heaviest was consulted. So
+       * every line is now the envelope of the legal candidate pool: the lowest min roll and the
+       * highest max roll across the sets still standing, with the WORST-CASE KO chance and an
+       * `isOHKO` that requires every surviving spread to die. A bar can therefore never promise
+       * a KO that one of our own candidate sets already contradicts.
+       */
+      const optList = this._targetSetOpts(targetMon);
       for (let i = 0; i < actions.length; i++) {
         const action = actions[i];
         if (!action || action.kind === 'switch') continue;   // switching is not a damage line
@@ -600,25 +611,57 @@
         if (!name) continue;
         const data = U.getMoveData(name);
         let res = null;
-        try { res = this.damage.calculateDamage(myActive, targetMon, name, field, opts); } catch (e) { res = null; }
-        if (!res || res.failed) continue;
-        const minPercent = typeof res.minPercent === 'number' ? res.minPercent : 0;
-        const maxPercent = typeof res.maxPercent === 'number' ? res.maxPercent : 0;
-        const koChancePct = (typeof res.koChancePct === 'number' && isFinite(res.koChancePct)) ? res.koChancePct : 0;
+        let lo = Infinity, hi = -Infinity, koWorst = Infinity;
+        let allOhko = true, all2hko = true, any = false;
+        for (let s = 0; s < optList.length; s++) {
+          let one = null;
+          try { one = this.damage.calculateDamage(myActive, targetMon, name, field, optList[s]); } catch (e) { one = null; }
+          if (!one || one.failed) continue;
+          if (!res) res = one;
+          any = true;
+          const mn = typeof one.minPercent === 'number' ? one.minPercent : 0;
+          const mx = typeof one.maxPercent === 'number' ? one.maxPercent : 0;
+          if (mn < lo) lo = mn;
+          if (mx > hi) hi = mx;
+          const ko = (typeof one.koChancePct === 'number' && isFinite(one.koChancePct)) ? one.koChancePct : 0;
+          if (ko < koWorst) koWorst = ko;
+          if (!one.isOHKO) allOhko = false;
+          // `is2HKO` is exclusive of a guaranteed OHKO in the calculator, so an OHKO spread
+          // must not veto the merged 2HKO claim: a body that dies in one hit also dies in two.
+          if (!one.is2HKO && !one.isOHKO) all2hko = false;
+        }
+        if (!any || !res) continue;
+        const minPercent = isFinite(lo) ? lo : 0;
+        const maxPercent = isFinite(hi) ? hi : 0;
+        const koChancePct = isFinite(koWorst) ? koWorst : 0;
+        const merged = {
+          minPercent: minPercent, maxPercent: maxPercent, koChancePct: koChancePct,
+          isOHKO: allOhko, is2HKO: all2hko, desc: res.desc || ''
+        };
         const isStatus = !!(data && data.isStatus);
-        const lethal = isStatus ? 'none' : this.lethalBand(res);
+        /* MIMIKYU'S DISGUISE. The first damaging hit is absorbed outright — the sim prints
+         * `|-activate|…|ability: Disguise` and a 0-damage line — so pricing it as a normal hit
+         * claimed "guaranteed OHKO" on a full-health Mimikyu. The disguise state rides on the
+         * MonState and is cleared by the protocol's own activation frame. */
+        const disguised = !isStatus && !!res.disguiseIntact && maxPercent === 0;
+        const lieMin = U.round1(minPercent);
+        const lieMax = U.round1(maxPercent);
+        const lethal = isStatus || disguised ? 'none' : this.lethalBand(merged);
         lines.push({
           moveId: action.moveId || U.toID(name),
           name: name,
           isStatus: isStatus,
-          minPercent: U.round1(minPercent),
-          maxPercent: U.round1(maxPercent),
-          koChancePct: U.round1(koChancePct),
-          isOHKO: !!res.isOHKO,
-          is2HKO: !!res.is2HKO,
+          minPercent: lieMin,
+          maxPercent: lieMax,
+          koChancePct: disguised ? 0 : U.round1(koChancePct),
+          isOHKO: disguised ? false : !!allOhko,
+          is2HKO: disguised ? false : !!all2hko,
           lethal: lethal,
-          verdict: this.lethalVerdict(res, data),
-          desc: res.desc || ''
+          disguiseIntact: disguised,
+          verdict: disguised ? 'Disguise absorbs the first hit' : this.lethalVerdict(merged, data),
+          desc: res.desc || '',
+          // How many surviving spreads the range covers, so a caller can say "4 spreads".
+          spreadCount: optList.length
         });
       }
       if (!lines.length) return null;
@@ -661,6 +704,35 @@
       } };
     }
 
+    /**
+     * _targetSetOpts(mon) -> [{ defender: {...} }, ...] for every surviving spread, best first.
+     *
+     * The envelope input for preview(): `liveSet` is the pruner's favourite, and the rest of
+     * `candidateSets` are the spreads the log has NOT ruled out. Deduplicated by set id (the
+     * live set is one of the candidates) and capped at 8 so a wide pool cannot turn a hover into
+     * a benchmark. A body with no sets at all yields one empty override — the bare card, exactly
+     * as `_believedTargetOpts` did.
+     */
+    _targetSetOpts(mon) {
+      const out = [];
+      const seen = Object.create(null);
+      const push = function (set) {
+        if (!set || typeof set !== 'object') return;
+        const id = set.id || ('anon-' + out.length);
+        if (seen[id]) return;
+        seen[id] = true;
+        out.push({ defender: {
+          evs: set.evs, ivs: set.ivs, nature: set.nature,
+          item: set.item, ability: set.ability, level: set.level
+        } });
+      };
+      if (mon && mon.liveSet) push(mon.liveSet);
+      const cands = (mon && Array.isArray(mon.candidateSets)) ? mon.candidateSets : [];
+      for (let i = 0; i < cands.length && out.length < 8; i++) push(cands[i]);
+      if (!out.length) out.push({});
+      return out;
+    }
+
     /** previewVsBench(species, state) -> the same shape for an opponent BENCH body, else null. */
     previewVsBench(species, state) {
       const wanted = U.toID(species);
@@ -695,7 +767,7 @@
       if (res.isOHKO) return 'Guaranteed lethal';
       const max = typeof res.maxPercent === 'number' ? res.maxPercent : 0;
       const ko = (typeof res.koChancePct === 'number' && isFinite(res.koChancePct)) ? res.koChancePct : 0;
-      if (max <= 0) return '0% (Immune)';
+      if (max <= 0) return 'immune';
       if (res.is2HKO) return '2HKO';
       if (ko >= 1) return Math.round(ko) + '% KO chance';
       return 'leaves them at ~' + Math.max(0, Math.round(100 - max)) + '% HP';
@@ -2135,6 +2207,9 @@
      * the real board, so a line that KOs their body scored the lethal bonus through the shield).
      */
     _payoff(myAction, oppAction, state, field, world, trace) {
+      if (world && world.team && world.team.length) {
+        state = Object.assign({}, state, { oppTeam: world.team, active: { my: state.active && state.active.my, opp: this._oppActive(world, state) } });
+      }
       const myActive = state.active && state.active.my;
       const oppActive = state.active && state.active.opp;
       if (!myActive || !oppActive || !this.evaluator) {
@@ -3025,7 +3100,7 @@
           }
         } else if (action) {
           const data = U.getMoveData(action.name || action.moveId);
-          if (data && !data.isStatus && data.basePower > 0) {
+          if (data && !data.isStatus) {
             const dmg = this._damageOf(oppActive, myActive, action.name, field, true,
               this._believedTargetOpts(myActive));
             w = Math.max((dmg && dmg.avgPercent) || 0, attackFloor);
@@ -3056,7 +3131,7 @@
         const name = moves[i];
         if (!name) continue;
         const data = U.getMoveData(name);
-        if (!data || data.isStatus || !(data.basePower > 0)) continue;
+        if (!data || data.isStatus) continue;
         const id = U.toID(name);
         let seen = false;
         for (let r = 0; r < revealed.length; r++) {

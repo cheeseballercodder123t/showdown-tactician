@@ -26,7 +26,7 @@ test.afterAll(async function () {
 
 /** Open a page, drain the setup log, and play one decision turn. */
 async function playTurn(opts) {
-  const opened = await H.openBattle(env.ctx);
+  const opened = await H.openBattle(env.ctx, { initLocal: { stHudLayout: 'auto' } });
   await H.waitForDrain(opened.page);
   await H.pushLines(opened.page, [H.buildRequest(opts)]);
   await H.waitForBadges(opened.page, 1);
@@ -73,8 +73,8 @@ test('a veto lands on the button whose move it applies to', async function () {
 
   const button = snap.buttons.find(function (b) { return b.move === 'headlongrush'; });
   expect(button.classes).toContain('conf-veto');
-  expect(button.opacity).toBe('0.5');
-  expect(button.textDecoration).toBe('line-through');
+  expect(button.opacity).toBe('');
+  expect(button.textDecoration).toBe('');
 
   /* And the immunity must not have leaked onto the coverage moves. */
   const others = snap.badges.filter(function (b) { return b.move !== 'headlongrush'; });
@@ -259,7 +259,7 @@ test('the layout toggle switches mobile and desktop, and neither covers the move
   const desktop = await read();
   expect(desktop.layout).toBe('desktop');
   expect(desktop.resolved).toBe('desktop');
-  expect(desktop.label).toMatch(/wide/i);
+  expect(desktop.label).toMatch(/auto|wide/i);
   expect(desktop.hasConsole).toBe(true);
   /* The point of the desktop layout: the HUD is docked and must not cover a move button. */
   expect(desktop.coversMoveButton).toBe(false);
@@ -269,9 +269,10 @@ test('the layout toggle switches mobile and desktop, and neither covers the move
   await page.waitForFunction(function () {
     return document.documentElement.getAttribute('data-st-layout') === 'mobile';
   });
+  await page.click('[data-st-sheet-trigger]');
   const mobile = await read();
   expect(mobile.layout).toBe('mobile');
-  expect(mobile.label).toMatch(/field/i);
+  expect(mobile.label).toMatch(/compact/i);
   expect(mobile.hasToggle).toBe(true);
 
   /* Clicking the toggle must not steal keyboard focus: Showdown's move shortcuts are
@@ -280,7 +281,7 @@ test('the layout toggle switches mobile and desktop, and neither covers the move
     const ae = document.activeElement;
     return ae ? ae.tagName : null;
   });
-  expect(focus === 'BODY' || focus === 'HTML' || focus === null).toBe(true);
+  expect(await page.evaluate(() => !!document.activeElement.closest('.st-sheet'))).toBe(true);
 
   /* And back to desktop, which must re-parent the band into the console. */
   await page.click('.st-mode-toggle');
@@ -296,163 +297,113 @@ test('the layout toggle switches mobile and desktop, and neither covers the move
   await page.close();
 });
 
-test('the mobile match readout is compact, accessible, flat, and expands below the controls', async function () {
+test('the mobile control center is accessible and fills the viewport on demand', async function () {
+  const { page, errors } = await playTurn();
+  const trigger = page.locator('[data-st-sheet-trigger]');
+  await expect(trigger).toHaveAttribute('aria-expanded', 'false');
+  expect(await trigger.evaluate(el => !!el.closest('[aria-hidden="true"]'))).toBe(false);
+  await trigger.focus();
+  await trigger.press('Enter');
+  await expect(trigger).toHaveAttribute('aria-expanded', 'true');
+  await expect(page.locator('.st-sheet .st-damage-row')).toHaveCount(4);
+  await expect(page.locator('.st-sheet .st-play-name')).toContainText('Ice Spinner');
+  await expect(page.locator('.st-sheet')).toHaveAttribute('role', 'dialog');
+  const bounds = await page.locator('.st-sheet').boundingBox();
+  expect(bounds.height).toBe(915);
+  expect(await page.locator('.st-sheet').evaluate(el => el.parentElement.tagName)).toBe('BODY');
+  await trigger.press('Enter');
+  await expect(trigger).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.locator('.battle-controls > .st-sheet')).toHaveCount(1);
+  expect(errors).toHaveLength(0);
+  await page.close();
+});
+
+test('a live battle room (|init|battle) keeps the engine online instead of reading "battle" as a tier', async function () {
+  /* The real client opens a battle room with `|init|battle` and only some transports also
+   * carry `|tier|`. The old parser treated the room kind as a format, the NatDex allowlist
+   * rejected it, and a ranked National Dex game showed "ENGINE OFFLINE / battle". */
+  const setup = H.BATTLE_SETUP.filter(function (line) {
+    return line.indexOf('|tier|') !== 0;
+  }).map(function (line) {
+    return line === '|init|[Gen 9] National Dex' ? '|init|battle' : line;
+  });
+  const opened = await H.openBattle(env.ctx, { setup: setup });
+  const { page } = opened;
+  await H.waitForDrain(page);
+  await H.pushLines(page, [H.buildRequest()]);
+  await H.waitForBadges(page, 4);
+  const banner = await page.locator('[data-st-banner]').innerText();
+  expect(banner).not.toContain('ENGINE OFFLINE');
+  expect(banner).toContain('PLAY: Ice Spinner');
+  expect(await page.locator('button[data-move] .st-lethal-bar').count()).toBe(4);
+  expect(opened.errors, opened.errors.join('\n')).toHaveLength(0);
+  await page.close();
+});
+
+test('the scout log records revealed moves, items and abilities, and bench previews say who they price', async function () {
   const opened = await H.openBattle(env.ctx, { initLocal: { stHudLayout: 'auto' } });
   const { page } = opened;
   await H.waitForDrain(page);
   await H.pushLines(page, [H.buildRequest()]);
   await H.waitForBadges(page, 4);
 
-  const state = function () {
-    return page.evaluate(function () {
-      const rect = function (el) {
-        if (!el) return null;
-        const r = el.getBoundingClientRect();
-        return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, height: r.height };
-      };
-      const sheet = document.querySelector('.st-sheet');
-      const trigger = document.querySelector('[data-st-sheet-trigger]');
-      const banner = sheet && sheet.querySelector('.tactician-banner');
-      const arena = rect(document.querySelector('.battle'));
-      const controls = rect(document.querySelector('.battle-controls'));
-      const rail = rect(trigger);
-      const moveButtons = Array.from(document.querySelectorAll('button[data-move]')).map(rect);
-      const overlap = function (a, b) {
-        return !!a && !!b && a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
-      };
-      return {
-        layout: document.documentElement.getAttribute('data-st-layout'),
-        open: sheet && sheet.getAttribute('data-st-sheet-open'),
-        hidden: sheet && sheet.getAttribute('aria-hidden'),
-        role: sheet && sheet.getAttribute('role'),
-        controlsLabel: trigger && trigger.getAttribute('aria-label'),
-        railHeight: rail && rail.height,
-        railOverlapsArena: overlap(rail, arena),
-        railOverlapsControls: overlap(rail, controls) || moveButtons.some(function (m) { return overlap(rail, m); }),
-        sheetText: sheet ? sheet.innerText : '',
-        colors: sheet ? {
-          height: sheet.getBoundingClientRect().height,
-          identity: trigger.querySelector('.st-sheet-identity').textContent,
-          ink: getComputedStyle(trigger).color,
-          surfaceColor: getComputedStyle(sheet).backgroundColor,
-          header: getComputedStyle(trigger).backgroundColor,
-          headerBorderRadius: getComputedStyle(trigger).borderRadius,
-          headerShadow: getComputedStyle(trigger).boxShadow,
-          headerBackgroundImage: getComputedStyle(trigger).backgroundImage,
-          bannerBorderLeftWidth: getComputedStyle(banner).borderLeftWidth,
-          bannerShadow: getComputedStyle(banner).boxShadow,
-          bannerBackgroundImage: getComputedStyle(banner).backgroundImage,
-          summaryDisplay: getComputedStyle(trigger.querySelector('.st-sheet-summary')).display,
-          eyebrow: getComputedStyle(banner, '::before').content,
-          recommendationColor: getComputedStyle(banner, '::before').color,
-          recommendationLabel: getComputedStyle(banner, '::before').content,
-          background: getComputedStyle(document.body).backgroundColor,
-          fontSize: getComputedStyle(banner).fontSize,
-          headerMinHeight: getComputedStyle(trigger).minHeight,
-          expanded: sheet.getAttribute('data-st-sheet-open'),
-          hidden: sheet.getAttribute('aria-hidden'),
-          touchHeight: trigger.getBoundingClientRect().height,
-          allShadows: [getComputedStyle(sheet).boxShadow, getComputedStyle(trigger).boxShadow,
-            getComputedStyle(banner).boxShadow],
-          allRadii: [getComputedStyle(sheet).borderRadius, getComputedStyle(trigger).borderRadius,
-            getComputedStyle(banner).borderRadius],
-          benchTransition: getComputedStyle(document.querySelector('.st-bench-pill')).transitionDuration,
-          hasIconLibrary: !!document.querySelector('svg[class*="lucide"], [data-lucide]'),
-          emojiText: /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(sheet.innerText),
-          fixtureEvents: Array.from(document.querySelectorAll('.fixture-event')).map(function (el) { return el.innerText; }),
-          controlSurfaces: Array.from(document.querySelectorAll('button[data-move]')).map(function (el) { return getComputedStyle(el).backgroundColor; }),
-          protocolVisible: Array.from(document.querySelectorAll('.fixture-event')).some(function (el) { return el.innerText.indexOf('|') !== -1; }),
-          pageBackground: getComputedStyle(document.body).backgroundColor,
-          horizontallyClipped: document.documentElement.scrollWidth > window.innerWidth,
-          fontFamily: getComputedStyle(banner).fontFamily,
-          activeFontFamily: getComputedStyle(trigger).fontFamily,
-          injectedBackgroundImages: [sheet, trigger, banner, document.querySelector('.tactician-tr-chip'),
-            document.querySelector('.st-bench-strip')].concat(Array.from(document.querySelectorAll('.st-bench-pill')))
-            .map(function (el) { return getComputedStyle(el).backgroundImage; }),
-          injectedShadows: [sheet, trigger, banner, document.querySelector('.tactician-tr-chip'),
-            document.querySelector('.st-bench-strip')].concat(Array.from(document.querySelectorAll('.st-bench-pill')))
-            .map(function (el) { return getComputedStyle(el).boxShadow; }),
-          injectedRadii: [sheet, trigger, banner, document.querySelector('.tactician-tr-chip'),
-            document.querySelector('.st-bench-strip')].concat(Array.from(document.querySelectorAll('.st-bench-pill')))
-            .map(function (el) { return getComputedStyle(el).borderRadius; }),
-          injectedTransitions: [trigger, document.querySelector('.tactician-tr-chip'),
-            document.querySelector('.st-bench-strip')].concat(Array.from(document.querySelectorAll('.st-bench-pill')))
-            .map(function (el) { return getComputedStyle(el).transitionDuration; }),
-          sentinelStyles: Array.from(sheet.querySelectorAll('.st-format-sentinel, .st-sentinel-row'))
-            .map(function (el) { return { color: getComputedStyle(el).color, backgroundImage: getComputedStyle(el).backgroundImage }; })
-        } : null
-      };
-    });
-  };
+  /* Two moves in one stint without a switch is a PROVEN rule-out, and the same lines give
+   * the scout ledger its first facts. */
+  await H.pushLines(page, [
+    '|move|p2a: Landorus-Therian|Earthquake|p1a: Great Tusk',
+    '|-damage|p1a: Great Tusk|40/100',
+    '|move|p2a: Landorus-Therian|U-turn|p1a: Great Tusk',
+    '|-damage|p1a: Great Tusk|31/100',
+    '|-item|p2a: Landorus-Therian|Leftovers',
+    '|-ability|p2a: Landorus-Therian|Intimidate',
+    H.buildRequest({ rqid: 2 })
+  ]);
+  const analysis = page.locator('[data-st-sheet-trigger]');
+  if (await analysis.count() && await analysis.getAttribute('aria-expanded') === 'false') await analysis.click();
+  await page.locator('[data-st-view-button="intel"]').click();
+  await page.locator('.st-scout-card > summary').click();
+  await page.waitForSelector('.st-scout-card');
+  const scout = await page.locator('.st-scout-card').innerText();
+  expect(scout).toContain('Landorus-Therian');
+  expect(scout).toContain('Earthquake');
+  expect(scout).toContain('U-turn');
+  expect(scout).toContain('Leftovers');
+  expect(scout).toContain('Intimidate');
 
-  const collapsed = await state();
-  expect(collapsed.layout).toBe('mobile');
-  expect(collapsed.open).toBe('0');
-  expect(collapsed.hidden).toBe('true');
-  expect(collapsed.role).toBe('region');
-  expect(collapsed.railHeight).toBeGreaterThanOrEqual(44);
-  expect(collapsed.railOverlapsArena).toBe(false);
-  expect(collapsed.railOverlapsControls).toBe(false);
-  expect(collapsed.controlsLabel).toMatch(/Showdown Tactician/i);
+  /* The old "confirmed reads" ticket row was removed: it printed only negative deductions
+   * (CHOICE ITEMS RULED OUT) and never the opponent's moves, item or ability. The scout ledger
+   * above is now the single place those facts live, so the ticket row must not come back. */
+  expect(await page.locator('.st-unmask-badge').count()).toBe(0);
+  expect(await page.locator('.st-console-label').allInnerTexts()).not.toContain('CONFIRMED READS');
 
-  await page.click('[data-st-sheet-trigger]');
+  /* A bench tap must never be able to pass as a prediction for the active body. */
+  await page.click('[data-st-bench="ironvaliant"]');
   await page.waitForFunction(function () {
-    const sheet = document.querySelector('.st-sheet');
-    return sheet && sheet.getAttribute('data-st-sheet-open') === '1' &&
-      getComputedStyle(sheet).backgroundColor === 'rgb(41, 43, 44)';
+    const bar = document.querySelector('button[data-move] .st-lethal-bar');
+    return !!bar && / vs Iron Valiant/i.test(bar.textContent);
   });
-  const expanded = await state();
-  expect(expanded.hidden).toBe('false');
-  expect(expanded.sheetText).toContain('PLAY: Close Combat');
-  expect(expanded.sheetText).toContain('OPPONENT FORMAT MECHANICS');
-  expect(expanded.sheetText).not.toContain('\\n|');
-  expect(expanded.colors.identity).toBe('SHOWDOWN');
-  expect(expanded.colors.ink).toBe('rgb(236, 235, 231)');
-  expect(expanded.colors.surfaceColor).toBe('rgb(41, 43, 44)');
-  expect(expanded.colors.header).toBe('rgb(48, 50, 51)');
-  expect(expanded.colors.headerBorderRadius).toBe('0px');
-  expect(expanded.colors.headerShadow).toBe('none');
-  expect(expanded.colors.bannerBorderLeftWidth).toBe('0px');
-  expect(expanded.colors.bannerShadow).toBe('none');
-  expect(expanded.colors.summaryDisplay).toBe('block');
-  expect(expanded.colors.recommendationLabel).toContain('PLAY');
-  expect(expanded.colors.headerBackgroundImage).toBe('none');
-  expect(expanded.colors.bannerBackgroundImage).toBe('none');
-  expect(expanded.colors.allShadows).toEqual(['none', 'none', 'none']);
-  expect(expanded.colors.allRadii).toEqual(['0px', '0px', '0px']);
-  expect(expanded.colors.benchTransition).toBe('0s');
-  expect(expanded.colors.hasIconLibrary).toBe(false);
-  expect(expanded.colors.emojiText).toBe(false);
-  expect(expanded.colors.protocolVisible).toBe(false);
-  expect(expanded.colors.fixtureEvents).toContain('OPPONENT ACTIVE  Landorus-Therian');
-  expect(expanded.colors.fixtureEvents).toContain('YOUR ACTIVE  Great Tusk');
-  expect(expanded.colors.controlSurfaces.every(function (color) { return color !== 'rgb(255, 255, 255)'; })).toBe(true);
-  expect(expanded.colors.pageBackground).toBe('rgb(236, 235, 231)');
-  expect(expanded.colors.horizontallyClipped).toBe(false);
-  expect(expanded.colors.fontFamily).not.toMatch(/Inter|Geist|Space Grotesk/i);
-  expect(expanded.colors.activeFontFamily).not.toMatch(/Inter|Geist|Space Grotesk/i);
-  expect(expanded.colors.recommendationColor).toBe('rgb(200, 198, 189)');
-  expect(expanded.colors.fontSize).toBe('15px');
-  expect(expanded.colors.headerMinHeight).toBe('48px');
-  expect(expanded.colors.injectedBackgroundImages.every(function (image) { return image === 'none'; })).toBe(true);
-  expect(expanded.colors.injectedShadows.every(function (shadow) { return shadow === 'none'; })).toBe(true);
-  expect(expanded.colors.injectedRadii.every(function (radius) { return radius === '0px'; })).toBe(true);
-  expect(expanded.colors.injectedTransitions.every(function (duration) { return duration === '0s'; })).toBe(true);
-  expect(expanded.colors.sentinelStyles.every(function (style) { return style.backgroundImage === 'none'; })).toBe(true);
-  expect(expanded.colors.expanded).toBe('1');
-  expect(expanded.colors.hidden).toBe('false');
-  expect(expanded.colors.height).toBeGreaterThanOrEqual(48);
-  expect(expanded.colors.touchHeight).toBeGreaterThanOrEqual(44);
-  if (process.env.HUD_PREVIEW_DIR) {
-    await page.screenshot({ path: require('path').join(process.env.HUD_PREVIEW_DIR, 'mobile-field-atlas.png'), scale: 'css' });
-  }
+  expect(await page.locator('.st-bench-caption').innerText()).toContain('Iron Valiant');
+
+  /* Their active body changes: the bench pick no longer describes a live matchup and the
+   * bars must go back to the active pair on their own. */
+  await H.pushLines(page, [
+    '|switch|p2a: Iron Valiant|Iron Valiant, L50, F|100/100',
+    H.buildRequest({ rqid: 3 })
+  ]);
+  await page.waitForFunction(function () {
+    const bars = Array.prototype.slice.call(document.querySelectorAll('button[data-move] .st-lethal-bar'));
+    return bars.length > 0 && bars.every(function (bar) { return !/ vs /i.test(bar.textContent); });
+  });
+  expect(await page.locator('.st-bench-caption').count()).toBe(0);
+
   expect(opened.errors, opened.errors.join('\n')).toHaveLength(0);
   await page.close();
 });
 
 test('opponent roster shows sprite art, active state, and HP rails on desktop', async function () {
-  const opened = await H.openBattle(env.ctx, { initLocal: { stHudLayout: 'desktop' } });
+  const opened = await H.openBattle(env.ctx, { initLocal: { stHudLayout: 'auto' } });
   const { page } = opened;
+  await page.setViewportSize({ width: 1440, height: 900 });
   await H.waitForDrain(page);
   await H.pushLines(page, [H.buildRequest()]);
   await H.waitForBadges(page, 4);
@@ -473,15 +424,85 @@ test('opponent roster shows sprite art, active state, and HP rails on desktop', 
   expect(cards.every(function (card) { return card.spriteLoaded; })).toBe(true);
   expect(cards.some(function (card) { return card.name === 'Landorus-Therian'; })).toBe(true);
   expect(cards.every(function (card) { return card.meter === '100%'; })).toBe(true);
+
+  /* WIDE is a bottom-docked console that sizes to its content and caps at 72vh, not a
+   * full-height rail over the battle log. It now opens expanded by default; make sure of that
+   * (rather than clicking, which would collapse it) and measure the panel the player gets. */
+  await page.waitForFunction(function () {
+    const el = document.querySelector('.st-console');
+    if (!el) return false;
+    if (el.getAttribute('data-st-console-open') !== '1') {
+      const header = document.querySelector('.st-console-header');
+      if (header) header.click();
+    }
+    return el.getAttribute('data-st-console-open') === '1';
+  });
+  const rail = await page.evaluate(function () {
+    const consoleEl = document.querySelector('.st-console');
+    const r = consoleEl.getBoundingClientRect();
+    const moveButtons = Array.prototype.slice.call(document.querySelectorAll('button[data-move]'));
+    const coversMove = moveButtons.some(function (b) {
+      const m = b.getBoundingClientRect();
+      return r.right > m.left && r.left < m.right && r.bottom > m.top && r.top < m.bottom;
+    });
+    const rgb = function (value) {
+      const m = String(value).match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+      return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+    };
+    const lum = function (c) {
+      const v = c.map(function (n) { n /= 255; return n <= 0.03928 ? n / 12.92 : Math.pow((n + 0.055) / 1.055, 2.4); });
+      return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+    };
+    const bgOf = function (el) {
+      let node = el;
+      while (node) {
+        if (getComputedStyle(node).backgroundColor !== 'rgba(0, 0, 0, 0)') return rgb(getComputedStyle(node).backgroundColor);
+        node = node.parentElement;
+      }
+      return [27, 28, 28];
+    };
+    const ratio = function (el) {
+      if (!el) return null;
+      const a = lum(rgb(getComputedStyle(el).color));
+      const b = lum(bgOf(el));
+      return Math.round(((Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05)) * 100) / 100;
+    };
+    const cs = getComputedStyle(consoleEl);
+    return {
+      rect: { top: r.top, right: r.right, width: r.width, height: r.height },
+      coversMove: coversMove,
+      overflowX: consoleEl.scrollWidth > consoleEl.clientWidth + 1,
+      shadow: cs.boxShadow,
+      radius: cs.borderRadius,
+      backgroundImage: cs.backgroundImage,
+      header: (function () { const h = document.querySelector('.st-console-header'); return h ? { bg: getComputedStyle(h).backgroundColor, color: getComputedStyle(h).color } : null; })(),
+      contrast: {
+        banner: ratio(document.querySelector('.tactician-banner')),
+        summary: ratio(document.querySelector('.st-console-summary')),
+        sentinel: ratio(document.querySelector('.st-sentinel-row')),
+        tactic: ratio(document.querySelector('.st-sentinel-tactic')),
+        bench: ratio(document.querySelector('.st-bench-name'))
+      }
+    };
+  });
+  expect(rail.rect.top, 'the side panel stays below page chrome').toBeGreaterThanOrEqual(8);
+  expect(rail.rect.right).toBeGreaterThanOrEqual(1423);
+  expect(rail.rect.right).toBeLessThanOrEqual(1440);
+  expect(rail.rect.height, 'the side panel stays inside the viewport').toBeLessThanOrEqual(880);
+  expect(rail.rect.height).toBeGreaterThan(200);
+  expect(rail.rect.width).toBeLessThanOrEqual(480);
+  expect(rail.coversMove).toBe(false);
+  expect(rail.overflowX).toBe(false);
+  expect(rail.shadow).toBe('none');
+  expect(rail.radius).toBe('0px');
+  expect(rail.backgroundImage).toBe('none');
+  Object.keys(rail.contrast).forEach(function (key) {
+    if (typeof rail.contrast[key] !== 'number') return;
+    expect(rail.contrast[key], key + ' contrast').toBeGreaterThanOrEqual(4.5);
+  });
+
   expect(opened.errors, opened.errors.join('\\n')).toHaveLength(0);
   if (process.env.HUD_PREVIEW_DIR) {
-    await page.setViewportSize({ width: 1440, height: 900 });
-    await page.waitForTimeout(250);
-    await page.evaluate(function () {
-      const consolePanel = document.querySelector('.st-console');
-      if (consolePanel) consolePanel.setAttribute('data-st-console-open', '1');
-    });
-    await page.waitForTimeout(250);
     await page.screenshot({ path: require('path').join(process.env.HUD_PREVIEW_DIR, 'desktop-field-atlas.png'), scale: 'css' });
   }
   await page.close();

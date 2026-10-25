@@ -233,7 +233,9 @@
         // floor, so it is cleared with them. (It has to happen here rather than inside reset(),
         // which the constructor calls AFTER seeding opts.rating.)
         if (this.clock) { this.clock.reset(); this.clock.setRating(null); this._syncClock(); }
+        if (this.hud && typeof this.hud.resetControlCenter === 'function') this.hud.resetControlCenter();
         this.selectedBenchId = null;
+        this._previewActiveId = undefined;
         this._trAlerted = false;
         // The evaluation latch is per-BATTLE as well. `_onRequest` returns the cached ranking
         // WITHOUT evaluating when `state.turn === this.lastEvaluateTurn`, so a new battle whose
@@ -280,6 +282,7 @@
         if (this.pruner && typeof this.pruner.handleSpeedFloorEvent === 'function' && this.state) {
           try { this.pruner.handleSpeedFloorEvent(event, this.state.state || this.state); } catch (e) { this._error('speedfloor', e); }
         }
+        if (this.state) this._refreshControlCenter(this.state.state || this.state);
         return;
       }
       if (event.type === 'move' && this.pruner && this.state) {
@@ -328,6 +331,7 @@
       if (event.type === 'faint' || event.type === 'switch' || event.type === 'fieldStart' || event.type === 'fieldEnd') {
         if (this.hud) this._refreshNonDecisionUi();
       }
+      if (this.state) this._refreshControlCenter(this.state.state || this.state);
     }
 
     _monFor(event) {
@@ -532,7 +536,7 @@
           // before it is the loud reminder to land your chip or sack the setter.
           const left = U.clamp(state.field.trickRoomTurnsLeft || 0, 0, 5);
           if (left === 2) {
-            this.hud.renderTRChip('TR: LAST TURN NEXT — land your chip or sack the setter now.', 'danger');
+            this.hud.renderTRChip('TR: LAST TURN NEXT. Land your chip or sack the setter now.', 'danger');
           }
         }
       } catch (e) { this._error('ui-refresh', e); }
@@ -798,13 +802,25 @@
     _renderScreenExtras(state) {
       if (!this.hud || !state) return;
       try {
-        const preview = this._preview(state);
+        // The engine only prices a format it supports. When it is gated off the bars must go
+        // away entirely: keeping the last computed range on a button advertises a number for
+        // a game the engine refused to read ("ENGINE OFFLINE" above a confident 12-14%).
+        const preview = state.formatSupported === false ? null : this._preview(state);
+        // An offline engine has nothing to price, so it must not keep a bench target either:
+        // the caption and the selected card would claim a damage readout that no longer exists.
+        if (state.formatSupported === false) this.selectedBenchId = null;
         if (typeof this.hud.renderMovePreviews === 'function') this.hud.renderMovePreviews(preview);
         if (typeof this.hud.renderBenchTargets === 'function') {
-          this.hud.renderBenchTargets(this._benchTargets(state), this.selectedBenchId);
+          this.hud.renderBenchTargets(this._benchTargets(state), this.selectedBenchId, preview && preview.target);
         }
-        if (typeof this.hud.renderDeductionBadges === 'function') {
-          this.hud.renderDeductionBadges(this._deductionBadges(state));
+        // The old "CONFIRMED READS" ticket row is deliberately not rendered: it never showed
+        // the opponent's moves, item or ability, and its one recurring line (CHOICE ITEMS RULED
+        // OUT) is a negative, not a scouting fact. The scout ledger below carries every
+        // observation the protocol actually printed, so the ticket row only repeated noise.
+        // renderDeductionBadges stays in the HUD API for embedders; the battle HUD does not use it.
+        if (typeof this.hud.clearDeductionBadges === 'function') this.hud.clearDeductionBadges();
+        if (typeof this.hud.renderScoutLog === 'function') {
+          this.hud.renderScoutLog(this._scoutEntries(state));
         }
         if (typeof this.hud.renderOverlordGauge === 'function') {
           const gauge = (this.engine && typeof this.engine.overlordGauge === 'function')
@@ -824,12 +840,36 @@
             ? this.engine.formatSentinel(state) : null;
           this.hud.renderFormatSentinel(sentinel);
         }
+        this._refreshControlCenter(state);
       } catch (e) { this._error('screen-extras', e); }
     }
 
-    /** The preview for the currently selected target (a bench body) or the active pair. */
+    /**
+     * The preview for the currently selected target (a bench body) or the active pair.
+     *
+     * The bench-tap sandbox is a MODE, and a mode that quietly survives the opponent's active
+     * body changing is how a Fire Punch into Serperior came to advertise "10-12%": that is the
+     * number for a 252 HP / 252+ Def Garchomp, a bench body a stray tap had left selected. The
+     * selection is therefore cleared whenever their active changes, and the HUD labels every
+     * bench-targeted bar with the body it was priced against.
+     */
+    _refreshControlCenter(state) {
+      if (!state || !this.hud || typeof this.hud.renderControlCenter !== 'function') return;
+      const pools = {};
+      for (const mon of state.oppTeam || []) {
+        if (mon && this.pruner && typeof this.pruner.poolStatus === 'function') pools[mon.id] = this.pruner.poolStatus(mon);
+      }
+      this.hud.renderControlCenter(state, this.pendingReadout, { pools: pools, ponder: this.lastPonder, stats: this.stats });
+    }
+
     _preview(state) {
       if (!this.engine || typeof this.engine.preview !== 'function') return null;
+      const oppActive = state && state.active ? state.active.opp : null;
+      const activeId = oppActive ? U.toID(oppActive.id || oppActive.species) : '';
+      if (this._previewActiveId !== activeId) {
+        if (this._previewActiveId !== undefined && this.selectedBenchId) this.selectedBenchId = null;
+        this._previewActiveId = activeId;
+      }
       if (this.selectedBenchId) {
         const vsBench = typeof this.engine.previewVsBench === 'function'
           ? this.engine.previewVsBench(this.selectedBenchId, state) : null;
@@ -838,7 +878,41 @@
         // showing a stale card for a monster that is no longer there.
         this.selectedBenchId = null;
       }
-      return this.engine.preview(state.active ? state.active.opp : null, state);
+      return this.engine.preview(oppActive, state);
+    }
+
+    /**
+     * _scoutEntries(state) -> one row per revealed opponent with every fact the protocol has
+     * actually printed about it: the moves it has used, the item it has shown, the ability it
+     * has revealed. These are OBSERVATIONS, never candidate-set guesses — the HUD's job here is
+     * to keep the scouting ledger the player used to keep in their head.
+     */
+    _scoutEntries(state) {
+      const out = [];
+      const team = (state && state.oppTeam) || [];
+      for (let i = 0; i < team.length; i++) {
+        const mon = team[i];
+        if (!mon) continue;
+        const moves = Array.isArray(mon.revealedMoves) ? mon.revealedMoves.filter(Boolean) : [];
+        const confirmed = mon.confirmedItem || '';
+        const suspected = !confirmed && mon.currentBattleItem ? mon.currentBattleItem : '';
+        const ability = mon.revealedAbility || '';
+        if (!moves.length && !confirmed && !suspected && !ability) continue;
+        out.push({
+          id: mon.id || U.toID(mon.species),
+          species: mon.species || mon.id || 'Unknown',
+          hpPercent: typeof mon.hpPercent === 'number' ? mon.hpPercent : (mon.fainted ? 0 : 100),
+          fainted: !!mon.fainted,
+          isActive: !!mon.isActive,
+          moves: moves.slice(0, 8),
+          item: confirmed,
+          suspectedItem: suspected,
+          ability: ability
+        });
+      }
+      // Their active body leads; the rest follow in roster order.
+      out.sort(function (a, b) { return (b.isActive ? 1 : 0) - (a.isActive ? 1 : 0); });
+      return out;
     }
 
     /** The revealed opponent roster cards; only bench cards can be selected for previews. */
@@ -878,21 +952,28 @@
       const out = [];
       if (!state) return out;
       const opp = state.oppTeam || [];
+      const seen = {};
       for (let i = 0; i < opp.length; i++) {
         const mon = opp[i];
         if (!mon || mon.confirmedItem !== 'Heavy-Duty Boots') continue;
+        if (seen['boots-' + mon.id]) continue;
+        seen['boots-' + mon.id] = true;
         out.push({
           id: 'boots-' + mon.id, cls: 'unmasked',
-          label: 'ITEM CONFIRMED / HEAVY-DUTY BOOTS',
+          label: 'ITEM CONFIRMED / HEAVY-DUTY BOOTS / ' + mon.species,
           detail: mon.species + ' entered with hazards up and took no damage: it is holding Heavy-Duty Boots.'
         });
       }
       for (let i = 0; i < opp.length; i++) {
         const mon = opp[i];
         if (!mon || !mon.cannotBeChoice) continue;
+        if (seen['choice-' + mon.id]) continue;
+        seen['choice-' + mon.id] = true;
+        // A broken Choice lock is a RULING OUT, not a confirmed read. Naming the body in the
+        // label is what makes two such deductions readable instead of two identical lines.
         out.push({
           id: 'choice-' + mon.id, cls: 'choice-broken',
-          label: 'CHOICE LOCK BROKEN / Band · Specs · Scarf ruled out',
+          label: 'CHOICE ITEMS RULED OUT / ' + mon.species,
           detail: mon.species + ' used two different moves in one stint without switching: no Choice item is possible.'
         });
       }
@@ -976,7 +1057,7 @@
       }
       rows.push({
         label: 'MATCH MVP',
-        value: mvp ? (mvp.species + ' — ' + Math.max(0, mvpKos) + ' KO' + (mvpKos === 1 ? '' : 's') +
+        value: mvp ? (mvp.species + ' / ' + Math.max(0, mvpKos) + ' KO' + (mvpKos === 1 ? '' : 's') +
           ', ' + Math.round(Math.max(0, mvpDamage)) + '% damage dealt') : 'no damage recorded'
       });
       const active = stats.trActiveTurns || 0;
@@ -1010,7 +1091,7 @@
         headline: mvp ? (mvp.species + ' led the team with ' + Math.max(0, mvpKos) + ' KO' +
           (mvpKos === 1 ? '' : 's') + ' and ' + Math.round(Math.max(0, mvpDamage)) + '% of the damage.') : '',
         rows: shown,
-        copyText: 'SHOWDOWN TACTICIAN — MATCH RECEIPT\n' + shown.map(function (r) {
+        copyText: 'SHOWDOWN TACTICIAN / MATCH RECEIPT\n' + shown.map(function (r) {
           return r.label + ': ' + r.value;
         }).join('\n')
       };
@@ -1108,7 +1189,7 @@
 
     _onTeamLoaded(parsed) {
       if (!this.hud || !this.hud.setTeamStatus) return;
-      if (!parsed) { this.hud.setTeamStatus('No team loaded — open the drawer and paste a Pokepaste.'); return; }
+      if (!parsed) { this.hud.setTeamStatus('No team loaded. Open the drawer and paste a Pokepaste.'); return; }
       const pokemon = parsed.pokemon || [];
       const trNames = pokemon.filter(function (m) { return m && m.isTR; }).map(function (m) { return m.species || m.name; });
       this.hud.setTeamStatus({

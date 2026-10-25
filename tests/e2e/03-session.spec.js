@@ -51,6 +51,9 @@ test('the extension stylesheet is applied, not just shipped', async function () 
   await H.seedStorage(env.sw, { teamText: H.TEAM });
   const { page } = await H.openBattle(env.ctx);
   await H.requestTurn(page, { rqid: 2 });
+  const trigger = page.locator('[data-st-sheet-trigger]');
+  if (await trigger.count() && await trigger.getAttribute('aria-expanded') === 'false') await trigger.click();
+  await page.locator('[data-st-view-button="field"]').click();
 
   /* A manifest `css` entry is injected as a user stylesheet, which Chrome does not always
    * enumerate in document.styleSheets — so the honest question is not "is the sheet listed"
@@ -74,7 +77,7 @@ test('the extension stylesheet is applied, not just shipped', async function () 
     };
   });
 
-  expect(css.badgePosition).toBe('absolute');
+  expect(css.badgePosition).toBe('static');
   expect(css.badgePointerEvents).toBe('none');
   // The banner's positioning is layout-conditional now: `fixed` on desktop (a free-floating
   // status strip), `static` on mobile (a flex child inside the collapsible `.st-sheet` that
@@ -208,8 +211,8 @@ test('tapping a bench body re-previews and marks it, tapping again clears it', a
   };
   const lethal = function () {
     return page.evaluate(function () {
-      const b = document.querySelector('button[data-move="icespinner"]');
-      return Array.from(b.classList).filter(function (c) { return c.indexOf('st-lethal-') === 0; }).join(',');
+      const bar = document.querySelector('button[data-move="icespinner"] .st-lethal-bar');
+      return bar ? bar.textContent : '';
     });
   };
 
@@ -221,12 +224,12 @@ test('tapping a bench body re-previews and marks it, tapping again clears it', a
   await page.click('[data-st-bench]:not(.st-active):not(.st-fainted)');
   const after = await pills();
   expect(after[0].selected, 'the tapped pill is marked').toBe(true);
-  expect(await lethal(), 'the preview switched to the benched body').not.toBe(lethalBefore);
+  expect(await lethal(), 'the preview switched to the benched body').toMatch(/ vs Iron Valiant/i);
 
   await page.click('[data-st-bench]:not(.st-active):not(.st-fainted)');
   const cleared = await pills();
   expect(cleared[0].selected, 'a second tap deselects').toBe(false);
-  expect(await lethal(), 'and the preview returns to the active pair').toBe(lethalBefore);
+  expect(await lethal(), 'and the preview returns to the active pair').not.toMatch(/ vs /i);
 
   expect(errors).toEqual([]);
   await page.close();

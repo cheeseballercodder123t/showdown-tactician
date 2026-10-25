@@ -525,7 +525,7 @@
       let result = false;
       for (let i = 0; i < moves.length; i++) {
         const data = U.getMoveData(moves[i]);
-        if (!data || data.isStatus || !data.basePower) continue;
+        if (!data || data.isStatus) continue;
         let res = null;
         try { res = damage.calculateDamage(attacker, defender, moves[i], field, opts); } catch (e) { res = null; }
         if (!res || res.failed) continue;

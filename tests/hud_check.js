@@ -125,8 +125,16 @@ const PREVIEW = {
 const decorated = call('renderMovePreviews does not throw', function () { return hud1.renderMovePreviews(PREVIEW); });
 eq('only the buttons with a line are decorated', decorated, 2);
 eq('the Fire Punch button carries exactly one lethal bar', barsOf(b1).length, 1);
-check('the bar spells out the range and the verdict',
-  /^54\s*[\u2013-]\s*64%\s*\(2HKO\)$/.test(textOf(barsOf(b1)[0])), textOf(barsOf(b1)[0]));
+check('a bench-targeted bar names the body it was priced against',
+  /^54\s*[\u2013-]\s*64%\s+vs Corviknight$/i.test(textOf(barsOf(b1)[0])), textOf(barsOf(b1)[0]));
+/* Against the ACTIVE body the verdict is the useful suffix (there is no second name to add). */
+const bActive = el('button');
+const hudActive = hudWithButtons([bActive]);
+const ACTIVE_PREVIEW = JSON.parse(JSON.stringify(PREVIEW));
+ACTIVE_PREVIEW.target.isActive = true;
+call('an active-target preview does not throw', function () { return hudActive.renderMovePreviews(ACTIVE_PREVIEW); });
+check('the active bar keeps the verdict because its target is implicit',
+  /^54\s*[\u2013-]\s*64%\s*\(2HKO\)$/.test(textOf(barsOf(bActive)[0])), textOf(barsOf(bActive)[0]));
 eq('the band is stamped on the button', attr(b1, 'data-st-lethal'), 'mid');
 check('the band class is on the button', hasClass(b1, 'st-lethal-mid'), String(b1.className));
 eq('an immune line reads none', attr(b2, 'data-st-lethal'), 'none');
@@ -393,6 +401,20 @@ if (preview && preview.lines) {
   check('a guaranteed band implies isOHKO', 
     preview.lines.every(function (l) { return l.lethal !== 'guaranteed' || l.isOHKO === true; }),
     JSON.stringify(preview.lines.map(function (l) { return [l.moveId, l.lethal, l.isOHKO]; })));
+  /* THE RANGE MUST SPAN THE SURVIVING SPREADS. A single set is a guess, and printing it as the
+   * board is how a 0 HP Serperior read "guaranteed OHKO" on a hit that left the real 252 HP body
+   * at 2%. Each line is the envelope: its low end may be below the favourite set's minimum and its
+   * high end may exceed that set's maximum, but the favourite set's own range is always inside. */
+  const mainLine = preview.lines.filter(function (l) { return l.moveId === 'closecombat'; })[0];
+  if (mainLine) {
+    const live = engine.damage.calculateDamage(pvFx.battle.active.my, pvFx.battle.active.opp, 'Close Combat',
+      pvFx.battle.field, engine._believedTargetOpts(pvFx.battle.active.opp));
+    check('the line covers the favourite spread\'s own range',
+      !!live && mainLine.minPercent <= live.minPercent + 1e-6 && mainLine.maxPercent >= live.maxPercent - 1e-6,
+      JSON.stringify([mainLine.minPercent, live && live.minPercent, mainLine.maxPercent, live && live.maxPercent]));
+    check('...and says how many spreads it covers', typeof mainLine.spreadCount === 'number' && mainLine.spreadCount >= 1,
+      String(mainLine.spreadCount));
+  }
   const second = engine.preview(pvFx.battle.active.opp, pvFx.battle);
   eq('two previews of the same board are identical',
     second.lines.map(function (l) { return [l.moveId, l.minPercent, l.maxPercent, l.koChancePct, l.lethal]; }),
@@ -412,6 +434,42 @@ check('...with lines of its own', !!benchPreview.value && Array.isArray(benchPre
   JSON.stringify(benchPreview.value && benchPreview.value.lines && benchPreview.value.lines.length));
 check('a species that is not on their bench previews nothing',
   engine.previewVsBench('Dragapult', pvFx.battle) === null, String(engine.previewVsBench('Dragapult', pvFx.battle)));
+
+/* ==================================== 6b. the level a battle is actually played at */
+
+section('6b. a normalized L50 detail cannot halve the opponent');
+
+/* The regression from a real ladder game: Showdown prints `L50` in the details string for a
+ * level-100 battle, and believing it priced a 252 HP Serperior at 150 max HP. Fire Punch from a
+ * burned Guts Ursaluna then read "388 - 457%" for a hit that does 84-99% in the game. */
+const lvlFx = (function () {
+  const state = new ST.BattleStateManager({ debug: false });
+  const parser = new ST.ProtocolParser();
+  state.attachParser(parser);
+  state.setFormat('[Gen 9] National Dex');
+  state.registerMyTeam(ST.TeamParser.parsePokepaste([
+    'Ursaluna @ Flame Orb', 'Ability: Guts', 'EVs: 252 HP / 252 Atk / 4 SpD', 'Adamant Nature',
+    '- Headlong Rush', '- Fire Punch', '- Facade', '- Trick Room'
+  ].join('\n')).pokemon);
+  parser.feedAll([
+    '|switch|p1a: Ursaluna|Ursaluna, L50, M|100/100',
+    '|switch|p2a: Serperior|Serperior, L50, M|100/100',
+    '|-status|p1a: Ursaluna|brn|[from] item: Flame Orb',
+    '|turn|5'
+  ]);
+  return { battle: state.state, level: new ST.LaplaceEngine({ K: 2 }) };
+})();
+eq('the opponent is priced at the battle level, not the printed L50', lvlFx.battle.active.opp.level, 100);
+eq('...and the printed detail is kept for display', lvlFx.battle.active.opp.reportedLevel, 50);
+const lvlPreview = noThrow(function () { return lvlFx.level.preview(lvlFx.battle.active.opp, lvlFx.battle); });
+check('the preview runs', lvlPreview.ok && !!lvlPreview.value, lvlPreview.error);
+const firePunch = lvlPreview.value && lvlPreview.value.lines.filter(function (l) { return l.moveId === 'firepunch'; })[0];
+/* An unknown spread is still unknown: the card carries no EVs, so a level-100 Serperior prices
+ * a little high (about 102-120%). What must never come back is the L50 doubling, which read
+ * 388-457% for this exact hit. */
+check('a Guts Fire Punch into Serperior reads a plausible range, not 300%+',
+  !!firePunch && firePunch.minPercent > 90 && firePunch.maxPercent < 150,
+  JSON.stringify(firePunch && [firePunch.minPercent, firePunch.maxPercent]));
 
 /* ========================================================= 7. the Overlord gauge */
 
@@ -586,6 +644,35 @@ if (bootHud && typeof bootHud._deductionBadges === 'function') {
     }), JSON.stringify(allBadges));
 } else {
   check('_deductionBadges is required for section 9', false, 'method missing');
+}
+
+/* ==================================================== 9b. the opponent scout ledger */
+
+section('9b. the scout ledger records the facts the log printed');
+
+if (bootHud && typeof bootHud._scoutEntries === 'function') {
+  const scoutFx = pipeline([
+    '|player|p1|Me|1|1500', '|player|p2|Foe|2|1500',
+    '|switch|p1a: Great Tusk|Great Tusk, L50, M|100/100',
+    '|switch|p2a: Serperior|Serperior, L50, M|100/100',
+    '|turn|1',
+    '|move|p2a: Serperior|Leaf Storm|p1a: Great Tusk',
+    '|-damage|p1a: Great Tusk|40/100',
+    '|-heal|p2a: Serperior|100/100|[from] item: Leftovers',
+    '|-ability|p2a: Serperior|Overgrow'
+  ]);
+  const entries = noThrow(function () { return bootHud._scoutEntries(scoutFx.battle); });
+  check('the ledger yields an entry per revealed body', entries.ok && entries.value.length >= 1, entries.error);
+  const serp = (entries.value || []).filter(function (e) { return e && e.species === 'Serperior'; })[0];
+  check('the body is named', !!serp, JSON.stringify(entries.value));
+  check('the move it used is logged', !!serp && (serp.moves || []).indexOf('Leaf Storm') !== -1, JSON.stringify(serp && serp.moves));
+  check('the item its residual printed is logged', !!serp && serp.item === 'Leftovers', serp && String(serp.item));
+  check('the ability it revealed is logged', !!serp && serp.ability === 'Overgrow', serp && String(serp.ability));
+  check('a body with no facts at all is not given a row',
+    (entries.value || []).every(function (e) { return e && ((e.moves || []).length || e.item || e.suspectedItem || e.ability); }),
+    JSON.stringify(entries.value));
+} else {
+  check('_scoutEntries is required for section 9b', false, 'method missing');
 }
 
 /* ================================================= 10. the Trick Room haptic alert */
@@ -789,9 +876,15 @@ if (TAP_BOOT && TAP_BOOT.hud && TAP_BOOT.state) {
   /* Two immunities, one per target, each from a different mechanic: their active body is Flying
    * (Ground does nothing), the body on the bench holds an Air Balloon (Ground does nothing) and is
    * a Ghost (Normal does nothing). */
-  eq('Ground still cannot touch the tapped body — its Air Balloon, not its typing',
+  eq('Ground cannot KO the tapped body — its Air Balloon, not its typing',
     attr(groundBtn, 'data-st-lethal'), 'none');
-  check('...and that is what the button says', /\b0%/.test(groundBar()), groundBar());
+  // The range is an ENVELOPE over the sets the log has not ruled out. Gholdengo's Air Balloon is
+  // the pruner's favourite but not the only candidate, so the bar starts at 0 (the balloon world)
+  // and reaches the no-balloon ceiling. What must never happen is a guaranteed KO, or a 0 missing
+  // from the low end — the immunity has to be visible on the button.
+  check('the bar starts at the immunity the top set proves', /^0\s*(?:[\u2013\u2014-]|%)/.test(groundBar()) || /\b0%/.test(groundBar()), groundBar());
+  check('...and does not promise a KO the balloon set forbids',
+    attr(groundBtn, 'data-st-lethal') !== 'guaranteed', String(attr(groundBtn, 'data-st-lethal')));
   eq('the Normal move is now an immunity as well (Ghost)', attr(spinBtn, 'data-st-lethal'), 'none');
   check('...while the move that does connect has a different range than it had before',
     rangeOf(iceBtn) !== activeRanges[2] && /[0-9.]+%/.test(rangeOf(iceBtn)),

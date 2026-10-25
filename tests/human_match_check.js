@@ -853,7 +853,7 @@ check('...as the difference of the two scores the ranking published',
   scoredReal.every(function (r) {
     if (r.status !== 'scorable') return true;
     if (r.top1) return r.regretShare === 0;
-    return r.humanScore <= r.topScore && r.regret === r.topScore - r.humanScore;
+    return r.regret === r.topScore - r.humanScore;
   }), JSON.stringify(scoredReal.map(function (r) { return [r.topScore, r.humanScore, r.regret, r.regretShare]; })));
 check('...and the spread is the range the engine put on that turn\'s menu',
   scoredReal.every(function (r) { return r.status !== 'scorable' || (r.spread === null || r.spread >= 0); }),

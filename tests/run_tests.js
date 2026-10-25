@@ -264,6 +264,25 @@ function main() {
     other.setFormat('[Gen 9] OU');
     eq('state: non-NatDex format is gated off', other.state.formatSupported, false);
 
+    /* A live battle room opens with `|init|battle`. That is the ROOM KIND, and treating it as a
+     * format set the tier to the literal word "battle", gated the engine off on a ranked
+     * National Dex game, and left the HUD announcing "ENGINE OFFLINE / battle". */
+    const room = new S.ST.BattleStateManager();
+    const roomParser = new S.ST.ProtocolParser();
+    room.attachParser(roomParser);
+    roomParser.feed('|init|battle');
+    eq('state: a battle-room init does not become the format', room.state.format, '[Gen 9] National Dex OU');
+    eq('state: ...and does not gate the engine off', room.state.formatSupported, true);
+    roomParser.feed('|tier|[Gen 9] National Dex');
+    eq('state: the tier line sets the real format', room.state.format, '[Gen 9] National Dex');
+    eq('state: the tier line leaves the engine on', room.state.formatSupported, true);
+    roomParser.feed('|tier|[Gen 9] National Dex UU');
+    eq('state: a sibling tier still gates off', room.state.formatSupported, false);
+    roomParser.feed('|tier|[Gen 9] National Dex');
+    eq('state: a supported tier reopens the gate after a replay', room.state.formatSupported, true);
+    roomParser.feed('|init|battle');
+    eq('state: a repeated battle-room init still resolves to a supported format', room.state.formatSupported, true);
+
     /* The gate is an ALLOWLIST, and these are the names it has to accept and refuse. The first four
      * are the supported format under the names Showdown actually uses: `[Gen 9] National Dex` is
      * what the ladder puts on the wire — the literal `|init|`/`|tier|` text in test_log.txt, with no
@@ -988,7 +1007,7 @@ function reportHud(S) {
   eq('hud: badge shows the confidence', badges[0] && badges[0].textContent, '62%');
   check('hud: badge carries the confidence class', badges[0] && /conf-high/.test(badges[0].classList._set ? Array.from(badges[0].classList._set).join(' ') : badges[0].className), JSON.stringify(badges[0] && badges[0].className));
   check('hud: vetoed button gets the veto class', /conf-veto/.test(buttons[3].className + ' ' + Array.from(buttons[3].classList._set).join(' ')), JSON.stringify(buttons[3].className));
-  eq('hud: vetoed button is dimmed', buttons[3].style.opacity, '0.5');
+  eq('hud: vetoed button keeps its damage readable', buttons[3].style.opacity, '');
   const banner = hud.renderBanner({ formatSupported: true, turn: 6, active: { opp: { species: 'Iron Valiant', confirmedItem: 'Booster Energy', speedFloor: 300, liveSet: { role: 'booster', item: 'Booster Energy', evs: { atk: 252, spe: 252 } } } }, field: { trickRoom: true, trickRoomTurnsLeft: 3, hazards: { p2: { rocks: true, spikes: 1 } } }, oppTeam: [] });
   check('hud: banner mentions the TR timer', /TR 3\/5/.test(banner.textContent), banner.textContent);
   check('hud: banner mentions the opponent set', /Iron Valiant/.test(banner.textContent), banner.textContent);

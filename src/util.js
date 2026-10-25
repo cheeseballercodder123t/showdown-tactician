@@ -413,7 +413,7 @@
   function clampStat(v) { return clamp(v, -6, 6); }
   function round2(n) { return Math.round((n + Number.EPSILON) * 100) / 100; }
   function round1(n) { return Math.round((n + Number.EPSILON) * 10) / 10; }
-  function formatPercent(n) { return (n === null || n === undefined || n !== n) ? '—' : round1(n) + '%'; }
+  function formatPercent(n) { return (n === null || n === undefined || n !== n) ? '-' : round1(n) + '%'; }
   function mean(arr) { if (!arr || !arr.length) return 0; let s = 0; for (let i = 0; i < arr.length; i++) s += arr[i]; return s / arr.length; }
   function median(arr) {
     if (!arr || !arr.length) return 0;

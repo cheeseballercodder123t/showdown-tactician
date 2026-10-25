@@ -98,7 +98,7 @@ eq('the core event kinds all parsed', ['switch', 'move', 'damage', 'faint', 'tur
 check('unknown event kinds are only UI chatter or room headers',
   run.unknowns.every(function (u) {
     if (u.cmd.indexOf('battle-') === 0) return true;                       // '>battle-gen9...' room header
-    return ['rule', 'clearpoke', 'teampreview', 'gametype', 'gen', 'tier', 'start', 'rated', 'upkeep', 'bigerror'].indexOf(u.cmd) !== -1;
+    return ['rule', 'clearpoke', 'teampreview', 'gametype', 'gen', 'start', 'rated', 'upkeep', 'bigerror'].indexOf(u.cmd) !== -1;
   }),
   JSON.stringify(run.unknowns.slice(0, 3)));
 check('no core command fell through to unknown',
@@ -108,6 +108,10 @@ notes.push('unknown kinds: ' + JSON.stringify(run.unknowns.map(function (u) { re
 
 section('battle-level state after 30 turns');
 eq('format is locked to NatDex OU', st.formatSupported, true);
+// The tier line is now a real event, not room chatter: it is the only line on a live battle
+// that names the format (`|init|` carries the ROOM kind, `battle`).
+eq('the tier line names the format', st.format, '[Gen 9] National Dex');
+eq('a battle-room init cannot overwrite it', /national\s*dex/i.test(st.format), true);
 eq('my team has six Pokémon', (st.myTeam || []).length, 6);
 eq('the opponent has six Pokémon', (st.oppTeam || []).length, 6);
 eq('the result is the loss the log printed', st.result, 'loss');

@@ -11,6 +11,120 @@ reaches a verdict.
 
 ## Unreleased
 
+### Changed — responsive battle control center
+
+* Rebuilt the battle HUD with Battle, Intel, Field and Review views, a resizable desktop dock and a
+  full-screen mobile workspace. Intel exposes surviving sets and recorded pruning evidence; Review
+  exposes the existing decision/search reports. Classic and beta clients share responsive controls,
+  opponent sprites and native move-button damage previews.
+
+### Fixed — decision and damage-calculation audit
+
+* Turn payoffs use the sampled opponent's spread, item and ability. Worlds preserve observed typing,
+  HP, fallen allies, activated abilities, Disguise and the recorded Paradox boost.
+* Native move/damage frames now feed reverse-damage inference. Each observation preserves the field,
+  attacker and defender at impact; critical hits, censored KO damage and individual multihit strikes
+  are excluded from set elimination.
+* Incoming damage uses the correct side's screens. Consumed Booster Energy, activated Flash Fire,
+  signature Z crystals and fixed-damage threats reach the shared calculator correctly.
+* Disguise blocks the first hit, allows subsequent multihit strikes and respects ability bypasses.
+  Endgame replacements cannot execute the fainted Pokemon's selected move.
+* Weather upkeep preserves its timer. Known extension items set the proper duration; unknown
+  durations stay unknown, and observed weather/terrain end frames clear the conditions.
+* Priority brackets use the proper values for Fake Out, Feint, First Impression, Payback and Metal
+  Burst. A guaranteed 2HKO requires the calculator's KO profile, including recovery.
+* Added audit regressions, including snow's Ice Defense boost and both player-side orientations.
+
+### Fixed — the second sweep: called moves, Mega abilities, generic sets and the type floor
+
+Five defects found while auditing the same paths again, each reproduced in the DOM-less harness or
+the Chromium fixture before it was fixed:
+
+* **A move the battle CALLED was counted as a click.** Sleep Talk, Metronome, Dancer and Instruct
+  print a second `|move|` line with `[from] <cause>`. The state manager counted it, so a body that
+  clicked one move read as having used two or three in a stint, which is the pruner's proof that
+  "no Choice item is held" — the recurring `CHOICE LOCK BROKEN` ticket on bodies that never broke
+  one — and the called move was credited to the body in the scout ledger (a Metronome Moonblast on
+  a Clefable that never learns it). `[from]` moves no longer enter the stint, the PP counter or the
+  reveal log, and the click that counts stays the caller; the BOARD effects of a called move (a
+  Sleep Talk'd Trick Room really does twist the dimensions, a called Knock Off really connects) are
+  still applied.
+* **Mega Evolution kept the base ability all battle.** Showdown sends no `|-ability|` line for a
+  Mega, so Mega Lopunny stayed `Limber`, Mega Gyarados stayed `Intimidate` and Mega Scizor stayed
+  `Swarm`. The dex has exactly one ability for every Mega forme, so `_markMega` now adopts it: the
+  scout ledger names Scrappy, Normal/Fighting into a Ghost is no longer priced as an immunity, and
+  Mold Breaker is in their threat model.
+* **Uncurated species were modelled with the dex-order ability and a stranger's moves.**
+  `genericFor` used `abilities[0]` (Overgrow, Inner Focus, Swarm, Hyper Cutter) and a fixed
+  Psychic/Shadow Ball or Earthquake/Knock Off pool, so a Serperior was a Psychic threat with
+  Overgrow and its Leaf Storm snowball was unpriced. The fallback now prefers a competitive
+  ability when the species legally has one, spans every remaining legal ability (one cheaper
+  variant each, so a reveal can never empty the pool), builds its STAB from the body's OWN typing,
+  and gives the Scarf template the same physical/special split as its moves (a special Serperior
+  used to get a Jolly 252 Atk Scarf spread).
+* **Labels painted at 9px.** The panel's body text had been raised, but the micro-labels, counts,
+  sentinel rows and the final "field folio" overrides were still 8-10.5px — including `font:`
+  shorthands the earlier pass missed. Every painted size in the HUD is now at least 11px, and the
+  WIDE contract test measures the smallest PAINTED font inside the console rather than the
+  panel's own inherited size.
+* **A faint credited the wrong body, and `|replace|` was treated as a switch.** The KO tally is
+  keyed by slot and was never cleared, so a body that came in and died to Stealth Rock inherited
+  its predecessor's last attacker. `|replace|` (Illusion breaking) also erased stat stages and
+  re-opened the switch-in ability window even though the body never left the field.
+
+Coverage: `tests/hardening_audit.js` §5c (Mega ability), §5d (generic ability and typing), §7
+(called moves and the Choice rule, including a called Trick Room) and §5h (KO credit, `|replace|`);
+`tests/e2e/08-bugfix-regressions.spec.js` test 6 now measures the smallest painted font in WIDE.
+The mutation log in `BUGFIXES.md` records each of these reverted, the failure observed, and the
+restore.
+
+### Fixed — a real ladder game, read back: format, level, damage, scouting and WIDE
+
+Five defects from one National Dex battle, each reproduced from the user's own log:
+
+* **The engine said `ENGINE OFFLINE / battle`.** A live room opens with `|init|battle`, which is the
+  ROOM KIND; the parser treated it as a format, the NatDex allowlist rejected the literal "battle",
+  and the HUD refused to price a ranked game. `|init|` now ignores room kinds and `|tier|` carries
+  the real format (`[Gen 9] National Dex` is accepted; Ubers/UU/NatDex OMs still gate off).
+* **Fire Punch read "12%" and did 98%.** Two independent errors. The visible one: a stray bench tap
+  left a 252+ Def Garchomp selected, and every bar kept showing that body's range even after their
+  active changed; the selection is now cleared whenever their active does, and a bench-targeted bar
+  is labelled `54–64% vs Corviknight` so it can never pass as a live prediction. The deeper one:
+  Showdown prints a normalised `L50` in `|poke|`/`|switch|` details even in a level-100 battle, and
+  believing it halved the opponent's HP and defenses, so the same hit read 388-457% (a 252 HP
+  Serperior was priced at 150 max HP). Level is a property of the battle, so the opponent is now
+  priced at OUR pasted level (`state._battleLevel()`); the printed detail is kept as
+  `reportedLevel` only.
+* **"Confirmed reads" showed only CHOICE ITEMS RULED OUT.** The ticket row is gone. In its place the
+  scout ledger lists, per revealed opponent, the moves it has used, the item it has shown and the
+  ability it has revealed. Item reveals now also come from the residual lines — a Leftovers heal,
+  a Life Orb recoil, a Sitrus Berry, Rocky Helmet via its `[of]` holder — not just `|-item|`.
+* **WIDE was a full-height 380px rail** over the chat column: the battle log, the room list and the
+  chat were all behind an opaque slab, and the panel's own 9px uppercase type was unreadable. The
+  console is now docked bottom-right, content-sized, capped at 72vh with its own scroll; the type
+  scale moved to 12.5-14.5px body text, 10-11px labels, and `--st-muted`/`--st-quiet` were raised to
+  pass 4.5:1 on the panel surface. The scout card is also reparented with the other bands (it was
+  missing from both layout migrations, so it vanished on a desktop/mobile switch).
+
+* **The deep sweep, same session.** Fractional HP landings were rejected (the first non-round hit
+  froze a body at 100% forever); battle-forme changes minted a second MonState (seven-body teams);
+  Defog / Topsy-Turvy / Heart Swap / Psych Up stat transfers were dropped; battle-only type changes
+  (Protean, Soak) and Mimikyu's Disguise were priced as normal hits; a knocked-off Choice Band kept
+  multiplying damage; multi-hit moves were always priced at three hits, and the Loaded Dice branch
+  was checking an ability slot (dead code, now reads the item); `|-immune|` and `|-formechange|`
+  clauses — Levitate, Flash Fire, Stance Change — never reached the scout ledger. A damage audit
+  against 40 real `@pkmn/sim` battles put 100 of 102 hits inside the predicted envelope; the two
+  exceptions are Disguise, now modelled explicitly.
+
+Coverage: `tests/hud_check.js` §6b pins the level-100 damage range and `reportedLevel`; §9b pins the
+scout ledger's moves/item/ability and the residual-item parse; `tests/hardening_audit.js` §5b-§5f
+pin battle formes, the generic fallback, immunity/forme clauses, multi-hit, lost items, type
+changes and Disguise; the desktop geometry and bench-target labelling are pinned in
+`tests/e2e/02-hud.spec.js` and `03-session.spec.js`; `tests/e2e/08-bugfix-regressions.spec.js` has
+one reproducing test per reported defect. `BUGFIXES.md` is the long-form report with the
+before/after measurements and the mutation log (each fix reverted, the test observed failing, the
+fix restored).
+
 ### Fixed — the extension loads in Chrome again, and Firefox gets its own manifest
 
 One manifest carried BOTH `background.service_worker` and `background.scripts`, on the theory that

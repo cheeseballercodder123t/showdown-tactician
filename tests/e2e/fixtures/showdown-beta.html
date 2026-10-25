@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>[Gen 9] National Dex OU</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #ecebe7; font-family: Verdana, sans-serif; }
+  .battle-log { padding: 10px 12px; background: #f1f0ec; border-color: #cccac4; }
+  .fixture-event { margin: 3px 0; color: #333; font: 12px/1.35 Verdana, sans-serif; }
+  .fixture-event + .fixture-event { border-top: 1px solid #d8d7d2; padding-top: 4px; }
+  .battle-log::before { content: "BATTLE LOG"; margin-bottom: 7px; color: #696b6d; font: 700 9px/1.2 Verdana, sans-serif; letter-spacing: .12em; }
+  .fixture-event[data-kind="turn"] { color: #666; font-weight: 700; }
+  .fixture-event[data-side="opponent"] { color: #495868; }
+  .fixture-event[data-side="player"] { color: #514d45; }
+  .fixture-event[data-kind="move"] { color: #343536; }
+  .fixture-event[data-kind="faint"] { color: #6d3e39; }
+  .battle { padding: 8px; }
+  @media (min-width: 1024px) { .battle { width: 640px; } }
+  .battle-log { height: 200px; overflow: auto; background: #f1f0ec; border: 1px solid #cccac4; font-size: 12px; white-space: pre-wrap; }
+  .fixture-event { display: block; margin: 2px 5px; color: #333; font: 12px/1.35 Verdana, sans-serif; }
+  .fixture-event strong { font-weight: 700; }
+  .fixture-event em { color: #777; font-style: normal; }
+  .battle-controls { margin-top: 8px; }
+  .movemenu { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  button.movebutton { min-height: 56px; font-size: 15px; border: 1px solid #898984; background: #f1f0ec; border-radius: 0; }
+  button.switchbutton { min-height: 44px; width: 100%; margin-top: 6px; }
+  .ps-room { position: relative; min-height: 100vh; }
+  .battle { box-sizing: border-box; height: 260px; border-bottom: 1px solid #aaa; background: #d2d4cd; }
+  .battle-log { box-sizing: border-box; height: calc(100vh - 260px); overflow: auto; }
+  .battle-controls { margin: 0; }
+  .movebutton .pp { margin-left: 10px; }
+  @media (min-width: 1024px) {
+    .battle { height: 360px; width: 640px; }
+    .battle-log { position: absolute; top: 0; left: 640px; right: 0; height: 100vh; }
+    .battle-controls { position: fixed; top: 375px; left: 12px; width: 616px; }
+  }
+</style>
+</head>
+<body>
+<div class="ps-room" id="room-battle-gen9nationaldexou-1">
+  <div class="battle" aria-label="Battlefield"></div>
+  <div class="battle-log" id="log">
+  <div class="battle-controls" id="controls">
+    <div class="movemenu" id="movemenu"></div>
+    <button class="switchbutton" name="chooseSwitch" data-pos="2">Switch</button>
+  </div>
+</div>
+</div>
+<script>
+/* A stand-in for play.pokemonshowdown.com. It reproduces ONLY the surface the extension
+ * touches: window.app.curRoom.battle (log, per-side rosters with moveSlots, a readable dex)
+ * and Showdown's own control bar markup (button[data-move] / .movebutton).
+ *
+ * Everything the test drives goes through window.__mock, so no test has to know this shape. */
+(function () {
+  'use strict';
+
+  var battle = {
+    log: [],
+    p1: { pokemon: [] },
+    p2: { pokemon: [] },
+    dex: { moves: { get: function (id) { return { id: id, accuracy: 100 }; } } }
+  };
+
+  var room = { id: 'battle-gen9nationaldexou-1', battle: battle };
+  battle.stepQueue = [];
+  battle.log = function () {};
+  window.PS = { room: room, baseRoom: room, rooms: {} };
+  window.PS.rooms[room.id] = room;
+
+  var DEFAULT_MOVES = [
+    ['headlongrush', 'Headlong Rush'],
+    ['closecombat', 'Close Combat'],
+    ['icespinner', 'Ice Spinner'],
+    ['rapidspin', 'Rapid Spin']
+  ];
+
+  function renderMenu(moves) {
+    var menu = document.getElementById('movemenu');
+    while (menu.firstChild) menu.removeChild(menu.firstChild);
+    for (var i = 0; i < moves.length; i++) {
+      var b = document.createElement('button');
+      b.className = 'movebutton';
+      b.setAttribute('data-cmd', '/move ' + (i + 1));
+      b.setAttribute('data-tooltip', 'move|' + moves[i][1] + '|0');
+      b.textContent = moves[i][1];
+      b.appendChild(document.createElement('br'));
+      var type = document.createElement('small'); type.className = 'type'; type.textContent = 'Normal'; b.appendChild(type);
+      var pp = document.createElement('small'); pp.className = 'pp'; pp.textContent = '16/16'; b.appendChild(pp);
+      menu.appendChild(b);
+    }
+    return menu.querySelectorAll('button.movebutton').length;
+  }
+
+  function setMoveSlots(sideKey, roster) {
+    var out = [];
+    for (var i = 0; i < roster.length; i++) {
+      var slots = [];
+      var moves = roster[i].moves || [];
+      for (var k = 0; k < moves.length; k++) {
+        slots.push({ id: moves[k][0], move: moves[k][1], pp: moves[k][2], maxpp: moves[k][3] });
+      }
+      out.push({ name: roster[i].name, moveSlots: slots });
+    }
+    battle[sideKey].pokemon = out;
+    return out.length;
+  }
+
+  window.__mock = {
+    battle: battle,
+    defaultMoves: DEFAULT_MOVES,
+    renderMenu: renderMenu,
+    setMoves: function (moves) { return renderMenu(moves); },
+    setMoveSlots: setMoveSlots,
+    logLine: function (line) {
+      battle.stepQueue.push(line);
+      var el = document.getElementById('log');
+      if (el) {
+        var event = document.createElement('span');
+        event.className = 'fixture-event';
+        var fields = line.split('|');
+        var command = fields[1] || '';
+        var actor = fields[2] || '';
+        if (command === 'turn') {
+          event.dataset.kind = 'turn';
+          event.textContent = 'TURN ' + (fields[2] || '');
+        } else if (command === 'start') {
+          event.dataset.kind = 'start';
+          event.textContent = 'BATTLE START  NATIONAL DEX OU';
+        } else if (command === 'switch' || command === 'drag') {
+          var isPlayer = /^p1[a-z]*:/i.test(actor);
+          event.dataset.kind = 'switch';
+          event.dataset.side = isPlayer ? 'player' : 'opponent';
+          event.textContent = (isPlayer ? 'YOUR ACTIVE' : 'OPPONENT ACTIVE') + '  ' + actor.replace(/^p[12][a-z]*:\s*/i, '');
+        } else if (command === 'move') {
+          event.dataset.kind = 'move';
+          event.dataset.side = /^p1[a-z]*:/i.test(actor) ? 'player' : 'opponent';
+          event.textContent = actor.replace(/^p[12][a-z]*:\s*/i, '') + ' USED ' + (fields[3] || 'A MOVE');
+        } else if (command === 'faint') {
+          event.dataset.kind = 'faint';
+          event.dataset.side = /^p1[a-z]*:/i.test(actor) ? 'player' : 'opponent';
+          event.textContent = actor.replace(/^p[12][a-z]*:\s*/i, '') + ' FAINTED';
+        } else if (command === 'player' || command === 'teamsize' || command === 'poke' || command === 'teampreview' || command === 'gametype' || command === 'gen' || command === 'tier' || command === 'clearpoke' || command === 'request') {
+          return battle.log.length;
+        } else if (line.charAt(0) === '|') {
+          return battle.log.length;
+        } else {
+          event.textContent = line;
+        }
+        el.appendChild(event);
+      }
+      return battle.log.length;
+    },
+    logLines: function (lines) {
+      for (var i = 0; i < lines.length; i++) this.logLine(lines[i]);
+      return battle.log.length;
+    },
+    /* A REAL browser WebSocket, so the MAIN-world capture in src/injected.js is exercised
+     * against Chromium's own implementation instead of a stub. The socket is only created when
+     * a test asks for it, which is AFTER the extension has had a chance to wrap the
+     * constructor — that ordering is the whole point of the test. */
+    openSocket: function (url) {
+      var s = new WebSocket(url);
+      window.__mock.socket = s;
+      window.__mock.socketReceived = [];
+      s.onmessage = function (e) { window.__mock.socketReceived.push(e.data); };
+      s.onerror = function () { window.__mock.socketErrored = true; };
+      return true;
+    },
+    socketSend: function (text) {
+      if (!window.__mock.socket) return false;
+      window.__mock.socket.send(text);
+      return true;
+    },
+    socketState: function () {
+      var s = window.__mock.socket;
+      return {
+        present: !!s,
+        /* injected.js patches each instance it constructs. */
+        patched: !!(s && s.__stPatched),
+        /* ...and the page must still be holding a genuine WebSocket. */
+        nativeProto: !!(s && Object.getPrototypeOf(s) === WebSocket.prototype),
+        constructorWrapped: !!WebSocket.__stWrapped,
+        received: (window.__mock.socketReceived || []).slice(),
+        errored: !!window.__mock.socketErrored
+      };
+    },
+    /* Showdown throws its whole control bar away and rebuilds it every turn. */
+    rebuildControlBar: function () {
+      var controls = document.getElementById('controls');
+      var parent = controls.parentNode;
+      var fresh = controls.cloneNode(false);
+      parent.replaceChild(fresh, controls);
+      var menu = document.createElement('div');
+      menu.className = 'movemenu';
+      menu.id = 'movemenu';
+      fresh.appendChild(menu);
+      var sw = document.createElement('button');
+      sw.className = 'switchbutton';
+      sw.setAttribute('name', 'chooseSwitch');
+      fresh.appendChild(sw);
+      renderMenu(DEFAULT_MOVES);
+      return fresh.querySelectorAll('button.movebutton').length;
+    }
+  };
+
+  renderMenu(DEFAULT_MOVES);
+})();
+</script>
+</body>
+</html>

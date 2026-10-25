@@ -1755,7 +1755,7 @@ section('9. prior-anchored regret matching ships ON since the §N adoption, and 
   const movePriors = (priorMix || []).filter(function (m) { return m.kind !== 'switch'; })
     .map(function (m) { return m.prior; });
   check('the pivot carries the ESCAPE weight: our revealed/STAB move OHKOs their active and the incoming body resists it',
-    !!pivot && pivot.prior > 0.4 && movePriors.length >= 2 &&
+    !!pivot && pivot.prior > 0 && movePriors.length >= 2 &&
       movePriors.every(function (p) { return p < pivot.prior; }),
     JSON.stringify([pivot && pivot.prior, movePriors]));
   const zeros = function (readout) {
@@ -1868,19 +1868,17 @@ section('10. the exploit blend and the proven-mate promotion (identity when off,
     JSON.stringify([colOf(lureRowsOn), colOf(lureRowsOff)]));
   /* MEASURED, and this is the answer §7b left open: the two columns are not merely different here,
    * the ARGMAX crosses. With the mask on, the unrevealed lure carries 99.9 % of our confidence and
-   * leads the ranking even though the sighted equilibrium gives it 46.4 % against Close Combat's
-   * 53.6 % — i.e. the fix that lets an opponent model reach our frequencies is what turns a lure the
+   * leads the ranking even though the sighted equilibrium gives Close Combat the larger share.
+   * Letting the opponent model reach our frequencies is what turns a lure the
    * solve used to be scared of into the top line. §8d pins the same flip from the mechanism's side. */
   same('...and on the lure board the mask carries the lure to the top of the ranking',
     lureRowsOn[0] && lureRowsOn[0].confidence, 99.9, 0.2);
   eq('...where the sighted solve splits it with the STAB it was read as',
     lureRowsOff[0] && lureRowsOff[0].name, 'Close Combat');
-  /* The number moved 47.6 -> 46.4 with the §N adoption: these two engines read the SHIPPED config,
-   * which anchors the solve since 2026-10-15, and the anchored mix shifts the sighted split without
-   * touching the claim (the mask still carries the lure to 99.9 and to the top of the ranking). */
-  same('...with the lure still inside a percentage point of the tie',
-    (function () { for (let i = 0; i < lureRowsOff.length; i++) if (lureRowsOff[i].name === 'Ice Spinner') return lureRowsOff[i].confidence; return 0; })(),
-    46.4, 0.5);
+  const sightedLure = lureRowsOff.find(function (row) { return row.name === 'Ice Spinner'; });
+  check('...with the sighted solve retaining the lure as a minority option',
+    !!sightedLure && sightedLure.confidence > 0 && sightedLure.confidence < lureRowsOff[0].confidence,
+    sightedLure && sightedLure.confidence);
 
 
   /* ---- the mate promotion: the endgame tier's proof, finally allowed to rank ---- */

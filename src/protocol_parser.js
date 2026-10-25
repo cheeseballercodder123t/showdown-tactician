@@ -19,7 +19,8 @@
  *   |-illusion|     -> activate { effect: 'illusion', args }
  *   |-crit|         -> crit { side, slot, species }        (a critical hit landed)
  *   |-fail|         -> fail { effect: 'move: <Name>' }    (a move had no effect)
- *   |-miss|, -immune, -supereffective, -resisted, -hitcount, -combine, -block,
+ *   |-immune|       -> immune { side, slot, species, from, ofRaw }  (a hit did nothing)
+ *   |-miss|, -supereffective, -resisted, -hitcount, -combine, -block,
  *   -mustrecharge, -zbroken, -ohko, -nothing, -anim, -waiting, -endability,
  *   -clearpositiveboost, -swapboost, -invertboost, -copyboost, -swapsideconditions,
  *   |teampreview|, |clearpoke|, |error|  -> unknown { cmd, args }
@@ -43,7 +44,10 @@
 
   /* Room/UI chatter that must never enter the event stream as `unknown`. */
   const NOISE = {
-    t: 1, c: 1, c_: 1, chat: 1, chatmsg: 1, uhtml: 1, uhtmlchange: 1, raw: 1, html: 1,
+    /* Showdown's timestamp frame is `|t:|<unix>` — the command token is `t:` WITH the colon,
+     * so a bare `t` entry never matched it and every timestamp landed in the unknown stream.
+     * The empty command is the `|` line that separates turns. */
+    '': 1, 't:': 1, t: 1, c: 1, c_: 1, chat: 1, chatmsg: 1, uhtml: 1, uhtmlchange: 1, raw: 1, html: 1,
     bigerror: 1, message: 1, j: 1, l: 1, join: 1, leave: 1, expire: 1, deinit: 1, noinit: 1,
     controls: 1, popup: 1, warn: 1, rated: 1, temp: 1, variation: 1, formats: 1, title: 1,
     users: 1, customborder: 1, tournament: 1, debug: 1, notify: 1, inactive: 1, inactiveoff: 1,
@@ -85,15 +89,18 @@
     if (hpToken === 'fnt') { out.percent = 0; out.faint = true; }
     else if (hpToken.indexOf('/') !== -1) {
       const pair = hpToken.split('/');
-      const cur = parseInt(pair[0], 10);
-      const max = parseInt(pair[1], 10);
+      /* parseFloat, not parseInt: the HP Percentage Mod prints `72.06/100`, and truncating the
+       * numerator threw away the fraction on every hit (the state still moved, but a 15.2% hit
+       * read as 15% and every later KO chance was computed off a rounded board). */
+      const cur = parseFloat(pair[0]);
+      const max = parseFloat(pair[1]);
       out.hp = isNaN(cur) ? null : cur;
       out.max = isNaN(max) ? null : max;
       if (out.hp !== null && out.max) out.percent = U.round2((out.hp / out.max) * 100);
       else if (out.hp !== null && out.max === 0) out.percent = null;
       if (out.hp === 0) out.faint = true;
     } else {
-      const n = parseInt(hpToken, 10);
+      const n = parseFloat(hpToken);
       if (!isNaN(n)) { out.percent = n; out.hp = n; out.max = 100; if (n === 0) out.faint = true; }
     }
     for (let i = 1; i < tokens.length; i++) {
@@ -299,10 +306,20 @@
     _parseCommand(cmd, args, raw) {
       switch (cmd) {
         case 'init': {
-          const format = args.join('|').replace(/["{}]/g, '').trim();
-          return { type: 'init', raw: raw, format: format, json: null };
+          const value = args.join('|').replace(/["{}]/g, '').trim();
+          /* Showdown opens every battle room with `|init|battle`. That token names the ROOM
+           * KIND, not a format; treating it as one set the format to the literal string
+           * "battle", the NatDex allowlist rejected it, and the HUD announced
+           * "ENGINE OFFLINE / battle" on a ranked National Dex game. The actual tier arrives
+           * on `|tier|` (and old replay logs put a format in `|init|`), so only a value that
+           * is not a room kind is a format. */
+          const roomKind = /^(battle|chat|room|lobby|teampreview|multi|battle-.*)$/i.test(value);
+          return { type: 'init', raw: raw, format: roomKind ? '' : value, json: null };
         }
-        case 'format': return { type: 'init', raw: raw, format: args[0] || '', json: null };
+        /* `|tier|[Gen 9] National Dex` is the format line every real battle carries. It is a
+         * distinct event type so it can never reset the board the way `|init|` does. */
+        case 'tier': return { type: 'format', raw: raw, format: (args[0] || '').trim() };
+        case 'format': return { type: 'format', raw: raw, format: (args[0] || '').trim() };
         case 'player': return { type: 'player', raw: raw, side: args[0] || '', name: args[1] || '', avatar: args[2] || '', rating: args[3] === undefined ? null : args[3] };
         case 'teamsize': return { type: 'teamsize', raw: raw, side: args[0] || '', size: parseInt(args[1], 10) || 0 };
         case 'poke': return this._parsePoke(args, raw);
@@ -333,12 +350,24 @@
         case '-setboost': return this._parseBoost('setboost', args, raw);
         case '-clearallboost': return { type: 'clearallboost', raw: raw };
         case '-clearnegativeboost': return this._parseMonEvent('clearnegativeboost', args, raw);
+        /* Stat-stage transfers the parser used to drop on the floor. Haze was covered
+         * (`-clearallboost`) but Defog's `-clearpositiveboost`, Topsy-Turvy's
+         * `-invertboost`, Heart Swap's `-swapboost` and Psych Up's `-copyboost` were all
+         * `unknown`, so the engine kept stat stages the battle had already erased — and then
+         * priced every subsequent hit off them. */
+        case '-clearpositiveboost': return this._parseBoostTransfer('clearpositiveboost', args, raw);
+        case '-swapboost': return this._parseBoostTransfer('swapboost', args, raw);
+        case '-copyboost': return this._parseBoostTransfer('copyboost', args, raw);
+        case '-invertboost': return this._parseBoostTransfer('invertboost', args, raw);
         case '-item': return this._parseItem(args, raw, false);
         case '-enditem': return this._parseItem(args, raw, true);
         case '-activate': return this._parseEffect('activate', args, raw);
         case '-start': return this._parseEffect('start', args, raw);
         case '-end': return this._parseEffect('end', args, raw);
         case '-formechange': return this._parseForme('formechange', args, raw);
+        /* Battle-only typing (Soak, Magic Powder, Burn Up). Protean reports itself through
+         * `|-start|…|typechange|…`, so both shapes reach `state_manager._onTypeChange`. */
+        case '-typechange': return this._parseTypeChange(args, raw);
         case 'detailschange': case '-detailschange': return this._parseForme('detailschange', args, raw);
         case '-terastallize': case 'terastallize': return this._parseTera(args, raw);
         case '-zpower': return this._parseZPower(args, raw);
@@ -354,6 +383,11 @@
         // Both commands appear in every real battle, so they get a type of their own rather
         // than falling through to `unknown`: a consumer can tell a lucky roll from a roll.
         case '-crit': return this._parseMonEvent('crit', args, raw);
+        /* `|-immune|p2a: Cresselia|[from] ability: Levitate` is where an immunity ability is
+         * printed whenever nothing else announces it. The line carries no HP change, so it is
+         * not a damage event — but it IS a scouted fact, and dropping it left Levitate / Flash
+         * Fire / Sap Sipper out of the ledger entirely. */
+        case '-immune': return this._parseImmune(args, raw);
         // NOT a Showdown command: the `|stpp|` snapshot is synthesised by src/injected.js from
         // the page's own battle object, because max PP is game data the engine may not invent
         // (ARCHITECTURE §6.4). The `st` prefix keeps it from ever colliding with a real line.
@@ -411,6 +445,12 @@
       const isZ = !!pendingZ || (moveData ? !!moveData.isZMove : false) || /\[zeffect\]/i.test(extra);
       const isMax = /^Max\s/i.test(moveName) || moveId.indexOf('max') === 0;
       const priority = moveData ? moveData.priority : 0;
+      /* `[from]` marks a move the battle called, not one the player clicked: Sleep Talk, Metronome,
+       * Dancer, Instruct, Copycat and friends print a SECOND `|move|` line for the same body with
+       * the cause in this clause. The state manager must not count it as a second distinct move
+       * in the stint (that falsely blacklists every Choice item) and must not credit the body
+       * with knowing the called move. */
+      const fromMatch = extra.match(/\[from\]\s*([^\]|]+)/i);
       return {
         type: 'move', raw: raw,
         side: ident.side, slot: ident.slot, slotChar: ident.slotChar,
@@ -419,6 +459,7 @@
         isZ: isZ, isMax: isMax, priority: priority, bracket: priority,
         targetSide: targetIdent.side || '', targetSlot: targetIdent.slot || '',
         revived: moveId === 'revivalblessing',
+        from: fromMatch ? fromMatch[1].trim() : '',
         extra: extra
       };
     }
@@ -444,6 +485,18 @@
       };
     }
 
+    /** `|-immune|<mon>|[from] ability: Levitate` — a hit that did nothing, and why. */
+    _parseImmune(args, raw) {
+      const ident = splitIdent(args[0]);
+      const clause = parseClauses(args, 1);
+      return {
+        type: 'immune', raw: raw,
+        side: ident.side, slot: ident.slot, slotChar: ident.slotChar,
+        species: this.resolveSpecies(ident.side, ident.slotChar, ident.name),
+        from: clause.from, ofRaw: clause.ofRaw
+      };
+    }
+
     _parseRequest(args, raw) {
       let json = null;
       let text = args.join('|');
@@ -458,13 +511,17 @@
       const weather = (!payload || id === 'none' || payload === '') ? ''
         : (WEATHER_IDS[id] || payload);
       const clause = parseClauses(args, 1);
-      return { type: 'weather', raw: raw, weather: weather, from: clause.from, weatherId: weather ? U.toID(weather) : '' };
+      // `ofRaw` is the `[of] p2a: Abomasnow` holder. Weather is one of the most common places an
+      // ability is printed (`[from] ability: Snow Warning`), and without the holder the reveal had
+      // no body to land on and was dropped.
+      return { type: 'weather', raw: raw, weather: weather, from: clause.from, ofRaw: clause.ofRaw, upkeep: args.includes('[upkeep]'), weatherId: weather ? U.toID(weather) : '' };
     }
 
     _parseTerrain(args, raw) {
       const payload = (args[0] || '').trim();
       const terrain = payload.replace(/\s*Terrain$/i, '');
-      return { type: 'terrain', raw: raw, terrain: payload ? terrain : '', terrainId: payload ? U.toID(terrain) : '' };
+      const clause = parseClauses(args, 1);
+      return { type: 'terrain', raw: raw, terrain: payload ? terrain : '', terrainId: payload ? U.toID(terrain) : '', from: clause.from, ofRaw: clause.ofRaw };
     }
 
     _parseSide(args, raw, type) {
@@ -529,7 +586,28 @@
         type: type, raw: raw,
         side: ident.side, slot: ident.slot, slotChar: ident.slotChar,
         species: this.resolveSpecies(ident.side, ident.slotChar, ident.name),
-        stat: stat, amount: isNaN(amount) ? 0 : amount, from: clause.from
+        stat: stat, amount: isNaN(amount) ? 0 : amount, from: clause.from, ofRaw: clause.ofRaw
+      };
+    }
+
+    /**
+     * `|-clearpositiveboost|target|source|move: Defog` and friends. `args[1]` is the SOURCE
+     * body for swap/copy and a `move:` clause for clearpositive, so the shape stays deliberately
+     * loose: whatever is a readable ident goes in `other*`, and `stats` is the (optional)
+     * comma-separated subset the protocol names. An empty `stats` means every stage.
+     */
+    _parseBoostTransfer(type, args, raw) {
+      const ident = splitIdent(args[0]);
+      const other = splitIdent(args[1] || '');
+      const stats = String(args[2] || '').split(',').map(function (s) { return U.toID(s); }).filter(Boolean);
+      const clause = parseClauses(args, 3);
+      return {
+        type: type, raw: raw,
+        side: ident.side, slot: ident.slot, slotChar: ident.slotChar,
+        species: this.resolveSpecies(ident.side, ident.slotChar, ident.name),
+        otherSide: other.side, otherSlot: other.slot,
+        otherSpecies: this.resolveSpecies(other.side, other.slotChar, other.name),
+        stats: stats, from: clause.from, ofRaw: clause.ofRaw
       };
     }
 
@@ -561,6 +639,19 @@
         effect: effect, effectName: rawEffect.replace(/^[a-z]+:\s*/i, ''),
         effectId: U.toID(rawEffect.replace(/^[a-z]+:\s*/i, '')),
         args: rest, from: clause.from, ofRaw: clause.ofRaw
+      };
+    }
+
+    _parseTypeChange(args, raw) {
+      const ident = splitIdent(args[0]);
+      const next = String(args[1] || '').trim();
+      const clause = parseClauses(args, 2);
+      return {
+        type: 'typechange', raw: raw,
+        side: ident.side, slot: ident.slot, slotChar: ident.slotChar,
+        species: this.resolveSpecies(ident.side, ident.slotChar, ident.name),
+        types: next && next !== '???' ? next.split('/').map(function (t) { return t.trim(); }).filter(Boolean) : [],
+        from: clause.from, ofRaw: clause.ofRaw
       };
     }
 
@@ -601,6 +692,16 @@
       const hp = parseHPStatus(args[2]);
       const newSpecies = this.canonicalSpecies(det.species) || det.species;
       const prevSpecies = this.resolveSpecies(ident.side, ident.slotChar, ident.name);
+      // `|-formechange|…|Aegislash-Blade|[from] ability: Stance Change` — the clause is how
+      // Stance Change / Disguise / Zen Mode announce themselves, and it used to be dropped.
+      // The clause starts at index 2 for a formechange and at index 3 for a detailschange
+      // (which carries an HP argument in between), so find the first bracketed clause rather
+      // than assuming a shape: an HP token must never leak into `from`.
+      let clauseStart = args.length;
+      for (let i = 2; i < args.length; i++) {
+        if (/^\[(?:from|of)\]/i.test(String(args[i] || ''))) { clauseStart = i; break; }
+      }
+      const clause = parseClauses(args, clauseStart);
       return {
         type: type, raw: raw,
         side: ident.side, slot: ident.slot, slotChar: ident.slotChar,
@@ -608,7 +709,7 @@
         details: details, hp: hp.percent, status: hp.status,
         level: det.level, gender: det.gender,
         isMega: /-Mega/i.test(newSpecies || ''),
-        from: 'formechange', ofRaw: ''
+        from: clause.from, ofRaw: clause.ofRaw
       };
     }
 
@@ -682,6 +783,10 @@
         case 'init': {
           const fmt = evt.format || '';
           if (fmt) this.format = fmt;
+          break;
+        }
+        case 'format': {
+          if (evt.format) this.format = evt.format;
           break;
         }
         case 'poke': {
@@ -844,7 +949,7 @@
       if (myEntry.order <= oppEntry.order) return null;   // the player actually went first
       this._speedFloorTurn = this.currentTurn;
       return {
-        type: 'speedfloor', raw: evt.raw,
+        type: 'speedfloor', raw: evt.raw, synthetic: true,
         side: oppSide, value: mySpeed, species: oppEntry.species,
         oppMove: oppEntry.move, myMove: evt.move, turn: this.currentTurn, reason: reason
       };
@@ -883,7 +988,7 @@
       if (this._residualPairs[key]) return null;
       this._residualPairs[key] = true;
       return {
-        type: 'residualorder', raw: evt.raw,
+        type: 'residualorder', raw: evt.raw, synthetic: true,
         side: prev.side, slot: prev.slot, species: prev.species,
         otherSide: evt.side, otherSlot: evt.slot, otherSpecies: evt.species,
         before: true, turn: this.currentTurn,

@@ -43,14 +43,14 @@
   const PRIORITY_2 = ['extremespeed'];
   const PRIORITY_1 = [
     'suckerpunch', 'iceshard', 'aquajet', 'shadowsneak', 'bulletpunch', 'machpunch',
-    'vacuumwave', 'quickattack', 'watershuriken', 'accelerock', 'fakeout', 'feint',
-    'firstimpression', 'thunderclap', 'jetpunch', 'upperhand', 'grasseyglare'
+    'vacuumwave', 'quickattack', 'watershuriken', 'accelerock',
+    'thunderclap', 'jetpunch', 'upperhand', 'grasseyglare'
   ];
   const PRIORITY_MINUS_6 = ['teleport', 'chillyreception', 'circlethrow', 'dragontail', 'whirlwind', 'roar'];
   const PRIORITY_MINUS_7 = ['trickroom'];
-  const PRIORITY_MINUS_5 = ['counter', 'mirrorcoat', 'metalburst'];
+  const PRIORITY_MINUS_5 = ['counter', 'mirrorcoat'];
   const PRIORITY_MINUS_4 = ['avalanche', 'revenge'];
-  const PRIORITY_MINUS_3 = ['focuspunch', 'beakblast', 'shelltrap', 'payback'];
+  const PRIORITY_MINUS_3 = ['focuspunch', 'beakblast', 'shelltrap'];
 
   /** Explicit bracket table from the brief, then the dex priority as the general fallback. */
   const BRACKET_OVERRIDES = (function () {

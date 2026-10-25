@@ -244,8 +244,9 @@ async function openBattle(ctx, opts) {
   await page.route('https://play.pokemonshowdown.com/**', async function (route) {
     const req = route.request();
     if (req.resourceType() === 'document' || /\.html?($|\?)/.test(req.url())) {
-      route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: FIXTURE_HTML });
+      route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: opts.client ? fs.readFileSync(path.join(__dirname, 'fixtures', opts.client === 'beta' ? 'showdown-beta.html' : 'showdown-classic.html'), 'utf8') : FIXTURE_HTML });
     } else if (/\/sprites\/gen5\//.test(new URL(req.url()).pathname)) {
+      if (opts.realSprites) { await route.continue(); return; }
       // Deterministic local image response. The HUD test needs valid loaded sprites, not network access.
       const pixel = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a3ioAAAAASUVORK5CYII=', 'base64');
       await route.fulfill({ status: 200, contentType: 'image/png', body: pixel });

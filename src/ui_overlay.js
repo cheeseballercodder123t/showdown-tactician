@@ -1,21 +1,3 @@
-/* Showdown Tactician — src/ui_overlay.js
- * Mobile portrait HUD for Lemur Browser on a 1080x2340 (Galaxy S24 FE) viewport.
- *
- * Owns every DOM node the extension injects into play.pokemonshowdown.com:
- *   - .elo-helper-badge  : confidence tag absolutely positioned inside button[data-move]
- *   - .conf-high/.conf-mid/.conf-low/.conf-veto : confidence classes on the button itself
- *   - .tactician-banner  : pinned status bar above the battlefield
- *   - .tactician-tr-chip : fixed alert pill above the move bar
- *   - .team-drawer       : collapsible bottom-left sheet (team paste + live readouts)
- *
- * Every entry point is defensive: a missing document, a missing Showdown control bar, an
- * empty ranked array or a null battleState is a no-op, never a throw. Showdown rebuilds
- * its control bar on every turn, so injection is idempotent and keyed off data attributes.
- *
- * Styling lives in styles/overlay.css; this file only assigns the classes it defines and
- * the two inline properties Showdown's own CSS otherwise fights (absolute badge anchoring
- * and the vetoed-button treatment).
- */
 (function () {
   'use strict';
   const ST = (window.ST = window.ST || {});
@@ -46,6 +28,7 @@
   const BENCH_PILL_ATTR = 'data-st-bench';
   const BADGE_ROW_ATTR = 'data-st-badge-row';
   const DEDUCTION_ATTR = 'data-st-deduction';
+  const SCOUT_ATTR = 'data-st-scout';
   const RECEIPT_ATTR = 'data-st-receipt';
   const OVERLORD_ATTR = 'data-st-overlord';
   // The two "sweaty" readouts: the PP-stall gauge and the Z-Move / Mega Trap sentinel bar. As
@@ -138,10 +121,17 @@
         benchStrip: null, badgeRow: null, receipt: null, overlord: null,
         ppGauge: null, sentinel: null, leadAdvisory: null, cancelAlert: null,
         console: null, sheet: null, sheetHeader: null, modeToggle: null,
-        consoleHeader: null
+        consoleHeader: null, matchup: null, toolbar: null
       };
+      this._centerView = 'battle';
+      this._centerMeta = {};
       this._sheetOpen = false;     // the mobile sheet's collapse/expand state
-      this._panelOpen = false;     // the desktop console's collapse/expand state
+      /* The desktop console opens EXPANDED. It used to start as a 48 px title bar, which is
+       * where a player coming from the phone layout has no reason to look: the HUD appeared to
+       * be missing, and the one thing the panel exists for (the readout) was behind an
+       * undisclosed click. Collapsing is still one click on the title bar, and the state is
+       * per-page: a player who wants the chat back gets it back for that battle. */
+      this._panelOpen = true;      // the desktop console's collapse/expand state
       this._panelX = 0;            // the console's drag offset (0 = docked)
       this._panelY = 0;
       this._panelJustDragged = false;  // suppresses the click a drag ends with
@@ -149,6 +139,8 @@
       this._hotkeyBound = false;   // the Ctrl+8 listener is attached at most once
       this._touched = [];        // [{ el, prop, previous }] inline style rollbacks
       this._lastRanked = [];
+      this._lastPreview = null;
+      this._battleState = null;
       this._recommended = null;   // the banner's 'PLAY: …' line (see _recommendedLine)
       this._menuWatch = null;     // the move-menu MutationObserver (see bindMoveMenuWatcher)
       this._lastReasonByMove = {};
@@ -269,10 +261,32 @@
     }
 
     _findMoveButtons() {
-      const list = this._qsa('button[data-move]');
-      if (list.length) return list;
-      // Some builds only expose name="chooseMove" with the id in the value.
-      return this._qsa('.movebutton, button[name="chooseMove"]');
+      const root = this._battleRoot();
+      return this._qsa('button[data-move], button.movebutton, button[name="chooseMove"], button[data-tooltip^="move|"], button[data-tooltip^="zmove|"], button[data-tooltip^="maxmove|"]', root).filter(function (button) {
+        return !button.getClientRects || button.getClientRects().length > 0;
+      });
+    }
+
+    _battleRoot() {
+      const doc = this._document();
+      const id = doc && doc.documentElement && doc.documentElement.getAttribute('data-st-room');
+      if (id && doc.getElementById) {
+        const room = doc.getElementById('room-' + id) || doc.getElementById(id);
+        if (room) return room;
+      }
+      const rooms = this._qsa('.ps-room, .battle-room');
+      for (let i = 0; i < rooms.length; i++) {
+        if (rooms[i].getClientRects && rooms[i].getClientRects().length && this._qs('.battle', rooms[i])) return rooms[i];
+      }
+      return null;
+    }
+
+    _controls() {
+      const bars = this._qsa('.battle-controls', this._battleRoot());
+      for (let i = 0; i < bars.length; i++) {
+        if (!bars[i].getClientRects || bars[i].getClientRects().length) return bars[i];
+      }
+      return null;
     }
 
     _moveIdOf(button) {
@@ -339,6 +353,9 @@
       if (!this._document()) return 0;
       const actions = Array.isArray(ranked) ? ranked.filter(Boolean) : [];
       this._lastRanked = actions;
+      this._battleState = battleState || null;
+      this._readout = readout || null;
+      if (readout) this._readoutTurn = battleState && battleState.turn;
       this.renderCount++;
 
       this.lastBadgeCount = this._decorateMoveButtons(actions);
@@ -348,7 +365,7 @@
 
       this.renderBanner(battleState, actions);
       this.renderTRChip(this._chipText(battleState, readout, actions), this._chipLevel(battleState, actions));
-      if (battleState) this.setCandidateBreakdown(battleState);
+      if (battleState) { this.setCandidateBreakdown(battleState); this.renderControlCenter(battleState, readout); }
       return this.lastBadgeCount;
     }
 
@@ -415,7 +432,7 @@
               const node = added[j];
               if (!node || node.nodeType !== 1) continue;
               const hits = self._isMoveButton(node) ||
-                (node.querySelector && node.querySelector('button[data-move], .movebutton, button[name="chooseMove"]'));
+                (node.querySelector && node.querySelector('button[data-move], .movebutton, button[name="chooseMove"], button[data-tooltip^="move|"]'));
               if (hits) { self.redecorate(); return; }
             }
           }
@@ -441,8 +458,9 @@
      * about, it is a no-op (the per-button reset in _decorateButton keeps it idempotent).
      */
     redecorate() {
-      if (!this._lastRanked || !this._lastRanked.length) return 0;
-      this.lastBadgeCount = this._decorateMoveButtons(this._lastRanked);
+      this.lastBadgeCount = this._decorateMoveButtons(this._lastRanked || []);
+      this.renderMovePreviews(this._lastPreview || null);
+      this._syncPlacement();
       return this.lastBadgeCount;
     }
 
@@ -463,9 +481,8 @@
       if (btn.style) {
         this._rememberStyle(btn, 'opacity');
         this._rememberStyle(btn, 'textDecoration');
-        btn.style.opacity = vetoed ? '0.5' : '';
-        if (vetoed && btn.style) btn.style.textDecoration = 'line-through';
-        else if (btn.style) btn.style.textDecoration = '';
+        btn.style.opacity = '';
+        btn.style.textDecoration = '';
       }
       if (vetoed) btn.classList && btn.classList.add(BADGES.veto.cls);
       else if (cls) btn.classList && btn.classList.add(cls);
@@ -518,7 +535,7 @@
       if (action.score !== undefined && action.score !== null && !action.isVetoed) {
         parts.push('score ' + U.round1(action.score));
       }
-      return parts.join(' — ');
+      return parts.join(' / ');
     }
 
     /* ------------------------------------------------- team-preview advisory */
@@ -535,7 +552,7 @@
       if (!card) {
         card = this._el('div', 'st-lead-advisory');
         if (card && card.setAttribute) card.setAttribute(LEAD_ATTR, '1');
-        this._nodes.leadAdvisory = this._mount(card);
+        this._nodes.leadAdvisory = this._mountBand(card);
       }
       if (!card) return null;
       card.textContent = '';
@@ -547,7 +564,7 @@
         ['st-lead-risky', advisory.risky, 'RISKY LEAD']].forEach(function (pair) {
         const item = pair[1];
         if (!item || !item.species) return;
-        const text = pair[2] + ' / ' + item.species + ' (' + item.favorability + '% favorability) — ' +
+        const text = pair[2] + ' / ' + item.species + ' (' + item.favorability + '% favorability). ' +
           (item.reason || '');
         const row = self._el('div', pair[0], text);
         if (row && typeof card.appendChild === 'function') { card.appendChild(row); rows++; }
@@ -583,9 +600,16 @@
       if (!this._document()) return null;
       const banner = this._ensureBanner();
       if (!banner) return null;
+      if (info && typeof info === 'object') this._battleState = info;
       const text = typeof info === 'string' ? info : this._bannerText(info, actions);
-      if (typeof text === 'string' && text.indexOf('PLAY: ') === 0) this._recommended = text;
+      if (typeof text === 'string' && text.indexOf('PLAY: ') === 0) this._recommended = text.split(BANNER_SEP)[0];
+      const offline = !!(info && info.formatSupported === false);
+      if (offline) this._recommended = null;
+      if (offline) banner.setAttribute && banner.setAttribute('open', '');
+      else if (banner.getAttribute && banner.getAttribute('data-st-offline') === '1') banner.removeAttribute('open');
+      banner.setAttribute && banner.setAttribute('data-st-offline', offline ? '1' : '0');
       banner.textContent = text;
+      if (banner.insertBefore) banner.insertBefore(this._el('summary', 'st-section-title', 'Field & assumptions'), banner.firstChild);
       banner.setAttribute && banner.setAttribute('data-turn', safeString(info && info.turn ? info.turn : ''));
       // Every panel rail (the mobile sheet's collapsed bar, the desktop console's title bar)
       // mirrors this text as its summary, so refresh them both.
@@ -600,7 +624,7 @@
       // Measure the page chrome BEFORE mounting, so the banner's first paint lands below
       // Showdown's topbar/room-tab bar instead of jumping from 0 to 56 on the next frame.
       this._syncChipBand();
-      const el = this._el('div', 'tactician-banner');
+      const el = this._el('details', 'tactician-banner');
       if (!el) return null;
       if (el.setAttribute) { el.setAttribute(BANNER_ATTR, '1'); el.setAttribute('role', 'status'); }
       // Route through _mountBand so the banner lands in the mobile sheet (or desktop console)
@@ -704,26 +728,13 @@
     _mountBand(el, intoSheet) {
       if (!el) return el;
       if (el.parentNode) return el;
-      if (this.resolvedLayout === 'desktop') {
-        const console = this._ensureConsole();
-        if (console && typeof console.appendChild === 'function') {
-          try {
-            console.appendChild(el);
-            // Re-read the rail after the append: the write inside _ensureConsole happens
-            // before the first card exists and _ensureConsole early-returns forever after,
-            // so without this the count badge would stay stuck on "idle" (and the summary
-            // on whatever the banner said when the console was created).
-            this._refreshPanelHeaders();
-            return el;
-          } catch (e) { /* fall through */ }
-        }
-      } else if (this.resolvedLayout === 'mobile' && intoSheet !== false) {
-        const sheet = this._ensureSheet();
-        if (sheet && typeof sheet.appendChild === 'function') {
-          try { sheet.appendChild(el); this._refreshPanelHeaders(); return el; } catch (e) { /* fall through */ }
-        }
-      }
-      return this._mount(el);
+      const host = this.resolvedLayout === 'desktop' ? this._ensureConsole()
+        : intoSheet !== false ? this._ensureSheet() : null;
+      if (host && host.appendChild) host.appendChild(el);
+      else this._mount(el);
+      this._refreshPanelHeaders();
+      this._syncPlacement();
+      return el;
     }
 
     _ensureChip() {
@@ -776,23 +787,23 @@
       // collapsed sheet on a phone. Both states are named, every turn.
       if (field.trickRoom) {
         const left = U.clamp(field.trickRoomTurnsLeft || 0, 0, 5);
-        if (left <= 1) alerts.push('TR ' + left + '/5 — LAST TURN: attack or sack the setter');
-        else if (left === 2) alerts.push('TR 2/5 — LAST TURN NEXT: land your chip or sack the setter');
-        else alerts.push('TR UP ' + left + '/5 — slower body moves first');
+        if (left <= 1) alerts.push('TR ' + left + '/5. LAST TURN: attack or sack the setter');
+        else if (left === 2) alerts.push('TR 2/5. LAST TURN NEXT: land your chip or sack the setter');
+        else alerts.push('TR UP ' + left + '/5. Slower body moves first');
       } else {
-        alerts.push('TR off — normal speed order');
+        alerts.push('TR off. Normal speed order');
       }
       const tempo = (readout && (readout.tempo || readout.tempoVector)) || state.__tempo || null;
       const v4 = tempo && typeof tempo.v4 === 'number' ? tempo.v4 : null;
       if (v4 !== null && v4 > 0.7) {
-        alerts.push('Bunker rhythm predicted (' + Math.round(v4 * 100) + '%) — consider Protect or a setup move');
+        alerts.push('Bunker rhythm predicted (' + Math.round(v4 * 100) + '%). Consider Protect or a setup move');
       }
       const best = actions && actions.length ? actions[0] : null;
       if (best && best.isVetoed && actions.length > 1) {
         const fallback = actions.filter(function (a) { return !a.isVetoed; })[0];
-        if (fallback) alerts.push('Top line vetoed — play ' + safeString(fallback.name));
+        if (fallback) alerts.push('Top line vetoed. Play ' + safeString(fallback.name));
       }
-      return alerts.join(' — ');
+      return alerts.join(' / ');
     }
 
     _chipLevel(state, actions) {
@@ -865,7 +876,7 @@
       const card = this._ensureCancelCard();
       if (card) {
         this._clearChildren(card);
-        this._appendChild(card, this._el('span', 'st-cancel-head', 'Cancel window — the deep pass disagrees'));
+        this._appendChild(card, this._el('span', 'st-cancel-head', 'Cancel window: the deep pass disagrees'));
         this._appendChild(card, this._el('span', 'st-cancel-body',
           'Undo and play ' + better + ' instead of ' + locked + '.'));
         if (why) this._appendChild(card, this._el('span', 'st-cancel-why', why));
@@ -988,6 +999,8 @@
      */
     renderMovePreviews(preview) {
       if (!this._document()) return 0;
+      this._lastPreview = preview || null;
+      this._renderMatchup(preview);
       const buttons = this._findMoveButtons();
       const lines = (preview && Array.isArray(preview.lines)) ? preview.lines : [];
       const claimed = [];
@@ -1059,6 +1072,12 @@
       const max = roundPct(line.maxPercent);
       const verdict = safeString(line.verdict).trim();
       const target = (preview && preview.target) || {};
+      // A bar priced against a BENCH body must name that body on its face. The same 10-12%
+      // means "your Fire Punch barely scratches this Garchomp" or "the engine is broken",
+      // depending on information the bar used to hide in a tooltip.
+      const benchTarget = preview && preview.target && preview.target.isActive === false && preview.target.species;
+      const suffix = benchTarget ? ' vs ' + safeString(preview.target.species)
+        : (verdict ? ' (' + verdict + ')' : '');
       let node = bar;
       if (!node) {
         node = this._el('span', 'st-lethal-bar');
@@ -1066,7 +1085,7 @@
         if (node.setAttribute) node.setAttribute(LETHAL_BAR_ATTR, '1');
         if (typeof btn.appendChild === 'function') btn.appendChild(node);
       }
-      node.textContent = min + '\u2013' + max + '%' + (verdict ? ' (' + verdict + ')' : '');
+      node.textContent = min + ' \u2013 ' + max + '%' + suffix;
       // Publish the fill percentage (max of the roll range, clamped to 0..100) as a CSS custom
       // property so the bar's ::before can draw a real progress fill behind the text. Set on
       // the element's inline style — pure visual data, no class or text change, so it cannot
@@ -1087,7 +1106,7 @@
      * previews moves against it; the active or fainted cards remain visual roster context.
      * An empty list removes the strip.
      */
-    renderBenchTargets(targets, selectedId) {
+    renderBenchTargets(targets, selectedId, previewTarget) {
       if (!this._document()) return null;
       const list = Array.isArray(targets) ? targets.filter(Boolean) : [];
       if (!list.length) return this.clearBenchTargets();
@@ -1113,6 +1132,30 @@
       }
       this.selectedBenchId = (selectedId === undefined || selectedId === null) ? '' : safeString(selectedId);
       this._clearChildren(strip);
+      /* A bench pick retargets EVERY move bar, so the strip has to say what the bars are
+       * pointing at. Without this caption the numbers look like they are for the active body,
+       * and a defensive Garchomp's 10-12% reads as a wrong prediction for Serperior. */
+      const benchTarget = (previewTarget && previewTarget.isActive === false) ? previewTarget : null;
+      if (benchTarget) {
+        const caption = this._el('div', 'st-bench-caption',
+          'Preview against ' + safeString(benchTarget.species));
+        if (caption) {
+          if (typeof strip.appendChild === 'function') strip.appendChild(caption);
+          if (strip.setAttribute) strip.setAttribute('data-st-preview-target', safeString(benchTarget.species));
+        }
+      } else if (strip.setAttribute) {
+        strip.removeAttribute && strip.removeAttribute('data-st-preview-target');
+      }
+      if (benchTarget) {
+        const reset = this._el('button', 'st-preview-reset', 'Return to active');
+        if (reset) {
+          reset.setAttribute && reset.setAttribute('type', 'button');
+          reset.addEventListener && reset.addEventListener('click', function () { this.benchTapped(this.selectedBenchId); }.bind(this));
+          strip.appendChild(reset);
+        }
+      }
+      const rosterLabel = this._el('div', 'st-roster-label', 'Opponent');
+      if (rosterLabel) strip.appendChild(rosterLabel);
       const count = Math.min(list.length, cap > 0 ? cap : list.length);
       for (let i = 0; i < count; i++) {
         const target = list[i];
@@ -1152,7 +1195,10 @@
         }
         const details = this._el('span', 'st-bench-details');
         const name = this._el('span', 'st-bench-name', species);
-        const health = this._el('span', 'st-bench-health', hp + '%');
+        // The active body is tagged IN its own line. The old absolute "ACTIVE" chip sat on
+        // top of the name (it covered the first letters of "Landorus-Therian") and the sprite
+        // underneath it, which is exactly the kind of overlap that reads as a broken HUD.
+        const health = this._el('span', 'st-bench-health', target.fainted ? 'Fainted' : (target.isActive ? 'Active ' : '') + hp + '%');
         const meter = this._el('span', 'st-bench-meter');
         const fill = this._el('span', 'st-bench-meter-fill');
         if (fill && fill.style) fill.style.width = U.clamp(hp, 0, 100) + '%';
@@ -1164,7 +1210,8 @@
           pill.appendChild(details);
         }
         if (pill.setAttribute) {
-          pill.setAttribute('aria-label', 'Preview our moves against ' + species + ', ' + hp + '% HP');
+          pill.setAttribute('aria-label', (target.isActive ? 'Active opponent ' : target.fainted ? 'Fainted opponent ' : 'Preview our moves against ') + species + ', ' + hp + '% HP');
+          if (!target.fainted && !target.isActive) pill.setAttribute('aria-pressed', id === this.selectedBenchId ? 'true' : 'false');
           pill.setAttribute('title', species + ' · ' + hp + '% HP');
         }
         if (target.fainted) this._addClass(pill, 'st-fainted');
@@ -1197,6 +1244,7 @@
      * system (the harness's fake element has no dispatch).
      */
     benchTapped(id) {
+      this._inspectedId = safeString(id);
       this.selectedBenchId = safeString(id);
       if (typeof this.options.onBenchTap === 'function') {
         try { this.options.onBenchTap(this.selectedBenchId); return true; }
@@ -1272,6 +1320,67 @@
       const row = this._nodes.badgeRow || this._qs('.st-badge-row');
       this._nodes.badgeRow = null;
       return this._dropNode(row);
+    }
+
+    /* --------------------------------------------------------- opponent scout */
+
+    /**
+     * renderScoutLog(entries) -> the card element (or null).
+     *
+     * The observation ledger: one row per revealed opponent with the moves it has actually
+     * used, the item it has actually shown and the ability it has actually revealed. This is
+     * deliberately NOT a candidate-set summary — the player needs the facts the battle has
+     * printed, not another probability. `null` or an empty list removes the card.
+     *
+     * entries = [{ species, hpPercent, fainted, isActive, moves: [], item, suspectedItem, ability }]
+     */
+    renderScoutLog(entries) {
+      if (!this._document()) return null;
+      const list = Array.isArray(entries) ? entries.filter(Boolean) : [];
+      if (!list.length) return this.clearScoutLog();
+      let card = this._nodes.scout || this._qs('.st-scout-card');
+      if (!card) {
+        card = this._el('details', 'st-scout-card');
+        if (!card) return null;
+        if (card.setAttribute) card.setAttribute(SCOUT_ATTR, '1');
+        card = this._mountBand(card);
+      }
+      this._nodes.scout = card;
+      this._clearChildren(card);
+      this._appendChild(card, this._el('summary', 'st-scout-head', 'Scouting notes'));
+      for (let i = 0; i < list.length; i++) {
+        const e = list[i];
+        const row = this._el('div', 'st-scout-row');
+        if (!row) continue;
+        if (e.isActive) this._addClass(row, 'st-scout-active');
+        const head = this._el('div', 'st-scout-name');
+        if (head) {
+          head.textContent = safeString(e.species) +
+            (e.fainted ? ' / FAINTED' : ' / ' + roundPct(e.hpPercent) + '%') +
+            (e.isActive ? ' / ACTIVE' : '');
+          this._appendChild(row, head);
+        }
+        const line = function (self, label, value, cls) {
+          if (!value) return;
+          const el = self._el('div', 'st-scout-line' + (cls ? ' ' + cls : ''));
+          if (!el) return;
+          el.textContent = label + ' ' + value;
+          self._appendChild(row, el);
+        };
+        line(this, 'MOVES', (e.moves || []).join(' · '), 'st-scout-moves');
+        if (e.item) line(this, 'ITEM', e.item, 'st-scout-item');
+        else if (e.suspectedItem) line(this, 'ITEM?', e.suspectedItem, 'st-scout-item');
+        line(this, 'ABILITY', e.ability, 'st-scout-ability');
+        if (!row.children || !row.children.length) continue;
+        this._appendChild(card, row);
+      }
+      return card;
+    }
+
+    clearScoutLog() {
+      const card = this._nodes.scout || this._qs('.st-scout-card');
+      this._nodes.scout = null;
+      return this._dropNode(card);
     }
 
     /* ------------------------------------------------------ the match receipt */
@@ -1370,265 +1479,548 @@
       return el;
     }
 
-    /* -------------------------------------- PP-stall gauge & format sentinel */
-
-    /**
-     * _touchOffset(doc) -> the HUD's own touch-target size in px.
-     * Read back out of the cascade so the lift arithmetic below and overlay.css can never
-     * disagree about what `--st-touch` is today. `--st-touch` is a static 48px in the
-     * stylesheet and config.js never touches it, but the value is not hard-coded here on
-     * purpose: a second copy of the number is a second place for it to drift.
-     */
-    _touchOffset(doc) {
-      const view = doc && doc.defaultView ? doc.defaultView :
-        (typeof window !== 'undefined' ? window : null);
-      if (view && typeof view.getComputedStyle === 'function') {
-        try {
-          const raw = view.getComputedStyle(doc.documentElement).getPropertyValue('--st-touch');
-          const n = parseFloat(raw);
-          if (n === n && n > 0) return n;
-        } catch (e) { /* no cascade (Node harness) */ }
-      }
-      return 48;
-    }
-
-    /**
-     * _syncControlBar(doc) -> the lift the bottom band needs, in px (0 = none).
-     *
-     * Showdown's own control bar is the one piece of page furniture the HUD's bottom band
-     * shares pixels with, and where it lives is client-specific:
-     *
-     *   classic  `.battle-controls { position: absolute; top: 370px }` — measured live at
-     *            411x891 it occupies 297..402, and the screen below it is empty. The hundred
-     *            or so pixels of HUD pinned to the viewport bottom are in clear air.
-     *   new      `.battle-log .battle-controls { top: 0; position: static; width: auto }` —
-     *            the move bar RIDES INSIDE the scrollable battle log, so its Y is a function
-     *            of the log's scrollTop. Measured live with the log at rest it occupies
-     *            688..792 out of 891 — exactly where the HUD pins its bottom band.
-     *
-     * With no correction the bench strip (774..835 by measurement) sits on the bar's bottom
-     * 18px: the PP half of the move buttons goes dark and the strip, which is a live
-     * tappable element, swallows the taps that were meant for those buttons. That is the
-     * worst place for the two to collide, because the whole point of the strip is to be
-     * used while the move buttons are on screen.
-     *
-     * The lift is published as `--st-band-lift`, which overlay.css adds to the three
-     * bottom-anchored offsets. Absent var = 0px, so lobbies, the classic client and every
-     * headless test keep today's layout byte for byte.
-     *
-     * The overlap probe deliberately reads the UN-LIFTED geometry (`vh - touch - pad -
-     * height`), never the elements' live rects: after a lift, the live rects would report
-     * "no overlap" and snap the band back down, then back up, on the next scroll tick.
-     * Height is lift-independent, so measuring it is safe.
-     */
-    _syncControlBar(doc) {
-      const reset = function () {
-        doc.documentElement.style.setProperty('--st-band-lift', '0px');
-        doc.documentElement.style.setProperty('--st-controls-top', '0px');
-        doc.documentElement.style.setProperty('--st-controls-bottom', '0px');
-        if (doc.documentElement.dataset) delete doc.documentElement.dataset.stBandLifted;
-        return 0;
-      };
-      const view = doc.defaultView || (typeof window !== 'undefined' ? window : null);
-      const vh = (view && typeof view.innerHeight === 'number') ? view.innerHeight : 0;
-      const bar = this._qs('.battle-controls');
-      if (!bar || !vh || typeof bar.getBoundingClientRect !== 'function') return reset();
-
-      const rect = bar.getBoundingClientRect();
-      // A lobby, a team builder, or a bar that has scrolled clean off the screen: no page
-      // furniture down here, so the band belongs at the viewport bottom. `top <= 0` also
-      // covers the degenerate rect the Node harness returns (top 0, height 50).
-      if (!rect || rect.top !== rect.top || rect.height <= 0 || rect.top <= 0 || rect.top >= vh) return reset();
-      const top = Math.round(rect.top);
-      const bottom = Math.round(rect.bottom);
-
-      // Published for auditability: `getComputedStyle(documentElement)` answers "where did
-      // Showdown put its controls, and did the HUD move out of the way?" without a debugger.
-      doc.documentElement.style.setProperty('--st-controls-top', top + 'px');
-      doc.documentElement.style.setProperty('--st-controls-bottom', bottom + 'px');
-
-      // The bench strip is the lowest block the HUD pins to the bottom (`--st-touch + 8`) and
-      // the only one of the three that is mounted on every turn of a real battle, so it is
-      // the probe. 61px is a measured fallback for "one row of 48px pills + 12px padding +
-      // 1px border"; the real height is read off the node when it is mounted.
-      const strip = this._qs('.st-bench-strip');
-      const stripRect = (strip && typeof strip.getBoundingClientRect === 'function')
-        ? strip.getBoundingClientRect() : null;
-      const stripH = (stripRect && stripRect.height) ? stripRect.height : 61;
-      const bottomEdge = vh - (this._touchOffset(doc) + 8);   // the strip's bottom at NO lift
-      const stripTop = bottomEdge - stripH;                   // ...and therefore its top
-      const overlaps = stripTop < bottom && bottomEdge > top;
-      const lift = overlaps ? Math.round(bottomEdge - (top - 4)) : 0;
-
-      doc.documentElement.style.setProperty('--st-band-lift', (lift > 0 ? lift : 0) + 'px');
-      // The bench strip's real height, published so the TR chip can stack ABOVE it instead of
-      // painting over the pills. Measured: the chip's 33px body sat squarely on the strip's
-      // 48px pills, hiding the lower two thirds of every pill text and both touch targets.
-      doc.documentElement.style.setProperty('--st-strip-h', Math.round(stripH) + 'px');
-      if (doc.documentElement.dataset) {
-        if (lift > 0) doc.documentElement.dataset.stBandLifted = '1';
-        else delete doc.documentElement.dataset.stBandLifted;
-      }
-      return lift > 0 ? lift : 0;
-    }
-
-    /**
-     * _syncChipBand() -> the chip band's measured bottom in px (or null).
-     * Every block in the chip band is an independently `position: fixed` node, so no block can
-     * stack itself under its neighbours in CSS — and the badge row is content-driven: at phone
-     * width three badges wrap to ~56px and reach 102px, which is below the offset a static
-     * stylesheet can assume. So the two readouts below the band measure the band's real bottom
-     * and publish it as `--st-chip-bottom`, which overlay.css consumes with a static fallback
-     * for the case where the stylesheet loads without this file having run. Fixed elements use
-     * viewport coordinates, so the rect's bottom is directly comparable to a `top` offset.
-     *
-     * Also publishes `--st-battle-top`: the top of Showdown's own `.battle` container, which
-     * is the room tab bar's bottom on mobile (≈56 px) and a hair under the topbar on the new
-     * client (≈30 px). The banner consumes it as its own `top` so the status strip sits just
-     * above the arena instead of painting over the menu and the room tabs. The measurement is
-     * done here (and in `_ensureBanner`) rather than on every render so a player scrolling the
-     * battle log can't drag the banner with them; the values are re-read on resize via the
-     * listener installed in `bindDrawer`.
-     */
     _syncChipBand() {
       const doc = this._document();
       if (!doc || !doc.documentElement) return null;
-      // The panel is only mounted where a panel belongs: a battle. This runs BEFORE the
-      // CSS-var guard below and before any measurement, because the gate has to hold even on a
-      // document where publishing custom properties is impossible (the Node harness's stub
-      // element has no `style.setProperty`) — an unmounted panel must not depend on the var bus.
       this._syncPageKind();
-      if (!doc.documentElement.style ||
-          typeof doc.documentElement.style.setProperty !== 'function') return null;
-      // NOTE: the band is the chrome ABOVE the arena, so the top-band elements (banner,
-      // overlord, badge row, deduction badges) define its bottom. `.st-lethal-bar` is INTENTIONALLY
-      // excluded: it lives inside Showdown's own move buttons at the bottom of the screen, and
-      // including it makes the band get dragged down to the move buttons (measured: chip-bottom
-      // jumped to 591 px on the new client once lethal bars were rendered, parking the PP gauge
-      // and sentinel on top of the move menu).
-      const sels = ['.tactician-banner', '.st-overlord-gauge', '.st-badge-row',
-        '.st-deduction-badges'];
-      let bottom = 0;
-      for (let i = 0; i < sels.length; i++) {
-        const el = this._qs(sels[i]);
-        if (!el || typeof el.getBoundingClientRect !== 'function') continue;
-        const rect = el.getBoundingClientRect();
-        if (!rect || !(rect.bottom === rect.bottom)) continue;
-        if (rect.bottom > bottom) bottom = rect.bottom;
-      }
-      const px = Math.round(bottom);
-      doc.documentElement.style.setProperty('--st-chip-bottom', px + 'px');
-
-      // The bottom band's clearance from Showdown's own control bar. NOT keyed to the
-      // viewport: on the new client the move bar rides inside the scrollable battle log, so
-      // its Y is a function of the log's scrollTop (see _syncControlBar).
-      this._syncControlBar(doc);
-
-      // The top of the visible battle content. The classic client renders the room tab bar
-      // (and the topbar) ABOVE the battle container, so the banner should sit at `.battle.top`,
-      // not at the viewport's `top: 0` (which would cover the menu and the room tabs). Lobbies
-      // and the spec harness don't have a `.battle`, so the var is left unset and the CSS
-      // falls back to 0 px — i.e. the original "pinned to the viewport top" behavior.
-      //
-      // The measurement is re-taken ONLY when the viewport changes size. The new client is one
-      // long vertical scroll and `.battle` scrolls with it, so re-measuring on every render
-      // would drag the banner up a few pixels every time the player scrolled the log. The
-      // chrome height only changes on resize/rotate, and that is exactly what the key catches.
-      const view = doc.defaultView || (typeof window !== 'undefined' ? window : null);
-
-      // The mobile sheet is docked directly above the always-on bottom band (the TR chip and
-      // the bench strip). Publishing the band's LIVE top edge as --st-band-top is what makes
-      // the dock honest: both nodes are `position: fixed` with a lift-dependent offset, and
-      // the strip is taller than the chip, so a formula built from either one alone would
-      // let an expanded sheet swallow the bench pills (measured: 25px of overlap). Re-measured
-      // on every call, NOT gated on the layout key, because the new client scrolls `.battle`
-      // and the band lift moves with the log.
-      const bandTop = this._bottomBandTop(doc);
-      if (bandTop) {
-        doc.documentElement.style.setProperty('--st-band-top', bandTop + 'px');
-      }
-      const battleEl = this._qs('.battle');
-      if (bandTop && battleEl && typeof battleEl.getBoundingClientRect === 'function') {
-        const b2 = battleEl.getBoundingClientRect();
-        if (b2 && b2.bottom === b2.bottom && b2.bottom > 0) {
-          doc.documentElement.style.setProperty('--st-arena-bottom', Math.round(b2.bottom) + 'px');
-          // bandTop - arenaBottom - the 6px sheet gap - an 8px safety margin.
-          let max = bandTop - Math.round(b2.bottom) - 14;
-          // Showdown's own control bar is sometimes ABOVE the bottom band (classic client:
-          // the bar sits mid-page and the band rides the viewport bottom). An expanded sheet
-          // must not cover the move buttons either, so clamp to that when it binds.
-          const bar = this._qs('.battle-controls');
-          if (bar && typeof bar.getBoundingClientRect === 'function') {
-            const cb = bar.getBoundingClientRect().bottom;
-            if (cb && cb === cb && cb > 0 && cb < bandTop) {
-              max = Math.min(max, bandTop - Math.round(cb) - 14);
-            }
-          }
-          doc.documentElement.style.setProperty('--st-sheet-max', Math.max(max, 56) + 'px');
-        }
-      }
-
-      const key = (view && typeof view.innerWidth === 'number')
-        ? (view.innerWidth + 'x' + view.innerHeight) : '';
-      if (key && key === this._layoutKey) return px;
-      this._layoutKey = key;
-
-      const battle = this._qs('.battle');
-      if (battle && typeof battle.getBoundingClientRect === 'function') {
-        const br = battle.getBoundingClientRect();
-        if (br && br.top === br.top && br.top > 0) {
-          doc.documentElement.style.setProperty('--st-battle-top', Math.round(br.top) + 'px');
-          // The whole chip band is a stack of `position: fixed` nodes pinned to the banner. In
-          // the original (viewport-top) layout the overlord pill and the badge row sit on top
-          // of / just below the banner, which is the intended visual. Once the banner moves
-          // down to `.battle.top` those offsets still point at 18/46 px and the band ends up
-          // straddling the banner. Mark the document so the stylesheet re-anchors the band to
-          // the new banner position; the attribute is only set when a real battle is mounted,
-          // so lobbies and tests keep the original offsets. Guarded: the Node harness's stub
-          // element has no `dataset`, and an unguarded write there is a TypeError.
-          if (doc.documentElement.dataset) doc.documentElement.dataset.stBandAnchored = '1';
-        }
-      }
-      return px;
+      this._syncPlacement();
+      return 0;
     }
 
-    /**
-     * _syncPageKind() -> 'battle' | 'idle', published as `data-st-page`.
-     * The dock the console occupies is measured from Showdown's battle chrome, so the panel
-     * only exists where a battle does. Off-battle (the home page, the lobby, the team
-     * builder, the options page) the same 624x834 fixed panel lands squarely on the news
-     * feed and the left menu — measured on the home page at 1440x900: 242k px of
-     * `.leftmenu` and 517k px of the room, with every menu button underneath it and
-     * `pointer-events` swallowing every click ("I can't press through it"). So the
-     * container is hidden outright and only the TAC/mode launchers remain.
-     *
-     * Showdown is a single-page app, so a battle can appear and vanish without a reload;
-     * this is re-evaluated from the same heartbeat that re-renders the banner (2.5s) and
-     * again on every resize, scroll and layout flip.
-     */
+    _restoreControls() {
+      const held = this._scrollControls;
+      if (!held) return;
+      held.node.style.maxHeight = held.maxHeight;
+      held.node.style.overflowY = held.overflowY;
+      this._scrollControls = null;
+    }
+
+    _restoreLog() {
+      const held = this._dockLog;
+      if (!held) return;
+      for (const item of [held].concat(held.extra || [])) {
+        for (const key of Object.keys(item.styles)) item.node.style[key] = item.styles[key];
+      }
+      this._dockLog = null;
+    }
+
+    _syncPlacement() {
+      const doc = this._document();
+      if (!doc || !doc.documentElement || !doc.documentElement.style || !doc.documentElement.style.setProperty) return;
+      const view = doc.defaultView || window;
+      const root = this._battleRoot();
+      const arena = this._qs('.battle', root);
+      const controls = this._controls();
+      if (!arena || !controls || !arena.getBoundingClientRect) { this._restoreLog(); this._restoreControls(); return; }
+      const viewport = view.visualViewport;
+      doc.documentElement.style.setProperty('--st-viewport-top', (viewport ? viewport.offsetTop : 0) + 'px');
+      doc.documentElement.style.setProperty('--st-viewport-left', (viewport ? viewport.offsetLeft : 0) + 'px');
+      const controlStyle = view.getComputedStyle(controls);
+      if (controlStyle.position === 'absolute' || controlStyle.position === 'fixed') {
+        if (this._scrollControls && this._scrollControls.node !== controls) this._restoreControls();
+        if (!this._scrollControls) this._scrollControls = { node: controls, maxHeight: controls.style.maxHeight, overflowY: controls.style.overflowY };
+        const viewport = view.visualViewport;
+        const height = viewport ? viewport.height : view.innerHeight;
+        const top = controls.getBoundingClientRect().top;
+        controls.style.maxHeight = Math.max(48, height - Math.max(0, top) - 12) + 'px';
+        controls.style.overflowY = 'auto';
+      } else this._restoreControls();
+      const ar = arena.getBoundingClientRect();
+      const rr = root && root.getBoundingClientRect ? root.getBoundingClientRect() : null;
+      let right = Math.min(view.innerWidth, rr && rr.width > 0 ? rr.right : view.innerWidth);
+      const other = this._qs('#showdex-root, #showdex');
+      if (other && other.getBoundingClientRect) {
+        const rect = other.getBoundingClientRect();
+        if (rect.width >= 200 && rect.width < view.innerWidth * .7 && rect.height > 150 && rect.left > ar.right) right = Math.min(right, rect.left);
+      }
+      const panel = this._nodes.console;
+      const panelWidth = panel && panel.style.width ? U.clamp(parseFloat(panel.style.width) || 344, 304, 480) : Math.min(424, Math.max(344, right - ar.right - 216));
+      doc.documentElement.style.setProperty('--st-panel-width', panelWidth + 'px');
+      const space = right - ar.right;
+      const side = this.resolvedLayout === 'desktop' && space >= panelWidth + 216;
+      doc.documentElement.setAttribute('data-st-dock', side ? 'side' : 'inline');
+      const visible = view.visualViewport;
+      doc.documentElement.style.setProperty('--st-visible-height', (visible ? visible.height : view.innerHeight) + 'px');
+      doc.documentElement.style.setProperty('--st-dock-top', Math.max(8, ar.top) + 'px');
+      doc.documentElement.style.setProperty('--st-dock-right', Math.max(8, view.innerWidth - right + 8) + 'px');
+      if (panel) {
+        if (side) {
+          if (panel.parentNode !== doc.body) doc.body.appendChild(panel);
+          const log = this._qs('.battle-log', root);
+          if (this._dockLog && this._dockLog.node !== log) this._restoreLog();
+          if (log && view.getComputedStyle(log).position === 'absolute') {
+            if (!this._dockLog) this._dockLog = { node: log, styles: { right: log.style.right, width: log.style.width } };
+            log.style.right = (panelWidth + 16) + 'px';
+            log.style.width = 'auto';
+            if (!this._dockLog.extra) this._dockLog.extra = [];
+            for (const node of this._qsa('.battle-log-add, .chat-log-add, .battle-userlist, .userlist', root)) {
+              if (view.getComputedStyle(node).position !== 'absolute') continue;
+              if (node.getBoundingClientRect().left < ar.right - 2) continue;
+              if (!this._dockLog.extra.some(function (held) { return held.node === node; })) {
+                this._dockLog.extra.push({ node: node, styles: { right: node.style.right } });
+              }
+              node.style.right = (panelWidth + 16) + 'px';
+            }
+          }
+        } else {
+          this._restoreLog();
+          if (panel.parentNode !== controls) controls.appendChild(panel);
+        }
+      } else this._restoreLog();
+      this._syncModalState(this.resolvedLayout === 'mobile' && this._sheetOpen);
+      if (this.resolvedLayout === 'mobile') {
+        const strip = this._nodes.benchStrip;
+        const menu = this._qs('.movemenu', controls);
+        if (strip && this._sheetOpen && this._nodes.sheet) {
+          if (strip.parentNode !== this._nodes.sheet) this._nodes.sheet.appendChild(strip);
+        } else if (strip && menu && controls.insertBefore && menu.parentNode === controls) {
+          if (strip.parentNode !== controls || strip.nextElementSibling !== menu) controls.insertBefore(strip, menu);
+        } else if (strip && strip.parentNode !== controls) controls.appendChild(strip);
+        const sheet = this._nodes.sheet;
+        const chip = this._nodes.chip;
+        const host = this._sheetOpen && sheet ? sheet : controls;
+        if (chip && chip.parentNode !== host) host.appendChild(chip);
+        if (sheet) {
+          const parent = this._sheetOpen ? doc.body : controls;
+          if (sheet.parentNode !== parent) parent.appendChild(sheet);
+        }
+      }
+      const watched = root || arena;
+      if (view.ResizeObserver && this._layoutRoot !== watched) {
+        if (this._roomResize) this._roomResize.disconnect();
+        this._layoutRoot = watched;
+        this._roomResize = new view.ResizeObserver(function () { this._applyResolvedLayout(); this._syncPlacement(); }.bind(this));
+        this._roomResize.observe(watched);
+      }
+      const toolbar = this._nodes.toolbar;
+      const host = this._nodes.console || this._nodes.sheet;
+      if (toolbar && host && toolbar.parentNode !== host) host.appendChild(toolbar);
+      this._organizeCenter(host);
+    }
+
+    resetControlCenter() {
+      this._centerState = null;
+      this._renderedCenterKey = null;
+      this._centerMeta = {};
+      this._readout = null;
+      this._readoutTurn = null;
+      this._inspectedId = null;
+      this._lastRanked = [];
+    }
+
+    renderControlCenter(state, readout, meta) {
+      if (!state || !this._document()) return;
+      this._centerState = state;
+      this._battleState = state;
+      if (readout !== undefined) this._readout = readout;
+      if (meta) this._centerMeta = meta;
+      const host = this._nodes.console || this._nodes.sheet;
+      if (!host) return;
+      this._ensureCenterNavigation(host);
+      this._renderCenterView();
+      this._organizeCenter(host);
+    }
+
+    _ensureCenterNavigation(host) {
+      let nav = this._nodes.centerNav;
+      if (!nav) {
+        nav = this._el('nav', 'st-center-nav');
+        if (!nav) return;
+        nav.setAttribute && nav.setAttribute('aria-label', 'Control center sections');
+        for (const [id, title, number] of [['battle', 'Battle', '01'], ['intel', 'Intel', '02'], ['field', 'Field', '03'], ['review', 'Review', '04']]) {
+          const button = this._el('button', 'st-center-tab');
+          button.setAttribute && button.setAttribute('type', 'button');
+          button.setAttribute && button.setAttribute('data-st-view-button', id);
+          this._appendChild(button, this._el('span', 'st-nav-number', number));
+          this._appendChild(button, this._el('span', '', title));
+          button.addEventListener && button.addEventListener('click', function () { this.setCenterView(id); }.bind(this));
+          this._appendChild(nav, button);
+        }
+        this._nodes.centerNav = nav;
+      }
+      if (nav.parentNode !== host) this._appendChild(host, nav);
+    }
+
+    setCenterView(view) {
+      if (!['battle', 'intel', 'field', 'review'].includes(view)) return false;
+      this._centerView = view;
+      this._renderCenterView();
+      const host = this._nodes.console || this._nodes.sheet;
+      this._organizeCenter(host);
+      if (host) host.scrollTop = 0;
+      return true;
+    }
+
+    _organizeCenter(host) {
+      if (!host || !this._nodes.centerNav) return;
+      const view = this._centerView || 'battle';
+      host.setAttribute && host.setAttribute('data-st-view', view);
+      const sections = {
+        'st-matchup': 'battle', 'st-action-list': 'battle', 'st-lead-advisory': 'battle', 'st-cancel-alert-card': 'battle',
+        'st-intelligence': 'intel', 'st-scout-card': 'intel',
+        'st-field-board': 'field', 'tactician-banner': 'field', 'st-format-sentinel': 'field',
+        'st-pp-gauge': 'field', 'st-overlord-gauge': 'field', 'st-badge-row': 'field',
+        'st-engine-review': 'review', 'st-receipt-card': 'review'
+      };
+      for (const child of Array.from(host.children || [])) {
+        const names = safeString(child.className).split(/\s+/);
+        const kind = names.map(function (name) { return sections[name]; }).find(Boolean);
+        if (!kind) continue;
+        child.setAttribute && child.setAttribute('data-st-section', kind);
+        child.hidden = kind !== view;
+      }
+      for (const button of this._qsa('[data-st-view-button]', this._nodes.centerNav)) {
+        button.setAttribute('aria-pressed', button.getAttribute('data-st-view-button') === view ? 'true' : 'false');
+      }
+    }
+
+    _centerSection(key, className, label) {
+      let section = this._nodes[key];
+      if (!section) {
+        section = this._el('section', className);
+        if (!section) return null;
+        section.setAttribute && section.setAttribute('aria-label', label);
+        this._nodes[key] = this._mountBand(section);
+      }
+      this._clearChildren(section);
+      return section;
+    }
+
+    _centerHeading(section, index, title, subtitle) {
+      this._appendChild(section, this._el('div', 'st-chapter-number', index));
+      this._appendChild(section, this._el('h2', 'st-chapter-title', title));
+      if (subtitle) this._appendChild(section, this._el('p', 'st-chapter-subtitle', subtitle));
+    }
+
+    _centerPair(parent, label, value, className) {
+      const row = this._el('div', 'st-fact-row' + (className ? ' ' + className : ''));
+      this._appendChild(row, this._el('span', 'st-fact-label', label));
+      this._appendChild(row, this._el('span', 'st-fact-value', value));
+      this._appendChild(parent, row);
+    }
+
+    _centerText(value) {
+      return safeString(value).replace(/\u2014/g, ' / ').replace(/=>/g, ':').replace(/\blaplace\.[a-zA-Z.]+/g, 'engine settings');
+    }
+
+    _renderCenterView() {
+      const state = this._centerState;
+      if (!state) return;
+      if (this.resolvedLayout === 'mobile' && !this._sheetOpen) return;
+      if (this.resolvedLayout === 'desktop' && !this._panelOpen) return;
+      const view = this._centerView || 'battle';
+      const stats = this._centerMeta.stats || {};
+      const key = [view, state.revision, state.turn, this._inspectedId, stats.evaluations, stats.ponders].join('|');
+      if (key === this._renderedCenterKey && this._renderedCenterState === state && this._renderedCenterReadout === this._readout) return;
+      this._renderedCenterKey = key;
+      this._renderedCenterState = state;
+      this._renderedCenterReadout = this._readout;
+      const host = this._nodes.console || this._nodes.sheet;
+      const top = host ? host.scrollTop : 0;
+      const openCandidates = this._qsa('.st-candidate', host).map(function (node) { return [node.getAttribute('data-st-candidate'), node.open]; });
+      const reports = new Map(this._qsa('.st-engine-report', host).map(function (node) { return [node.getAttribute('data-st-report'), node.open]; }));
+      if (view === 'intel') this._renderIntelligence(state);
+      else if (view === 'field') this._renderFieldBoard(state);
+      else if (view === 'review') this._renderEngineReview(state);
+      else this._renderActionList(state);
+      for (const node of this._qsa('.st-candidate', host)) {
+        const held = openCandidates.find(function (item) { return item[0] === node.getAttribute('data-st-candidate'); });
+        if (held) node.open = held[1];
+      }
+      for (const node of this._qsa('.st-engine-report', host)) {
+        const path = node.getAttribute('data-st-report');
+        if (reports.has(path)) node.open = reports.get(path);
+      }
+      if (host) host.scrollTop = top;
+    }
+
+    _renderActionList(state) {
+      const section = this._centerSection('actionList', 'st-action-list', 'Action comparisons');
+      if (!section) return;
+      this._appendChild(section, this._el('h3', 'st-section-title', 'Other lines to consider'));
+      if (state.formatSupported === false) {
+        this._appendChild(section, this._el('p', 'st-empty', 'Analysis is unavailable for this format. Observed battle information remains available in Intel and Field.'));
+        return;
+      }
+      const actions = this._lastRanked || [];
+      if (!actions.length) this._appendChild(section, this._el('p', 'st-empty', 'Action comparisons appear when your next decision arrives.'));
+      for (const action of actions) {
+        const row = this._el('div', 'st-action-row' + (action.isVetoed ? ' st-action-veto' : ''));
+        this._centerPair(row, (action.kind === 'switch' ? 'Switch to ' : '') + safeString(action.name), action.isVetoed ? 'Avoid' : pct(action.confidence));
+        const reason = action.vetoReason || this._lastReasonByMove[U.toID(action.moveId || action.name)];
+        if (reason) this._appendChild(row, this._el('p', 'st-action-reason', this._centerText(reason)));
+        this._appendChild(section, row);
+      }
+      this._appendChild(section, this._el('p', 'st-range-note', 'Percentages describe the engine\'s preference between actions.'));
+    }
+
+    _renderIntelligence(state) {
+      const section = this._centerSection('intelligence', 'st-intelligence', 'Opponent intelligence and set pruning');
+      if (!section) return;
+      this._centerHeading(section, '02 / INTELLIGENCE', 'Opponent intelligence', 'Revealed facts, surviving sets, and the evidence behind each deduction.');
+      const team = (state.oppTeam || []).filter(Boolean);
+      const chosen = team.find(function (mon) { return U.toID(mon.id || mon.species) === this._inspectedId; }, this)
+        || (state.active && state.active.opp) || team[0];
+      const label = this._el('label', 'st-inspector-label', 'Inspect opponent');
+      label && label.setAttribute && label.setAttribute('for', 'st-intel-picker');
+      this._appendChild(section, label);
+      const selector = this._el('select', 'st-intel-selector');
+      if (selector && selector.setAttribute) {
+        selector.setAttribute('id', 'st-intel-picker');
+        selector.setAttribute('data-st-inspector', '1');
+        selector.setAttribute('aria-label', 'Inspect opponent Pokemon');
+      }
+      for (const mon of team) {
+        const option = this._el('option', '', (mon.species || mon.id) + (mon.fainted ? ' / Fainted' : mon.isActive ? ' / Active' : ''));
+        if (option) option.value = U.toID(mon.id || mon.species);
+        this._appendChild(selector, option);
+      }
+      if (selector && chosen) selector.value = U.toID(chosen.id || chosen.species);
+      selector && selector.addEventListener && selector.addEventListener('change', function (event) {
+        this._inspectedId = event.target.value;
+        this._renderCenterView();
+        this._organizeCenter(this._nodes.console || this._nodes.sheet);
+        const selected = this._qs('[data-st-inspector]', this._nodes.intelligence);
+        if (selected && selected.focus) selected.focus({ preventScroll: true });
+      }.bind(this));
+      this._appendChild(section, selector);
+      if (!chosen) { this._appendChild(section, this._el('p', 'st-empty', 'Opponent information appears as Pokemon are revealed.')); return; }
+      this._appendChild(section, this._el('h3', 'st-inspect-name', chosen.species));
+      const sets = Array.isArray(chosen.candidateSets) ? chosen.candidateSets.slice().sort(function (a, b) { return (b.weight || 0) - (a.weight || 0); }) : [];
+      const pool = (this._centerMeta.pools || {})[chosen.id] || {};
+      const total = typeof pool.seeded === 'number' ? pool.seeded : null;
+      const counter = this._el('div', 'st-pool-counter');
+      const hasPool = total !== null || sets.length > 0;
+      this._appendChild(counter, this._el('strong', 'st-pool-number', hasPool ? sets.length : '?'));
+      this._appendChild(counter, this._el('span', 'st-pool-label', hasPool ? (sets.length === 1 ? 'set remaining' : 'sets remaining') + (total === null ? '' : ' / ' + total + ' in the seeded pool') : 'No candidate pool recorded yet'));
+      this._appendChild(section, counter);
+      this._appendChild(section, this._el('h3', 'st-section-title', 'Observed'));
+      this._centerPair(section, 'Item', chosen.confirmedItem || (chosen.itemless ? 'No held item' : 'Unrevealed'));
+      this._centerPair(section, 'Ability', chosen.revealedAbility || 'Unrevealed');
+      this._centerPair(section, 'Moves', (chosen.revealedMoves || []).join(' / ') || 'None revealed');
+      this._centerPair(section, 'Status', chosen.fainted ? 'Fainted' : chosen.status || 'Healthy');
+      this._appendChild(section, this._el('h3', 'st-section-title', 'Recorded deductions'));
+      const notes = [];
+      if (chosen.speedFloor || (chosen.speedEvidence || []).length) notes.push('Speed bracket: ' + (chosen.speedFloor || '?') + ' to ' + (chosen.speedCeiling || '?'));
+      if (chosen.evPinned && chosen.pinnedEvs) notes.push('EV spread consistent across surviving sets: ' + this._evText(chosen.pinnedEvs));
+      for (const key of ['prunedReasons', 'speedEvidence', 'abilityEvidence']) {
+        for (const note of chosen[key] || []) {
+          const text = typeof note === 'string' ? note : note.reason || note.detail || '';
+          if (text && !notes.includes(text)) notes.push(text);
+        }
+      }
+      if (!notes.length) notes.push('Additional deductions appear as the battle reveals more evidence.');
+      if (notes.some(function (note) { return /all candidates eliminated|falling back/i.test(note); })) {
+        this._appendChild(section, this._el('p', 'st-pool-warning', 'The evidence exhausted the candidate pool. A fallback pool is in use; set estimates remain uncertain.'));
+      }
+      const evidence = this._el('ol', 'st-evidence-list');
+      for (const note of notes) this._appendChild(evidence, this._el('li', '', this._centerText(note)));
+      this._appendChild(section, evidence);
+      this._appendChild(section, this._el('h3', 'st-section-title', 'Surviving candidates'));
+      this._appendChild(section, this._el('p', 'st-range-note', 'Candidate details are model estimates. Observed facts are listed above.'));
+      sets.forEach(function (set, i) {
+        const detail = this._el('details', 'st-candidate');
+        detail.setAttribute && detail.setAttribute('data-st-candidate', U.toID(chosen.id || chosen.species) + ':' + safeString(set.id || i));
+        if (i === 0) detail.setAttribute && detail.setAttribute('open', '');
+        const title = String(i + 1).padStart(2, '0') + ' / ' + (set.role || set.id || 'Candidate') + (set.item ? ' / ' + set.item : ' / Itemless');
+        this._appendChild(detail, this._el('summary', '', title));
+        this._centerPair(detail, 'Ability', set.ability || 'Unknown');
+        this._centerPair(detail, 'Nature', set.nature || 'Unknown');
+        this._centerPair(detail, 'EVs', this._evText(set.evs));
+        if (set.ivs) this._centerPair(detail, 'IVs', this._evText(set.ivs));
+        this._centerPair(detail, 'Moves', (set.moves || []).join(' / ') || 'Unknown');
+        this._appendChild(section, detail);
+      }, this);
+      if (!sets.length) this._appendChild(section, this._el('p', 'st-empty', 'A candidate pool has not been recorded for this Pokemon.'));
+    }
+
+    _evText(evs) {
+      if (!evs) return 'Unknown';
+      const labels = { hp: 'HP', atk: 'Atk', def: 'Def', spa: 'SpA', spd: 'SpD', spe: 'Spe' };
+      return Object.keys(labels).filter(function (key) { return typeof evs[key] === 'number'; })
+        .map(function (key) { return evs[key] + ' ' + labels[key]; }).join(' / ') || 'Unknown';
+    }
+
+    _renderFieldBoard(state) {
+      const section = this._centerSection('fieldBoard', 'st-field-board', 'Field conditions and battle pressure');
+      if (!section) return;
+      const field = state.field || {};
+      this._centerHeading(section, '03 / FIELD', 'Field conditions', 'Timers and conditions come from the observed battle state.');
+      const turn = this._el('div', 'st-turn-register');
+      this._appendChild(turn, this._el('span', '', 'TURN'));
+      this._appendChild(turn, this._el('strong', '', String(state.turn || 0).padStart(2, '0')));
+      this._appendChild(section, turn);
+      this._centerPair(section, 'Trick Room', field.trickRoom ? safeString(field.trickRoomTurnsLeft) + ' turns remaining' : 'Inactive');
+      this._centerPair(section, 'Weather', field.weather ? field.weather + (typeof field.weatherTurnsLeft === 'number' ? ' / ' + field.weatherTurnsLeft + ' turns' : ' / duration unknown') : 'Clear');
+      this._centerPair(section, 'Terrain', field.terrain ? field.terrain + (typeof field.terrainTurnsLeft === 'number' ? ' / ' + field.terrainTurnsLeft + ' turns' : ' / duration unknown') : 'None');
+      this._centerPair(section, 'Gravity', field.gravity ? 'Active' : 'Inactive');
+      for (const [side, name] of [[state.mySide || 'p1', 'Your side'], [state.oppSide || 'p2', 'Opponent side']]) {
+        this._appendChild(section, this._el('h3', 'st-section-title', name));
+        const hazards = (field.hazards || {})[side] || {};
+        const screens = (field.screens || {})[side] || {};
+        const labels = { rocks: 'Stealth Rock', spikes: 'Spikes', toxicspikes: 'Toxic Spikes', stickyweb: 'Sticky Web', steelspikes: 'Steel Spikes' };
+        const active = Object.keys(labels).filter(function (key) { return hazards[key]; }).map(function (key) { return labels[key] + (typeof hazards[key] === 'number' ? ' (' + hazards[key] + ')' : ''); });
+        this._centerPair(section, 'Hazards', active.join(' / ') || 'None');
+        const screenNames = { reflect: 'Reflect', lightscreen: 'Light Screen', auroraveil: 'Aurora Veil' };
+        this._centerPair(section, 'Screens', Object.keys(screenNames).filter(function (key) { return screens[key]; }).map(function (key) { return screenNames[key]; }).join(' / ') || 'None');
+        this._centerPair(section, 'Tailwind', field.tailwind && field.tailwind[side] ? 'Active' : 'Inactive');
+        for (const [key, label] of [['delayedMoves', 'Incoming delayed move'], ['wish', 'Pending Wish']]) {
+          const pending = field[key] && field[key][side];
+          if (pending) this._report(section, label, pending, 0);
+        }
+      }
+      const tempo = this._readout && this._readout.tempo;
+      if (tempo) {
+        this._appendChild(section, this._el('h3', 'st-section-title', 'Engine pressure estimates'));
+        const labels = { v1: 'Trick Room urgency', v2: 'Board initiative', v3: 'Consecutive Protect decay', v4: 'Protect / stall tendency', v5: 'Threat difference', v6: 'Switch pressure', v7: 'Passive chip difference', v8: 'Setter health', v9: 'Win condition health', v10: 'Trick Room turn cost' };
+        for (const key of Object.keys(labels)) {
+          if (typeof tempo[key] === 'number') this._centerPair(section, labels[key], U.round2(tempo[key]));
+        }
+      }
+    }
+
+    _report(parent, label, value, depth) {
+      if (value === undefined || value === null) {
+        this._centerPair(parent, label, 'No report for this turn');
+        return;
+      }
+      if (typeof value !== 'object') {
+        this._centerPair(parent, label, typeof value === 'boolean' ? (value ? 'Yes' : 'No') : this._centerText(value));
+        return;
+      }
+      const detail = this._el('details', 'st-engine-report');
+      const parentPath = parent.getAttribute ? parent.getAttribute('data-st-report') || '' : '';
+      detail.setAttribute && detail.setAttribute('data-st-report', parentPath + '/' + label);
+      this._appendChild(detail, this._el('summary', '', label));
+      if (depth > 4) { this._appendChild(detail, this._el('p', '', 'Additional search branches are represented by the parent summary.')); this._appendChild(parent, detail); return; }
+      const names = { enabled: 'Enabled', solved: 'Solved', isMate: 'Forced win proved', principalVariation: 'Principal line', pv: 'Principal line', targetSpecies: 'Target', targetId: 'Target', kind: 'Action', freq: 'Frequency', elapsedMs: 'Search time (ms)', observed: 'Replies observed', samples: 'Samples', switchFactor: 'Switch model adjustment', worlds: 'Set combinations', nodes: 'Positions searched', reason: 'Reason', label: 'Assessment', lowerBound: 'Lower bound', upperBound: 'Upper bound', gain: 'Information gain', bits: 'Uncertainty (bits)', score: 'Evaluation', tau: 'Response softness', weight: 'Model weight' };
+      const entries = Object.entries(value);
+      if (!entries.length) this._appendChild(detail, this._el('p', 'st-empty', 'No data recorded.'));
+      for (const [key, item] of entries) {
+        if (key === 'dims' || key === 'weights' || key === 'matrix' || key === 'worlds') continue;
+        const title = Array.isArray(value) ? (item && (item.name || item.species || item.move)) || 'Line ' + (Number(key) + 1)
+          : names[key] || key.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/^./, function (c) { return c.toUpperCase(); });
+        this._report(detail, safeString(title), item, depth + 1);
+      }
+      this._appendChild(parent, detail);
+    }
+
+    _renderEngineReview(state) {
+      const section = this._centerSection('engineReview', 'st-engine-review', 'Engine reasoning and search reports');
+      if (!section) return;
+      this._centerHeading(section, '04 / REVIEW', 'Decision record', 'Inspect the models, searches, and evidence used for this decision.');
+      const readout = this._readout;
+      if (!readout || state.formatSupported === false) { this._appendChild(section, this._el('p', 'st-empty', 'Search reports appear after a supported decision is evaluated.')); return; }
+      this._centerPair(section, 'Decision recorded', typeof this._readoutTurn === 'number' ? 'Turn ' + this._readoutTurn : 'Current decision');
+      this._centerPair(section, 'Evaluation passes', this._centerMeta.stats && this._centerMeta.stats.evaluations !== undefined ? this._centerMeta.stats.evaluations : 'Unknown');
+      this._centerPair(section, 'Set combinations sampled', (readout.worlds || []).length);
+      this._centerPair(section, 'Evaluation time', typeof readout.elapsedMs === 'number' ? readout.elapsedMs + ' ms' : 'Unknown');
+      const reports = [
+        ['Opponent action mix', readout.oppStrategy], ['Ranked action evaluations', readout.ranked], ['Opponent tendencies', readout.profile],
+        ['Information gained by scouting', readout.scouting], ['Win condition / blocker', readout.wincon],
+        ['Endgame search', readout.endgame], ['Two-turn search', readout.beam2Ply],
+        ['Opponent timing', state.clock], ['Clock prior', readout.clock], ['Deeper pass', this._centerMeta.ponder],
+        ['Response model', readout.qre], ['Surprise model', readout.surpriseMask], ['Opponent prior', readout.nashPrior],
+        ['Exploit adjustment', readout.exploitBlend], ['Forced-win promotion', readout.matePromotion]
+      ];
+      for (const [label, value] of reports) this._report(section, label, value, 0);
+    }
+
+    _syncModalState(open) {
+      const doc = this._document();
+      if (!doc || !doc.body) return;
+      const currentRoot = this._battleRoot() || this._controls();
+      if (open && this._modalHeld && this._modalHeld.root !== currentRoot) this._syncModalState(false);
+      if (open && !this._modalHeld) {
+        const root = this._battleRoot() || this._controls();
+        this._modalHeld = { root: root, inert: root ? root.inert : false, overflow: doc.body.style.overflow };
+        if (root) root.inert = true;
+        doc.body.style.overflow = 'hidden';
+      } else if (!open && this._modalHeld) {
+        const held = this._modalHeld;
+        if (held.root) held.root.inert = held.inert;
+        doc.body.style.overflow = held.overflow || '';
+        this._modalHeld = null;
+      }
+      const sheet = this._nodes.sheet;
+      if (sheet && sheet.setAttribute) {
+        sheet.setAttribute('role', open ? 'dialog' : 'region');
+        sheet.setAttribute('aria-label', open ? 'Tactician control center' : 'Open Tactician control center');
+        if (open) sheet.setAttribute('aria-modal', 'true');
+        else if (sheet.removeAttribute) sheet.removeAttribute('aria-modal');
+      }
+    }
+
+    _trapCenterFocus(event) {
+      const sheet = this._nodes.sheet;
+      if (!sheet || !sheet.querySelectorAll) return;
+      const items = Array.from(sheet.querySelectorAll('button, summary, textarea, input, select, [tabindex="0"]')).filter(function (node) { return !node.disabled && (!node.getClientRects || node.getClientRects().length); });
+      if (!items.length) return;
+      const first = items[0], last = items[items.length - 1];
+      const active = this._document().activeElement;
+      if (!items.includes(active)) { event.preventDefault(); first.focus(); }
+      else if (event.shiftKey && active === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && active === last) { event.preventDefault(); first.focus(); }
+    }
+
+    _renderMatchup(preview) {
+      let section = this._nodes.matchup;
+      if (!preview || !preview.target) {
+        this._nodes.matchup = null;
+        this._dropNode(section);
+        return;
+      }
+      if (!section) {
+        section = this._el('section', 'st-matchup');
+        if (!section) return;
+        section.setAttribute && section.setAttribute('aria-label', 'Matchup and damage comparison');
+        this._nodes.matchup = this._mountBand(section);
+      }
+      this._clearChildren(section);
+      const state = this._battleState || {};
+      const pick = (this._lastRanked || []).find(function (a) { return !a.isVetoed; });
+      if (pick && state.formatSupported !== false) {
+        this._appendChild(section, this._el('div', 'st-eyebrow', preview.target.isActive === false ? 'Suggested play against active opponent' : 'Suggested play'));
+        this._appendChild(section, this._el('div', 'st-play-name', (pick.kind === 'switch' ? 'Switch to ' : '') + safeString(pick.name || pick.species || pick.moveId)));
+        const reason = this._lastReasonByMove[U.toID(pick.moveId || pick.name)] || pick.reason || pick.vetoReason || '';
+        if (reason) this._appendChild(section, this._el('p', 'st-play-reason', reason));
+      }
+      const mine = state.active && state.active.my;
+      this._appendChild(section, this._el('div', 'st-eyebrow st-matchup-heading', preview.target.isActive === false ? 'Damage preview' : 'Current matchup'));
+      this._appendChild(section, this._el('div', 'st-matchup-name', (mine ? safeString(mine.species) + ' vs ' : 'Against ') + safeString(preview.target.species)));
+      const headings = this._el('div', 'st-damage-head');
+      for (const label of ['Your move', 'Damage', 'KO chance']) this._appendChild(headings, this._el('span', '', label));
+      this._appendChild(section, headings);
+      for (const line of preview.lines || []) {
+        const row = this._el('div', 'st-damage-row');
+        row.setAttribute && row.setAttribute('data-st-range', U.toID(line.moveId || line.name));
+        this._appendChild(row, this._el('span', 'st-damage-name', line.name || line.moveId));
+        const range = typeof line.minPercent === 'number' && typeof line.maxPercent === 'number'
+          ? roundPct(line.minPercent) + ' - ' + roundPct(line.maxPercent) + '%' : 'Unavailable';
+        this._appendChild(row, this._el('span', 'st-damage-range', range));
+        this._appendChild(row, this._el('span', 'st-damage-ko', typeof line.koChancePct === 'number' ? roundPct(line.koChancePct) + '%' : 'Unknown'));
+        this._appendChild(section, row);
+      }
+      this._appendChild(section, this._el('p', 'st-range-note', 'Ranges use the current set estimate. Scouting notes show revealed facts.'));
+      this._syncPlacement();
+    }
+
     _syncPageKind() {
       const doc = this._document();
       if (!doc || !doc.documentElement) return this._pageKind || 'idle';
       const kind = this._hasBattle() ? 'battle' : 'idle';
       if (kind === this._pageKind) return kind;
+      if (kind === 'idle' && this._sheetOpen) { this._sheetOpen = false; this._syncModalState(false); if (this._nodes.sheet) this._nodes.sheet.setAttribute('data-st-sheet-open', '0'); }
       this._pageKind = kind;
       this._applyPageKind();
       return kind;
     }
 
     _hasBattle() {
-      const doc = this._document();
-      if (!doc || typeof doc.querySelector !== 'function') return false;
-      return !!doc.querySelector('.battle');
+      const arena = this._qs('.battle', this._battleRoot());
+      return !!(arena && (!arena.getClientRects || arena.getClientRects().length));
     }
 
-    /**
-     * _applyPageKind() -> show or hide the readout container for the current page kind.
-     * Visibility is a root attribute rather than a DOM move on purpose: re-parenting the
-     * cards back into `<body>` would park a column of `position: fixed` nodes over the
-     * lobby, which is exactly the bug this gate exists to prevent. The cards stay where
-     * they are, the container stops painting, and re-entering a battle brings it all back.
-     */
     _applyPageKind() {
       const doc = this._document();
       if (!doc || !doc.documentElement) return;
@@ -1640,40 +2032,12 @@
         // Leaving a battle drops any drag offset so the panel re-docks from the new room's
         // measured column instead of reappearing wherever it was parked.
         this._resetPanelOffset();
+        this._restoreLog();
+        this._restoreControls();
+        if (this._nodes.toolbar && doc.body) doc.body.appendChild(this._nodes.toolbar);
       }
     }
 
-    /**
-     * _bottomBandTop(doc) -> the topmost Y of the always-on bottom band, or 0.
-     * The TR chip and the bench strip share the bottom band, but they do NOT share a top: the
-     * strip is `touch + 16 + lift` from the bottom and is 65px tall, while the chip is
-     * `touch + 18 + lift` and is ~33px tall, so the strip's top edge sits ~25px HIGHER. The
-     * sheet has to dock above the highest of them, or an expanded sheet swallows the bench
-     * pills. So this returns the MINIMUM top of the visible band nodes (a hidden node reports
-     * a zero rect and is skipped, which is what makes the measurement honest on turns where
-     * Trick Room is not running).
-     */
-    _bottomBandTop(doc) {
-      const sels = ['.tactician-tr-chip', '.st-bench-strip'];
-      let top = 0;
-      for (let i = 0; i < sels.length; i++) {
-        const el = this._qs(sels[i]);
-        if (!el || typeof el.getBoundingClientRect !== 'function') continue;
-        const r = el.getBoundingClientRect();
-        if (r && r.top === r.top && r.top > 4 && r.height > 4) {
-          if (top === 0 || r.top < top) top = Math.round(r.top);
-        }
-      }
-      return top;
-    }
-
-    /**
-     * renderPPGauge(gauge) -> the gauge element (or null).
-     * The Sucker Punch PP-stall readout (LaplaceEngine.ppStall). The remaining PP is READ by the
-     * engine from the page's own battle object, so this file must never print a denominator it
-     * was not given: with `observesOnly` (no `|stpp|` snapshot yet) the honest line is how many
-     * times the move has been seen, never "N/8". `null` removes the gauge.
-     */
     renderPPGauge(gauge) {
       if (!this._document()) return null;
       // Measure the band BEFORE this node is mounted, so the gauge never measures itself.
@@ -1684,7 +2048,7 @@
         return this._dropNode(el);
       }
       if (!el) {
-        el = this._el('div', 'st-pp-gauge');
+        el = this._el('details', 'st-pp-gauge');
         if (!el) return null;
         if (el.setAttribute) el.setAttribute(PP_ATTR, '1');
         el = this._mountBand(el);
@@ -1698,7 +2062,7 @@
       const label = safeString(move.label || move.id) ||
         safeString(cfg('ppStall.headline', 'suckerpunch'));
 
-      const headline = this._el('div', 'st-pp-headline',
+      const headline = this._el('summary', 'st-pp-headline',
         label + ' ' + prefix + ': ' + this._ppText(move));
       this._appendChild(el, headline);
 
@@ -1817,7 +2181,7 @@
         return this._dropNode(el);
       }
       if (!el) {
-        el = this._el('div', 'st-format-sentinel');
+        el = this._el('details', 'st-format-sentinel');
         if (!el) return null;
         if (el.setAttribute) el.setAttribute(SENTINEL_ATTR, '1');
         el = this._mountBand(el);
@@ -1825,7 +2189,7 @@
       this._nodes.sentinel = el;
       this._clearChildren(el);
 
-      const head = this._el('div', 'st-sentinel-head', 'OPPONENT FORMAT MECHANICS');
+      const head = this._el('summary', 'st-sentinel-head', 'Opponent format mechanics');
       this._appendChild(el, head);
       this._appendChild(el, this._mechanicRow('Mega Evolution', sentinel.mega));
       this._appendChild(el, this._mechanicRow('Z-Move', sentinel.z));
@@ -1842,7 +2206,7 @@
           const status = SENTINEL_TACTIC_STATES[safeString(t.kind)] || 'NOTE';
           const row = this._el('div', 'st-sentinel-tactic',
             status + ' / ' + safeString(t.label) +
-            (t.detail ? ' \u2014 ' + safeString(t.detail) : ''));
+            (t.detail ? '. ' + safeString(t.detail) : ''));
           if (row && row.setAttribute) {
             row.setAttribute('data-st-tactic', safeString(t.kind) || 'other');
           }
@@ -1895,6 +2259,7 @@
       const existing = this._qs('.team-drawer');
       if (existing && this._isDrawerNode(existing)) {
         this._nodes.drawer = existing;
+        this._nodes.toolbar = this._qs('.st-toolbar');
         this._nodes.toggle = this._qs('.team-drawer-toggle');
         this._nodes.teamStatus = this._qs('[data-st-team-status]') || this._qs('.drawer-team-status');
         this._nodes.candidates = this._qs('[data-st-candidates]') || this._qs('.drawer-candidates');
@@ -1908,7 +2273,7 @@
 
       const toggle = this._el('button', 'team-drawer-toggle');
       if (toggle) {
-        toggle.textContent = 'TAC';
+        toggle.textContent = 'Team';
         if (toggle.setAttribute) {
           toggle.setAttribute('type', 'button');
           toggle.setAttribute('aria-label', 'Toggle Showdown Tactician panel');
@@ -1917,11 +2282,11 @@
       }
 
       const panel = this._el('div', 'team-drawer ' + HIDDEN_CLASS);
-      if (panel && panel.setAttribute) panel.setAttribute(DRAWER_ATTR, '1');
+      if (panel && panel.setAttribute) { panel.setAttribute(DRAWER_ATTR, '1'); panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-label', 'Team and set estimates'); }
 
       if (panel) {
         const header = this._el('div', 'drawer-header', 'Showdown Tactician');
-        if (header) panel.appendChild(header);        const teamStatus = this._el('div', 'drawer-team-status', 'No team loaded — paste a Pokepaste below.');
+        if (header) panel.appendChild(header);        const teamStatus = this._el('div', 'drawer-team-status', 'No team loaded. Paste a Pokepaste below.');
         if (teamStatus) {
           teamStatus.setAttribute && teamStatus.setAttribute('data-st-team-status', '1');
           panel.appendChild(teamStatus);
@@ -1931,6 +2296,7 @@
         const textarea = this._el('textarea', 'drawer-team-input');
         if (textarea) {
           textarea.setAttribute && textarea.setAttribute('rows', '8');
+          textarea.setAttribute && textarea.setAttribute('aria-label', 'Team in Pokemon Showdown export format');
           textarea.setAttribute && textarea.setAttribute('placeholder', 'Great Tusk @ Choice Scarf\nAbility: Protosynthesis\nEVs: 252 Atk / 4 SpD / 252 Spe\nJolly Nature\n- Headlong Rush\n- Close Combat\n- Ice Spinner\n- Rapid Spin');
           textarea.value = this._loadTeam();
           panel.appendChild(textarea);
@@ -1965,7 +2331,10 @@
         this._nodes.candidates = candidates;
       }
 
-      this._nodes.toggle = this._mount(toggle);
+      const toolbar = this._el('div', 'st-toolbar');
+      if (toolbar && toggle) toolbar.appendChild(toggle);
+      this._nodes.toolbar = this._mount(toolbar);
+      this._nodes.toggle = toggle || null;
       this._nodes.drawer = this._mount(panel);
       if (toggle && toggle.addEventListener) {
         toggle.addEventListener('click', this.toggleDrawer.bind(this));
@@ -2008,7 +2377,8 @@
           btn.setAttribute('aria-label', 'Switch HUD layout between compact and wide');
           btn.setAttribute('data-st-mode-toggle', '1');
         }
-        this._mount(btn);
+        const toolbar = this._nodes.toolbar;
+        if (toolbar) toolbar.appendChild(btn); else this._mount(btn);
         this._nodes.modeToggle = btn;
       }
       // The click handler is bound once per node, and re-binding is harmless because the
@@ -2016,7 +2386,7 @@
       // _bindLayoutSignals) means even a HUD that never had a drawer can still toggle.
       if (btn && btn.addEventListener) {
         const self = this;
-        btn.onclick = function () { self.toggleLayoutMode(); };
+        btn.onclick = function () { self.setLayoutMode(self.layoutMode === 'auto' ? 'mobile' : self.layoutMode === 'mobile' ? 'desktop' : 'auto'); };
         // Avoid stealing keyboard focus: PS uses 1-4 for moves and the rest of the document
         // is keyboard-driven, so a focused button that intercepts space/enter would block
         // those shortcuts. Blur on mousedown in CAPTURE so focus never reaches the button
@@ -2051,6 +2421,7 @@
         };
         view.addEventListener('resize', onLayout, { passive: true });
         view.addEventListener('orientationchange', onLayout, { passive: true });
+        if (view.visualViewport) view.visualViewport.addEventListener('resize', onLayout, { passive: true });
       }
       // …and on scroll. The new client makes `.battle-log .battle-controls` `position:
       // static`, so its move bar is a node in the scrollable log and scrolling moves it;
@@ -2099,7 +2470,18 @@
         : (view && typeof view.innerWidth === 'number') ? view.innerWidth : 0;
       const bp = (typeof cfg('hud.layoutBreakpoint', 1024) === 'number')
         ? cfg('hud.layoutBreakpoint', 1024) : 1024;
-      return w >= bp ? 'desktop' : 'mobile';
+      if (w < bp) return 'mobile';
+      if (!viewport) {
+        const root = this._battleRoot();
+        const arena = this._qs('.battle', root);
+        if (arena && arena.getBoundingClientRect) {
+          const rect = arena.getBoundingClientRect();
+          const room = root && root.getBoundingClientRect ? root.getBoundingClientRect() : null;
+          const right = room && room.width > 0 ? Math.min(w, room.right) : w;
+          if (rect.width > 0 && right - rect.right < 560) return 'mobile';
+        }
+      }
+      return 'desktop';
     }
 
     /**
@@ -2148,6 +2530,7 @@
      */
     _setLayout(resolved) {
       if (resolved !== 'mobile' && resolved !== 'desktop') resolved = 'mobile';
+      if (resolved === 'desktop' && this._sheetOpen) { this._sheetOpen = false; this._syncModalState(false); }
       this.resolvedLayout = resolved;
       const doc = this._document();
       if (!doc || !doc.documentElement) return resolved;
@@ -2188,7 +2571,7 @@
             el.setAttribute('data-st-console', '1');
             el.setAttribute('data-st-console-open', this._panelOpen ? '1' : '0');
             el.setAttribute('role', 'region');
-            el.setAttribute('aria-label', 'Tactical console');
+            el.setAttribute('aria-label', 'Battle analysis');
           }
           // Mount into body so it can position relative to the viewport.
           const parent = doc.body || doc.documentElement;
@@ -2203,7 +2586,7 @@
           if (header && typeof el.appendChild === 'function') {
             el.appendChild(header);
             this._nodes.consoleHeader = header;
-            this._bindConsoleDrag(header, el);
+            this._bindPanelResize(el);
           }
         }
       } else if (!this._nodes.consoleHeader) {
@@ -2220,6 +2603,7 @@
         this._nodes.consoleHeader = header;
       }
       this._nodes.console = el;
+      this._bindPanelResize(el);
       this._writePanelHeader(el, this._nodes.consoleHeader);
       return el;
     }
@@ -2239,8 +2623,8 @@
       // Desktop also uses the compact-first sheet pattern: no permanent sidebar competing with
       // the Showdown log, and no large block occupying the chat column until it is requested.
       const sel = '.tactician-banner, .st-overlord-gauge, .st-badge-row, .st-deduction-badges, ' +
-        '.tactician-tr-chip, .st-bench-strip, .st-pp-gauge, .st-format-sentinel, .st-receipt-card, ' +
-        '.st-cancel-alert-card';
+        '.st-center-nav, .st-intelligence, .st-field-board, .st-engine-review, .st-action-list, .st-matchup, .st-toolbar, .st-lead-advisory, .st-scout-card, .tactician-tr-chip, .st-bench-strip, .st-pp-gauge, .st-format-sentinel, ' +
+        '.st-receipt-card, .st-cancel-alert-card';
       const nodes = (typeof doc.querySelectorAll === 'function')
         ? doc.querySelectorAll(sel) : [];
       // Lazy: only build the console when there are band elements to put in it. Constructing
@@ -2342,12 +2726,7 @@
         }, true);
         // Blur on activation so a HUD button can never hold keyboard focus.
         header.addEventListener('mousedown', function (e) { if (e && e.preventDefault) e.preventDefault(); }, true);
-        header.addEventListener('keydown', function (e) {
-          if (e && (e.key === 'Enter' || e.key === ' ')) {
-            e.preventDefault && e.preventDefault();
-            if (typeof onToggle === 'function') { try { onToggle(self); } catch (err) { /* never break */ } }
-          }
-        });
+
       }
       return header;
     }
@@ -2366,7 +2745,7 @@
           el.setAttribute('data-st-sheet-open', this._sheetOpen ? '1' : '0');
           el.setAttribute('role', 'region');
           el.setAttribute('aria-label', 'Tactical readouts');
-          el.setAttribute('aria-hidden', this._sheetOpen ? 'false' : 'true');
+          el.setAttribute('aria-hidden', 'false');
         }
         const parent = doc.body || doc.documentElement;
         if (parent && parent.appendChild) parent.appendChild(el);
@@ -2374,7 +2753,7 @@
         if (header && header.setAttribute) {
           header.setAttribute('data-st-sheet-trigger', '1');
           header.setAttribute('aria-controls', 'st-readout-sheet');
-          header.setAttribute('aria-haspopup', 'true');
+          header.setAttribute('aria-haspopup', 'false');
         }
         if (el.setAttribute) el.setAttribute('id', 'st-readout-sheet');
         if (header && typeof el.appendChild === 'function') el.appendChild(header);
@@ -2393,7 +2772,7 @@
       // sprites (measured: banner covers 46% of the foe's HP bar). The chip and bench strip
       // stay in the bottom band — they are thumb-targeted and the most-used interactive bits.
       const sel = '.tactician-banner, .st-overlord-gauge, .st-badge-row, .st-deduction-badges, ' +
-        '.st-pp-gauge, .st-format-sentinel, .st-receipt-card, .st-cancel-alert-card';
+        '.st-center-nav, .st-intelligence, .st-field-board, .st-engine-review, .st-action-list, .st-matchup, .st-toolbar, .st-lead-advisory, .st-scout-card, .st-pp-gauge, .st-format-sentinel, .st-receipt-card, .st-cancel-alert-card';
       const nodes = (typeof doc.querySelectorAll === 'function')
         ? doc.querySelectorAll(sel) : [];
       // Lazy: the first band element to be mounted creates the sheet through _mountBand.
@@ -2463,6 +2842,7 @@
     _refreshPanelHeaders() {
       this._writePanelHeader(this._nodes.sheet, this._nodes.sheetHeader);
       this._writePanelHeader(this._nodes.console, this._nodes.consoleHeader);
+      this._syncPlacement();
     }
 
     /**
@@ -2492,7 +2872,7 @@
       const live = host.children || host.childNodes;
       const kids = live ? Array.prototype.slice.call(live) : [];
       for (let i = 0; i < kids.length; i++) {
-        if (kids[i] && kids[i] !== header) n++;
+        if (kids[i] && kids[i] !== header && kids[i] !== this._nodes.toolbar) n++;
       }
       const canRead = typeof header.getAttribute === 'function';
       if (count) {
@@ -2505,10 +2885,10 @@
       // The rail is the one always-visible affordance on a phone, so it has to announce what
       // tapping it does rather than leaving the caret to imply it.
       if (header.setAttribute) {
-        const title = 'Showdown Tactician: ' + decision + ', ' + n + ' readout' + (n === 1 ? '' : 's');
+        const title = 'Showdown Tactician: ' + decision + '. ' + ((host === this._nodes.sheet ? this._sheetOpen : this._panelOpen) ? 'Close analysis' : 'Open analysis');
         const open = (host === this._nodes.sheet)
           ? this._sheetOpen : this._panelOpen;
-        const expanded = open ? '1' : '0';
+        const expanded = open ? 'true' : 'false';
         if (!canRead || header.getAttribute('title') !== title) header.setAttribute('title', title);
         if (!canRead || header.getAttribute('aria-label') !== title) header.setAttribute('aria-label', title);
         if (!canRead || header.getAttribute('aria-expanded') !== expanded) {
@@ -2533,14 +2913,18 @@
       const sheet = this._ensureSheet();
       if (sheet && sheet.setAttribute) {
         sheet.setAttribute('data-st-sheet-open', this._sheetOpen ? '1' : '0');
-        sheet.setAttribute('aria-hidden', this._sheetOpen ? 'false' : 'true');
+        sheet.setAttribute('aria-hidden', 'false');
       }
       const header = this._nodes.sheetHeader;
       if (header && header.setAttribute) {
-        header.setAttribute('aria-expanded', this._sheetOpen ? '1' : '0');
+        header.setAttribute('aria-expanded', this._sheetOpen ? 'true' : 'false');
         header.setAttribute('aria-controls', 'st-readout-sheet');
       }
       if (sheet && sheet.setAttribute) sheet.setAttribute('id', 'st-readout-sheet');
+      this._refreshPanelHeaders();
+      this._renderCenterView();
+      this._syncModalState(this._sheetOpen && this.resolvedLayout === 'mobile');
+      if (header && header.focus) header.focus({ preventScroll: true });
       return this._sheetOpen;
     }
 
@@ -2575,8 +2959,10 @@
       }
       const header = this._nodes.consoleHeader;
       if (header && header.setAttribute) {
-        header.setAttribute('aria-expanded', this._panelOpen ? '1' : '0');
+        header.setAttribute('aria-expanded', this._panelOpen ? 'true' : 'false');
       }
+      this._refreshPanelHeaders();
+      this._renderCenterView();
       return this._panelOpen;
     }
 
@@ -2600,70 +2986,17 @@
      * corner of the title bar on screen so the panel can always be dragged back.
      * Double-clicking the header re-docks.
      */
-    _bindConsoleDrag(header, consoleEl) {
-      if (!header || !consoleEl || typeof header.addEventListener !== 'function') return;
-      const self = this;
-      let startX = 0, startY = 0, baseX = 0, baseY = 0, dragging = false, moved = false;
-      header.addEventListener('pointerdown', function (e) {
-        if (!e || (typeof e.button === 'number' && e.button !== 0)) return;
-        if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
-        dragging = true;
-        moved = false;
-        startX = e.clientX || 0;
-        startY = e.clientY || 0;
-        baseX = self._panelX || 0;
-        baseY = self._panelY || 0;
-        try {
-          if (header.setPointerCapture && e.pointerId !== undefined) header.setPointerCapture(e.pointerId);
-        } catch (err) { /* capture is a nicety, not a requirement */ }
-        if (consoleEl.classList && consoleEl.classList.add) consoleEl.classList.add('st-dragging');
-      });
-      header.addEventListener('pointermove', function (e) {
-        if (!dragging || !e) return;
-        const dx = (e.clientX || 0) - startX;
-        const dy = (e.clientY || 0) - startY;
-        if (!moved && Math.abs(dx) + Math.abs(dy) < 5) return;
-        moved = true;
-        self._panelJustDragged = true;
-        const doc = self._document() || (typeof document !== 'undefined' ? document : null);
-        const view = (doc && doc.defaultView) || (typeof window !== 'undefined' ? window : null);
-        const vw = (view && typeof view.innerWidth === 'number') ? view.innerWidth : 1440;
-        const vh = (view && typeof view.innerHeight === 'number') ? view.innerHeight : 900;
-        // Keep a corner of the title bar reachable: never let the panel leave the viewport.
-        const minX = -Math.min(600, vw * 0.6), maxX = vw - 160;
-        const minY = -Math.min(700, vh * 0.7), maxY = vh - 60;
-        self._panelX = Math.round(Math.max(minX, Math.min(maxX, baseX + dx)));
-        self._panelY = Math.round(Math.max(minY, Math.min(maxY, baseY + dy)));
-        if (consoleEl.style && typeof consoleEl.style.setProperty === 'function') {
-          consoleEl.style.setProperty('--st-panel-x', self._panelX + 'px');
-          consoleEl.style.setProperty('--st-panel-y', self._panelY + 'px');
-        }
-      });
-      const end = function (e) {
-        if (!dragging) return;
-        dragging = false;
-        if (consoleEl.classList && consoleEl.classList.remove) consoleEl.classList.remove('st-dragging');
-        try {
-          if (moved && header.releasePointerCapture && e && e.pointerId !== undefined) {
-            header.releasePointerCapture(e.pointerId);
-          }
-        } catch (err) { /* already released */ }
-      };
-      header.addEventListener('pointerup', end);
-      header.addEventListener('pointercancel', end);
-      header.addEventListener('lostpointercapture', end);
-      // Double-click the title bar to snap back to the measured dock.
-      header.addEventListener('dblclick', function () {
-        self._resetPanelOffset();
-      });
+    _bindConsoleDrag() {}
+
+    _bindPanelResize(panel) {
+      const doc = this._document();
+      const view = doc && doc.defaultView;
+      if (!view || !view.ResizeObserver || !panel) return;
+      if (this._panelResize) this._panelResize.disconnect();
+      this._panelResize = new view.ResizeObserver(function () { this._syncPlacement(); }.bind(this));
+      this._panelResize.observe(panel);
     }
 
-    /**
-     * _bindHotkey() -> Ctrl+8 (Cmd+8 on macOS) toggles the readout panel.
-     * The same gesture Pokémon Showdown Helper uses for its popup, and it works in any room.
-     * Bound in the capture phase on the document so it fires before Showdown's own key
-     * handlers, and suppressed while the player is typing in the team-paste textarea.
-     */
     _bindHotkey() {
       const doc = this._document();
       if (!doc || this._hotkeyBound || typeof doc.addEventListener !== 'function') return;
@@ -2673,7 +3006,18 @@
         if (!e) return;
         const el = (e.target || null);
         const tag = el && el.tagName ? String(el.tagName).toUpperCase() : '';
-        if (tag === 'TEXTAREA' || tag === 'INPUT' || (el && el.isContentEditable)) return;
+        if (self._sheetOpen && self.resolvedLayout === 'mobile' && !self._drawerOpen) {
+          if (e.stopPropagation) e.stopPropagation();
+          if (e.key === 'Tab') self._trapCenterFocus(e);
+        }
+        if ((tag === 'TEXTAREA' || tag === 'INPUT' || (el && el.isContentEditable)) && e.key !== 'Escape') return;
+        if (e.key === 'Escape' && self._drawerOpen) { self.toggleDrawer(false); return; }
+        if (e.key === 'Escape' && self._sheetOpen) {
+          self.setSheetOpen(false);
+          const trigger = self._nodes.sheetHeader;
+          if (trigger && trigger.focus) trigger.focus();
+          return;
+        }
         if (!(e.ctrlKey || e.metaKey)) return;
         const k = String(e.key || '');
         const code = String(e.code || '');
@@ -2689,21 +3033,14 @@
       const btn = this._nodes.modeToggle;
       if (!btn) return;
       const resolved = this.resolvedLayout || this._resolveLayout();
-      const label = (resolved === 'desktop') ? 'WIDE' : 'FIELD';
-      if (btn.textContent !== undefined) btn.textContent = label;
-      const title = 'Switch HUD layout (currently ' + (resolved === 'desktop' ? 'wide' : 'compact') + ')';
+      btn.textContent = this.layoutMode === 'auto' ? 'Layout: Auto' : resolved === 'desktop' ? 'Layout: Wide' : 'Layout: Compact';
       if (btn.setAttribute) {
-        btn.setAttribute('title', title);
-        btn.setAttribute('aria-label', 'Switch HUD layout to ' + (resolved === 'desktop' ? 'compact' : 'wide'));
+        btn.setAttribute('title', 'Cycle layout: Auto, Compact, Wide');
+        btn.setAttribute('aria-label', btn.textContent + '. Cycle layout');
         btn.setAttribute('data-st-resolved', resolved);
       }
     }
 
-    /**
-     * Is this node really the drawer panel? '.team-drawer' is a prefix of
-     * '.team-drawer-toggle', so adoption is keyed off the data attribute first and only
-     * falls back to an exact class-token check.
-     */
     _isDrawerNode(el) {
       if (!el || typeof el.getAttribute !== 'function') return false;
       if (el.getAttribute(DRAWER_ATTR) === '1') return true;
@@ -2729,6 +3066,9 @@
         if (next) toggle.classList.add('active');
         else toggle.classList.remove('active');
       }
+      const input = this._qs('.drawer-team-input');
+      if (next && input && input.focus) input.focus();
+      if (!next && toggle && toggle.focus) toggle.focus();
       return next;
     }
 
@@ -2770,16 +3110,16 @@
         const best = mon.liveSet || sets[0] || null;
         const head = (mon.species || mon.id) + (mon.fainted ? ' (fainted)' : '');
         const detail = best
-          ? (safeString(best.role || 'set') + (best.item ? ' @ ' + best.item : ' (itemless)') + '  w=' + U.round2(best.weight || 0))
+          ? (safeString(best.role || 'set') + (best.item ? ' @ ' + best.item : ' (itemless)') + ' (estimated)')
           : 'no surviving candidate set';
-        lines.push(head + ' — ' + detail + '  [' + sets.length + ' candidate' + (sets.length === 1 ? '' : 's') + ']');
+        lines.push(head + ': ' + detail + '  [' + sets.length + ' candidate' + (sets.length === 1 ? '' : 's') + ']');
         if (mon.prunedReasons && mon.prunedReasons.length) {
-          lines.push('   pruned: ' + mon.prunedReasons.slice(0, 3).join('; '));
+          lines.push('Excluded sets: ' + mon.prunedReasons.slice(0, 3).join('; '));
         }
       }
       if (battleState.formatLocks) {
         const locks = battleState.formatLocks;
-        lines.push('locks: mega=' + (locks.oppHasMegaEvolved ? 'spent' : 'live') + ', z=' + (locks.oppHasUsedZMove ? 'spent' : 'live') + ', tera=banned');
+        lines.push('Mega Evolution: ' + (locks.oppHasMegaEvolved ? 'spent' : 'available') + '. Z-Move: ' + (locks.oppHasUsedZMove ? 'spent' : 'available') + '. Terastallization unavailable.');
       }
       row.textContent = lines.length ? lines.join('\n') : 'No opponent information yet.';
       return row;
@@ -2792,6 +3132,7 @@
       const text = safeString(reason).trim();
       const key = U.toID(moveName || '');
       this._lastReasonByMove[key] = text;
+      this._renderMatchup(this._lastPreview);
       if (!this._document()) return 0;
       const buttons = this._findMoveButtons();
       let patched = 0;
@@ -2828,7 +3169,7 @@
     /** Writes the team paste to chrome.storage.local (or localStorage) under teamText. */
     saveTeam(text) {
       const value = safeString(text);
-      this.setTeamStatus(value.trim() ? 'Team paste saved — ' + value.split('\n').length + ' lines' : 'Team paste cleared.');
+      this.setTeamStatus(value.trim() ? 'Team paste saved: ' + value.split('\n').length + ' lines' : 'Team paste cleared.');
       const done = { ok: true, value: value };
       try {
         if (typeof chrome !== 'undefined' && chrome && chrome.storage && chrome.storage.local) {
@@ -2869,7 +3210,8 @@
 
     /** clear() — remove every injected node and inline style change. */
     clear() {
-      const nodes = this._qsa('.elo-helper-badge, .tactician-banner, .tactician-tr-chip, .team-drawer, .team-drawer-toggle, .elo-helper-reason, .st-lethal-bar, .st-bench-strip, .st-badge-row, .st-receipt-card, .st-overlord-gauge, .st-pp-gauge, .st-format-sentinel, .st-lead-advisory, .st-cancel-alert-card, .st-cancel-badge');
+      this._syncModalState(false);
+      const nodes = this._qsa('.elo-helper-badge, .tactician-banner, .tactician-tr-chip, .team-drawer, .team-drawer-toggle, .elo-helper-reason, .st-lethal-bar, .st-bench-strip, .st-badge-row, .st-receipt-card, .st-overlord-gauge, .st-pp-gauge, .st-format-sentinel, .st-lead-advisory, .st-cancel-alert-card, .st-cancel-badge, .st-matchup, .st-toolbar, .st-mode-toggle, .st-scout-card, .st-center-nav, .st-intelligence, .st-field-board, .st-engine-review, .st-action-list');
       for (let i = 0; i < nodes.length; i++) {
         const n = nodes[i];
         if (n && typeof n.remove === 'function') n.remove();
@@ -2881,6 +3223,8 @@
       // was still mounted, so nothing could ever remove it (dismissLeadAdvisory() reads the handle)
       // while the next battle mounted a SECOND one. Two ways to drop the same node is deliberate
       // here: the handle keeps the document and the HUD agreeing even if the selector drifts again.
+      this._restoreLog();
+      this._restoreControls();
       this.dismissLeadAdvisory();
       // The cancel alert is dropped through its own handle as well, for the same reason the
       // advisory is: the sweep above is a bulk selector and this one the HUD also holds a
@@ -2922,7 +3266,7 @@
         benchStrip: null, badgeRow: null, receipt: null, overlord: null,
         ppGauge: null, sentinel: null, leadAdvisory: null, cancelAlert: null,
         console: null, sheet: null, sheetHeader: null, modeToggle: null,
-        consoleHeader: null
+        consoleHeader: null, matchup: null, toolbar: null
       };
       this._drawerOpen = false;
       this._bound = false;
@@ -2933,7 +3277,17 @@
         try { this._menuWatch.disconnect(); } catch (e) { /* detached */ }
       }
       this._menuWatch = null;
+      if (this._panelResize) this._panelResize.disconnect();
+      if (this._roomResize) this._roomResize.disconnect();
+      this._layoutRoot = null;
       this._lastRanked = [];
+      this._lastPreview = null;
+      this._battleState = null;
+      this._readout = null;
+      this._centerState = null;
+      this._centerMeta = {};
+      this._inspectedId = null;
+      this._centerView = 'battle';
       this._recommended = null;   // the banner's 'PLAY: …' line is per-battle too
       this.lastBadgeCount = 0;
       this._panelX = 0;

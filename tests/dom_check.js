@@ -231,7 +231,7 @@ function sectionClearRestoresTheOriginal() {
   const btn = s.btn('headlongrush');
 
   s.hud._decorateButton(btn, VETOED, null);
-  eq('a vetoed render dims the button', btn.style.opacity, '0.5');
+  eq('a vetoed render keeps damage readable', btn.style.opacity, '');
   s.hud._decorateButton(btn, STRONG, STRONG);
   eq('a clean render undims it', btn.style.opacity, '');
 
@@ -244,7 +244,7 @@ function sectionClearRestoresTheOriginal() {
   const btn2 = s2.btn('closecombat');
   s2.hud._decorateButton(btn2, STRONG, STRONG);
   s2.hud._decorateButton(btn2, VETOED, null);
-  eq('veto last: dimmed before clear', btn2.style.opacity, '0.5');
+  eq('veto last: readable before clear', btn2.style.opacity, '');
   s2.hud.clear();
   eq('veto last: clear() still restores the original', btn2.style.opacity, '');
   eq('veto last: the strikethrough is gone', btn2.style.textDecoration, '');
@@ -255,7 +255,7 @@ function sectionClearRestoresTheOriginal() {
   const btn3 = s3.btn('icespinner');
   btn3.style.textDecoration = 'underline';
   s3.hud._decorateButton(btn3, VETOED, null);
-  eq('a pre-existing inline style is overwritten while vetoed', btn3.style.textDecoration, 'line-through');
+  eq('a pre-existing inline style is cleared while decorated', btn3.style.textDecoration, '');
   s3.hud.clear();
   eq('and restored to what the page had', btn3.style.textDecoration, 'underline');
 }
@@ -301,8 +301,8 @@ function sectionVetoContract() {
 
   s.hud._decorateButton(btn, VETOED, null);
   check('the button carries conf-veto', btn.classList.contains('conf-veto'));
-  eq('the button is dimmed', btn.style.opacity, '0.5');
-  eq('the button is struck through', btn.style.textDecoration, 'line-through');
+  eq('the damage readout stays readable', btn.style.opacity, '');
+  eq('damage ranges are never struck through', btn.style.textDecoration, '');
   const badge = btn.querySelector('.elo-helper-badge');
   check('the badge carries conf-veto', badge.classList.contains('conf-veto'));
   eq('the badge still shows the number', badge.textContent, '0%');
@@ -593,7 +593,7 @@ function sectionLayoutModeResolvesAndReparents() {
   // (it is the kind of button PS's keyboard input would be sensitive to).
   const btn = doc.querySelector('.st-mode-toggle');
   check('the mode toggle is mounted', !!btn);
-  check('its field label matches the resolved layout', /field/i.test(btn.textContent), btn.textContent);
+  check('its field label matches the resolved layout', /compact/i.test(btn.textContent), btn.textContent);
   eq('its resolved attribute matches', btn.getAttribute('data-st-resolved'), 'mobile');
 
   // The mobile sheet is collapsed by default and exposes a header rail the user can tap to
@@ -618,7 +618,7 @@ function sectionLayoutModeResolvesAndReparents() {
   eq('the rail names the HUD', doc.querySelector('.st-sheet-label').textContent, 'TACTICIAN');
   eq('the sheet caret is decorative and hidden from assistive technology', doc.querySelector('.st-sheet-caret').getAttribute('aria-hidden'), 'true');
   check('the rail identity contains no emoji', !/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(header.textContent));
-  eq('the collapsed sheet is hidden from assistive technology', sheet.getAttribute('aria-hidden'), 'true');
+  eq('the collapsed analysis trigger stays accessible', sheet.getAttribute('aria-hidden'), 'false');
   hud.toggleSheet();
   eq('opening reveals the readout to assistive technology', sheet.getAttribute('aria-hidden'), 'false');
   eq('toggleSheet flips the open attribute to 1', sheet.getAttribute('data-st-sheet-open'), '1');
@@ -718,17 +718,19 @@ function sectionDesktopConsoleCarriesEveryReadoutAndOnlyOnBattles() {
   check('...and says so for screen readers too', /Showdown Tactician/i.test(header.getAttribute('aria-label') || ''));
 
   /* ---- collapsible ---- */
-  eq('the desktop readout starts as a collapsed battle-first rail',
-    consoleEl.getAttribute('data-st-console-open'), '0');
+  // The console opens expanded: a HUD whose readout is behind an unlabelled click is a HUD
+  // nobody finds. Collapsing stays one click away.
+  eq('the desktop readout starts expanded',
+    consoleEl.getAttribute('data-st-console-open'), '1');
+  eq('and the header says so for assistive technology', header.getAttribute('aria-expanded'), 'true');
   hud.togglePanel();
-  eq('togglePanel expands the requested readout', consoleEl.getAttribute('data-st-console-open'), '1');
+  eq('togglePanel collapses the requested readout', consoleEl.getAttribute('data-st-console-open'), '0');
   hud.togglePanel();
-  eq('togglePanel collapses it again', consoleEl.getAttribute('data-st-console-open'), '0');
-  hud.setPanelOpen(true);
-  eq('setPanelOpen(true) expands it too', consoleEl.getAttribute('data-st-console-open'), '1');
+  eq('togglePanel expands it again', consoleEl.getAttribute('data-st-console-open'), '1');
   hud.setPanelOpen(false);
   eq('setPanelOpen(false) collapses it too', consoleEl.getAttribute('data-st-console-open'), '0');
-  eq('and the header follows', header.getAttribute('aria-expanded'), '0');
+  hud.setPanelOpen(true);
+  eq('setPanelOpen(true) expands it too', consoleEl.getAttribute('data-st-console-open'), '1');
 
   /* ---- the page-kind gate ---- */
   // A battle appears with no reload (Showdown is a single-page app): the panel comes back.

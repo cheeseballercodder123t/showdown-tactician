@@ -19,8 +19,7 @@
  *
  * Ability/forme state that changes a number is carried on the MonState and forwarded here:
  *   alliesFainted  — Supreme Overlord / Last Respects (stamped by state_manager._stampFallen)
- *   boosterActive  — Protosynthesis / Quark Drive, forwarded as `boostedStat: 'auto'` so the
- *                    library, not this project, decides which stat the paradox boost lifts
+ *   boosterActive / boostedStat — preserve the active Paradox stat after Booster Energy is consumed
  *
  * DamageResult = { minDmg, maxDmg, avgDmg, minPercent, maxPercent, avgPercent,
  *                  isOHKO, is2HKO, koChancePct, desc, moveDesc, moveType, moveCategory,
@@ -54,6 +53,16 @@
     heavyrain: 'Heavy Rain', primordialsea: 'Heavy Rain', strongwinds: ''
   };
   const TERRAIN_MAP = { electric: 'Electric', grassy: 'Grassy', psychic: 'Psychic', misty: 'Misty' };
+  /* The 2-5 hit family. @smogon/calc assumes the MIDPOINT (3) unless told otherwise, which
+   * understates a Skill Link attacker by two fifths of the damage — a real Bullet Seed did 100%
+   * to a Blissey the HUD priced at 51-60%. These are the moves Skill Link forces to five and
+   * Loaded Dice lifts to at least four. Moves with a FIXED count (Population Bomb 10, Surging
+   * Strikes 3, Dragon Darts 2) must not be touched. */
+  const FIVE_HIT_MOVES = new Set([
+    'armthrust', 'barrage', 'bonerush', 'bulletseed', 'cometpunch', 'doubleslap', 'furyswipes',
+    'furyattack', 'iciclespear', 'pinmissile', 'rockblast', 'scaleshot', 'spikecannon',
+    'tailslap', 'watershuriken'
+  ]);
 
   function zeros() { return { hp: 0, atk: 0, def: 0, spa: 0, spd: 0, spe: 0 }; }
   function normEVs(evs) {
@@ -149,7 +158,7 @@
       let ivs = m.ivs || (set && set.ivs);
       let nature = m.nature || (set && set.nature);
       let item = m.item !== undefined ? m.item : (m.currentBattleItem || m.confirmedItem || m.originalArchetypeItem || (set && set.item));
-      let ability = m.ability || m.revealedAbility || (set && set.ability);
+      let ability = m.activeAbility || m.ability || m.revealedAbility || (set && set.ability);
 
       // explicit per-call overrides win over everything
       const overrideKey = role === 'attacker' ? 'attacker' : 'defender';
@@ -164,7 +173,11 @@
         if (o.level) level = o.level;
       }
 
-      // itemless archetypes (Acrobatics / Unburden) must not inherit a phantom item
+      // itemless archetypes (Acrobatics / Unburden) must not inherit a phantom item, and neither
+      // may a body whose item is GONE: `confirmedItem` is the scout ledger's history, not a
+      // claim that the item is still held. A Choice Band that was knocked off kept multiplying
+      // every later damage number by 1.5 (and a consumed Assault Vest kept its SpD).
+      if (m.itemRemoved || m.itemConsumed) item = '';
       if (m.itemless && item && !opts[overrideKey]) item = '';
 
       let hpPercent = 100;
@@ -194,9 +207,7 @@
       if (opts[overrideKey] && typeof opts[overrideKey].alliesFainted === 'number') {
         alliesFainted = opts[overrideKey].alliesFainted;
       }
-      // Protosynthesis / Quark Drive: `boosterActive` is the state manager's proof that the
-      // boost is live. WHICH stat it lifts is the library's own decision — passing the string
-      // 'auto' makes @smogon/calc pick the highest stat itself, so we never model that rule.
+      // A consumed Booster keeps its recorded stat active after the item is gone.
       const paradoxBoosted = (opts[overrideKey] && opts[overrideKey].boosterActive !== undefined)
         ? !!opts[overrideKey].boosterActive : !!m.boosterActive;
 
@@ -214,8 +225,15 @@
         evs: normEVs(evs),
         ivs: normIVs(ivs),
         boosts: normBoosts(boosts),
+        /* A battle-only typing (`typeOverride` on the MonState): Protean, Color Change, Soak.
+         * The species never changes for these, so the library's own typing is wrong until we
+         * hand it overrides.types. */
+        typeOverride: (Array.isArray(m.typeOverride) && m.typeOverride.length) ? m.typeOverride.slice(0, 2) : null,
+        disguiseIntact: !!m.disguiseIntact,
         alliesFainted: alliesFainted,
         paradoxBoosted: paradoxBoosted,
+        boostedStat: (o && o.boostedStat) || m.boostedStat || null,
+        abilityOn: o && o.abilityOn !== undefined ? !!o.abilityOn : !!m.abilityOn,
         status: status,
         hpPercent: Math.max(0, Math.min(100, hpPercent === null || hpPercent === undefined ? 100 : hpPercent)),
         revealedMoves: Array.isArray(m.revealedMoves) ? m.revealedMoves.slice() : [],
@@ -379,10 +397,25 @@
         moves: desc.revealedMoves.slice()
       };
       if (desc.status) options.status = desc.status;
+      if (desc.typeOverride && desc.typeOverride.length) {
+        // `overrides` is DEEP-MERGED into the species, so an array override merges index-wise:
+        // ['Grass'] over ['Grass','Dark'] would leave Dark in place. The two slots are therefore
+        // always filled; the library de-duplicates identical types for effectiveness.
+        const types = desc.typeOverride.slice(0, 2);
+        while (types.length < 2) types.push(types[0]);
+        options.overrides = { types: types };
+      }
       if (desc.gender) options.gender = desc.gender;
       if (desc.alliesFainted) options.alliesFainted = desc.alliesFainted;
-      if (desc.paradoxBoosted) options.boostedStat = 'auto';
+      if (desc.paradoxBoosted) options.boostedStat = desc.boostedStat || 'auto';
+      options.abilityOn = desc.abilityOn;
       const pk = new C.Pokemon(this.gen, desc.species, options);
+      if (desc.paradoxBoosted && !desc.boostedStat) {
+        pk.boostedStat = ['atk', 'def', 'spa', 'spd', 'spe'].reduce(function (best, stat) {
+          const value = function (key) { return Math.floor(pk.rawStats[key] * U.boostMultiplier(desc.boosts[key] || 0)); };
+          return value(stat) > value(best) ? stat : best;
+        }, 'atk');
+      }
       // curHP in @smogon/calc is an ABSOLUTE hp value (values above max HP are ignored).
       const maxHP = pk.rawStats.hp;
       if (typeof opts.attackerHP === 'number' && desc.role === 'attacker') {
@@ -406,8 +439,8 @@
       if (opts.isCrit) moveOpts.isCrit = true;
       if (opts.hits) moveOpts.hits = opts.hits;
       if (opts.timesUsed) moveOpts.timesUsed = opts.timesUsed;
-      if (opts.ability) moveOpts.ability = opts.ability;
-      if (opts.item) moveOpts.item = opts.item;
+      moveOpts.ability = opts.ability || attackerDesc.ability;
+      moveOpts.item = opts.zCrystal || opts.item || attackerDesc.item;
       if (opts.useZ || opts.zCrystal) moveOpts.useZ = true;
       if (opts.useMax) moveOpts.useMax = true;
       const move = new C.Move(this.gen, moveName, moveOpts);
@@ -419,7 +452,8 @@
     _key(A, D, moveName, fieldSig, opts) {
       const monSig = function (d) {
         return [d.species, d.item, d.ability, d.nature, d.level, d.status, d.hpPercent,
-          d.alliesFainted, d.paradoxBoosted ? 1 : 0,
+          d.alliesFainted, d.paradoxBoosted ? 1 : 0, d.boostedStat || '', d.abilityOn ? 1 : 0, d.disguiseIntact ? 1 : 0,
+          (d.typeOverride && d.typeOverride.length) ? d.typeOverride.join('/') : '',
           d.evs.hp, d.evs.atk, d.evs.def, d.evs.spa, d.evs.spd, d.evs.spe,
           d.ivs.hp, d.ivs.atk, d.ivs.def, d.ivs.spa, d.ivs.spd, d.ivs.spe,
           d.boosts.atk, d.boosts.def, d.boosts.spa, d.boosts.spd, d.boosts.spe].join(',');
@@ -428,7 +462,7 @@
       // and its ability/item interactions (see _buildMove); with them missing a cached roll
       // was reused across two different assumptions.
       const extra = [opts.isCrit ? 1 : 0, opts.hits || 0, opts.timesUsed || 0,
-        opts.useZ ? 1 : 0, opts.useMax ? 1 : 0,
+        opts.useZ || opts.zCrystal ? 1 : 0, opts.zCrystal || '', opts.useMax ? 1 : 0,
         opts.attackerHP === undefined ? '' : opts.attackerHP,
         opts.defenderHP === undefined ? '' : opts.defenderHP,
         opts.weather || '', opts.terrain || '',
@@ -443,7 +477,7 @@
      *   dex could not resolve; the damage fields are then zero and `error` explains why.
      */
     calculateDamage(attackerMon, defenderMon, moveName, fieldState, opts) {
-      const options = opts || {};
+      let options = opts || {};
       if (!this.available) return this._failure('window.calc is not loaded');
       if (!moveName) return this._failure('no move supplied');
 
@@ -457,12 +491,14 @@
       if (!U.getSpecies(A.species)) return this._failure('unknown attacker species: ' + A.species);
       if (!U.getSpecies(D.species)) return this._failure('unknown defender species: ' + D.species);
 
-      const attackerIsP1 = options.attackerIsP1 === undefined ? true : !!options.attackerIsP1;
+      const attackerIsP1 = options.attackerIsP1 === undefined
+        ? (attackerMon.side ? attackerMon.side === 'p1' : defenderMon.side ? defenderMon.side === 'p2' : true)
+        : !!options.attackerIsP1;
       let field = options.field;
       if (!field) {
         field = this.fieldFromState(fieldState, attackerIsP1);
-        const overrideWeather = options.weather && WEATHER_MAP[String(options.weather).toLowerCase()] !== field.weather;
-        const overrideTerrain = options.terrain && TERRAIN_MAP[String(options.terrain).toLowerCase()] !== field.terrain;
+        const overrideWeather = options.weather !== undefined && WEATHER_MAP[String(options.weather).toLowerCase()] !== field.weather;
+        const overrideTerrain = options.terrain !== undefined && TERRAIN_MAP[String(options.terrain).toLowerCase()] !== field.terrain;
         if (overrideWeather || overrideTerrain) {
           field = field.clone();
           if (overrideWeather) field.weather = WEATHER_MAP[String(options.weather).toLowerCase()] || undefined;
@@ -472,6 +508,16 @@
 
       const fieldSig = this._fieldKey(fieldState, attackerIsP1) + '|' +
         (field.weather || '') + '|' + (field.terrain || '') + '|' + (field.isGravity ? 1 : 0);
+      /* Skill Link / Loaded Dice on a 2-5 hit move: SIX-HIT? No — five (Skill Link) or the
+       * guaranteed four (Loaded Dice). Derived before the cache key so the count is part of it. */
+      const moveId = U.toID(moveName);
+      if (options.hits === undefined && FIVE_HIT_MOVES.has(moveId)) {
+        const abilityId = U.toID(A.ability);
+        if (abilityId === 'skilllink') options = Object.assign({}, options, { hits: 5 });
+        // Loaded Dice is an ITEM, not an ability: checking it on the ability id was dead code
+        // and a Loaded Dice Bullet Seed stayed at the library's midpoint of three hits.
+        else if (U.toID(A.item) === 'loadeddice') options = Object.assign({}, options, { hits: 4 });
+      }
       const key = this._key(A, D, moveName, fieldSig, options);
       const hit = this.cache.get(key);
       if (hit) { this.stats.hits++; return hit; }
@@ -483,7 +529,14 @@
         const defPk = this._buildPokemon(D, options);
         const built = this._buildMove(A, moveName, options);
         const raw = this.CALC.calculate(this.gen, atkPk, defPk, built.move, field);
+        const ignoresAbility = U.ABILITY_IGNORING_ABILITIES.has(U.toID(A.ability)) ||
+          ['sunsteelstrike', 'moongeistbeam', 'photongeyser', 'searingsunrazesmash', 'menacingmoonrazemaelstrom', 'lightthatburnsthesky'].includes(moveId);
+        const disguise = D.disguiseIntact && U.toID(defPk.ability) === 'disguise' && !ignoresAbility &&
+          !moveData.isStatus && raw.range()[1] > 0;
+        if (disguise) raw.damage = Array.isArray(raw.damage) && Array.isArray(raw.damage[0])
+          ? raw.damage.map(function (hit, i) { return i ? hit : hit.map(function () { return 0; }); }) : 0;
         result = this._resultFrom(raw, defPk, moveData, options);
+        result.disguiseIntact = !!disguise;
       } catch (err) {
         this.stats.failures++;
         result = this._failure(String((err && err.message) || err));
@@ -518,6 +571,12 @@
       const avgPercent = avgDmg / maxHP * 100;
       const rolls = this._rollsFrom(raw);
       const ko = this._koProfile(minDmg, maxDmg, curHP, maxHP, rolls);
+      let twoHitChancePct = null;
+      try {
+        const profile = raw.kochance();
+        if (profile && profile.n === 2 && typeof profile.chance === 'number') twoHitChancePct = profile.chance * 100;
+        ko.is2HKO = !ko.isOHKO && twoHitChancePct === 100;
+      } catch (e) { ko.is2HKO = false; }
       // `rollPercent` is the inverse of an observation: the percentage the protocol would print
       // if this integer roll came up. The pruner uses it to ask whether the number Showdown
       // printed could have come from THIS set at all.
@@ -538,6 +597,7 @@
         avgPercent: U.round1(avgPercent),
         isOHKO: ko.isOHKO,
         is2HKO: ko.is2HKO,
+        twoHitChancePct: twoHitChancePct,
         koChancePct: ko.koChancePct,
         koHits: ko.hits,
         desc: desc,
@@ -610,7 +670,7 @@
       const average = (minDmg + maxDmg) / 2;
       let hits = 0;
       if (average > 0) hits = Math.ceil(hp / average);
-      const is2HKO = !isOHKO && (maxDmg * 2 >= hp);
+      const is2HKO = !isOHKO && (minDmg * 2 >= hp);
       return { isOHKO: isOHKO, is2HKO: is2HKO, koChancePct: koChancePct, hits: hits };
     }
 
@@ -618,7 +678,7 @@
 
     /** Best (highest average percentage) damaging move of `oppMon` into `myMon`. */
     getBestIncomingThreat(oppMon, myMon, fieldState, opts) {
-      const options = opts || {};
+      const options = Object.assign({ attackerIsP1: oppMon && oppMon.side ? oppMon.side === 'p1' : myMon && myMon.side ? myMon.side === 'p2' : false }, opts || {});
       if (!oppMon || !myMon) return null;
       const moves = options.moves || this.movesFor(oppMon, options.limit || 4);
       return this._bestOf(oppMon, myMon, moves, fieldState, options);
@@ -638,7 +698,7 @@
       for (let i = 0; i < moves.length; i++) {
         const name = moves[i];
         const data = U.getMoveData(name);
-        if (!data || data.isStatus || !data.basePower) continue;
+        if (!data || data.isStatus) continue;
         const res = this.calculateDamage(atk, def, name, fieldState, options);
         if (res.failed) continue;
         if (!best || res.avgPercent > best.avgPercent) {

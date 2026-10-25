@@ -292,6 +292,42 @@ hookDispatched = dbg.dispatched;
 appObj.receive('|-damage|p1a: Great Tusk|55/100');
 eq('a roomless payload for a battle room is forwarded', dbg.dispatched - hookDispatched, 1);
 
+const betaEvents = [];
+const betaDoc = {
+  readyState: 'complete',
+  documentElement: { dataset: {}, setAttribute: function (key, value) { this[key] = value; } },
+  addEventListener: function () {},
+  dispatchEvent: function (event) { betaEvents.push(event.detail.rawLine); }
+};
+const betaBattle = { stepQueue: ['|init|battle', '|turn|7'] };
+const betaRoom = { id: 'battle-beta-1', battle: betaBattle };
+const betaClient = { room: betaRoom, baseRoom: betaRoom, receive: function (data) { return data; } };
+const betaSandbox = {
+  document: betaDoc, PS: betaClient,
+  setInterval: function () { return { unref: function () {} }; }, clearInterval: function () {},
+  CustomEvent: function (name, options) { this.detail = options.detail; }
+};
+betaSandbox.window = betaSandbox;
+vm.createContext(betaSandbox);
+vm.runInContext(fs.readFileSync(path.join(ROOT, 'src', 'injected.js'), 'utf8'), betaSandbox);
+betaSandbox.__ST_INJECTED_FLUSH();
+eq('beta PS.room exposes the current battle without window.app', betaEvents.slice(0, 2), ['|init|battle', '|turn|7']);
+eq('the room id crosses the isolated-world boundary', betaDoc.documentElement['data-st-room'], betaRoom.id);
+let betaBefore = betaEvents.length;
+betaClient.receive('>battle-other-1\n|turn|99');
+eq('an inactive room cannot contaminate the current battle', betaEvents.length, betaBefore);
+eq('the beta client still receives its original frame', betaClient.receive('>battle-beta-1\n|turn|8'), '>battle-beta-1\n|turn|8');
+eq('the focused beta room receives a frame once', betaEvents.length, betaBefore + 1);
+const secondRoom = { id: 'battle-beta-2', battle: { stepQueue: ['|tier|[Gen 9] National Dex OU', '|turn|3'] }, request: { active: [], side: { id: 'p1', pokemon: [] } } };
+betaClient.room = betaClient.baseRoom = secondRoom;
+betaBefore = betaEvents.length;
+betaSandbox.__ST_INJECTED_FLUSH();
+eq('changing rooms resets state before replaying the new board', betaEvents.slice(betaBefore, betaBefore + 3), ['|init|battle', '|tier|[Gen 9] National Dex OU', '|turn|3']);
+check('changing rooms restores the live decision request', betaEvents[betaEvents.length - 1].startsWith('|request|'));
+betaClient.room = { id: 'options' };
+betaSandbox.__ST_INJECTED_FLUSH();
+eq('a beta popup retains its underlying battle', betaDoc.documentElement['data-st-room'], secondRoom.id);
+
 console.log('checks passed: ' + passed + '  failed: ' + failures.length);
 failures.forEach(function (f) { console.log('  x ' + f); });
 process.exit(failures.length ? 1 : 0);

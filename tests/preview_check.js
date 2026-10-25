@@ -168,7 +168,7 @@ const ADVISORY = {
   check('...and names the top lead', !!card && /Hatterene/.test(textOf(card)), textOf(card));
   check('...and names the risky lead', !!card && /Slowking-Galar/.test(textOf(card)), textOf(card));
   check('...and shows the favorability percentage', !!card && /61%/.test(textOf(card)), textOf(card));
-  check('...and mounts itself on the document body', doc.body.children.indexOf(card) !== -1);
+  check('...and mounts inside the analysis panel', card.parentNode === hud._nodes.sheet);
   check('re-rendering reuses the same node', hud.renderLeadAdvisory(ADVISORY) === card);
   eq('an empty advisory dismisses instead of drawing a box', hud.renderLeadAdvisory({ leads: [] }), null);
   eq('and the node is cleared', hud._nodes.leadAdvisory, null);
@@ -179,9 +179,14 @@ const ADVISORY = {
  * lives in, because the stub document's querySelectorAll returns nothing and would hide the
  * selector half of the first defect. */
 function advisoryCards(doc) {
-  return (doc.body.children || []).filter(function (c) {
-    return c && String(c.className || '').indexOf('st-lead-advisory') !== -1;
-  });
+  const found = new Set();
+  const visit = function (node) {
+    if (!node || found.has(node)) return;
+    if (String(node.className || '').split(/\s+/).includes('st-lead-advisory')) found.add(node);
+    (node.children || []).forEach(visit);
+  };
+  visit(doc.body);
+  return Array.from(found);
 }
 
 {

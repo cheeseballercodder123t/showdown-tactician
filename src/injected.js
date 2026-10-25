@@ -57,6 +57,25 @@
    */
   var lastForwarded = { line: null, kind: null };
 
+  function clientOf() {
+    return window.app || window.PS || null;
+  }
+
+  function roomOf() {
+    var client = clientOf();
+    if (!client) return null;
+    var room = client.curRoom || client.room;
+    if (room && room.battle) return room;
+    return client.baseRoom && client.baseRoom.battle ? client.baseRoom : room;
+  }
+
+  function publishRoom(room) {
+    if (document.documentElement && document.documentElement.setAttribute) {
+      document.documentElement.setAttribute('data-st-room', room && room.id || '');
+    }
+  }
+
+
   /* The socket path and the poll path see the same battle from two directions.
    *
    * The page APPENDS every protocol line it receives to `battle.log` as well as delivering it on
@@ -147,6 +166,14 @@
 
   function forwardBatch(text, kind, claimable) {
     if (typeof text !== 'string' || !text) return;
+    if (kind === 'recv' && text.charAt(0) === '>') {
+      var split = text.indexOf('\n');
+      if (split < 0) return;
+      var targetRoom = text.slice(1, split).trim();
+      var activeRoom = roomOf();
+      if (!/^battle-/.test(targetRoom) || (activeRoom && activeRoom.id && activeRoom.id !== targetRoom)) return;
+      text = text.slice(split + 1);
+    }
     // A single frame can carry several newline separated protocol lines.
     var parts = text.split('\n');
     var delivered = [];
@@ -309,8 +336,10 @@
       var roomid = body.slice(1, nl).trim();
       body = body.slice(nl + 1);
       if (!/^battle-/.test(roomid)) return 0;
+      var current = roomOf();
+      if (current && current.id && current.id !== roomid) return 0;
     } else {
-      var room = window.app && window.app.curRoom;
+      var room = roomOf();
       if (!room || !/^battle-/.test(String(room.id || ''))) return 0;
     }
     if (!body) return 0;
@@ -326,7 +355,7 @@
   function hookAppReceive() {
     if (appReceiveHooked) return true;
     try {
-      var app = window.app;
+      var app = clientOf();
       if (!app || typeof app.receive !== 'function') return false;
       var nativeReceive = app.receive;
       var wrapped = function receive(data) {
@@ -380,8 +409,7 @@
 
   function pollPpSnapshot() {
     try {
-      var app = window.app;
-      var room = app && app.curRoom;
+      var room = roomOf();
       var battle = room && room.battle;
       if (!battle) return;
       var rows = collectMoveSlots(battle);
@@ -532,11 +560,30 @@
     }
   }
 
+  var lastBattle = null;
+  function syncBattleRoom(room, battle) {
+    if (!battle || battle === lastBattle) return;
+    var changed = !!lastBattle;
+    lastBattle = battle;
+    pollCursor = 0;
+    lastPpSignature = '';
+    lastAccuracySignature = '';
+    if (!changed) return;
+    pendingSocketBatches.length = 0;
+    lastForwarded = { line: null, kind: null };
+    forward('|init|battle', 'poll');
+    pollBattleBuffer(battle);
+    if (room.request && typeof room.request === 'object') {
+      forward('|request|' + JSON.stringify(room.request), 'poll');
+    }
+  }
+
   function pollBattleLog() {
     try {
-      var app = window.app;
-      var room = app && app.curRoom;
+      var room = roomOf();
       var battle = room && room.battle;
+      publishRoom(room);
+      syncBattleRoom(room, battle);
       // Install the robust hook as soon as the page exposes its app — this tick is the retry
       // loop, so no separate timer is needed.
       hookAppReceive();
@@ -564,7 +611,7 @@
     var tries = 0;
     var wait = setInterval(function () {
       tries++;
-      if ((window.app && window.app.curRoom && window.app.curRoom.battle) || tries > 120) {
+      if ((roomOf() && roomOf().battle) || tries > 120) {
         clearInterval(wait);
         pollBattleLog();
       }
@@ -582,7 +629,8 @@
   window.__ST_INJECTED_FLUSH = pollBattleLog;
   window.__ST_INJECTED_PP_FLUSH = pollPpSnapshot;
   window.__ST_INJECTED_ACC_FLUSH = function () {
-    var battle = window.app && window.app.curRoom && window.app.curRoom.battle;
+    var room = roomOf();
+    var battle = room && room.battle;
     return pollAccuracySnapshot(battle);
   };
 })();

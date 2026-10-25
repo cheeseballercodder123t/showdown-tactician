@@ -927,26 +927,126 @@
    *  GENERIC FALLBACKS (used when a species is not in the database at all)
    * ========================================================================================*/
 
+  /*
+   * The ability a generic set should be modelled with. `abilities[0]` is the DEX ORDER, not the
+   * competitive one: Serperior's first ability is Overgrow (its real set is Contrary), Dragonite's
+   * is Inner Focus (Multiscale), Scizor's is Swarm (Technician), Gliscor's is Hyper Cutter (Poison
+   * Heal). Modelling the placeholder made every uncurated NatDex body take 2x from a hit that
+   * Multiscale halves, miss Contrary's +2 SpA, and - because the pruner drops candidate sets whose
+   * ability contradicts a REVEALED one - leave an empty pool the moment the real ability printed.
+   * This list is only a preference among the abilities the species legitimately has; the pool is
+   * still narrowed by what the battle reveals. */
+  const GENERIC_ABILITY_PRIORITY = [
+    'contrary', 'multiscale', 'technician', 'poisonheal', 'regenerator', 'intimidate',
+    'hugepower', 'purepower', 'magicguard', 'magicbounce', 'levitate', 'speedboost',
+    'adaptability', 'sheerforce', 'sturdy', 'thickfat', 'waterabsorb', 'voltabsorb',
+    'flashfire', 'sapsipper', 'naturalcure', 'guts', 'sandstream', 'drizzle', 'drought',
+    'snowwarning', 'electricsurge', 'grassysurge', 'psychicsurge', 'mistysurge',
+    'protosynthesis', 'quarkdrive', 'disguise', 'widerguard', 'prankster', 'unaware',
+    'triage', 'queenlymajesty', 'armortail', 'goodasgold', 'supremeoverlord'
+  ];
+  function genericAbility(speciesName) {
+    const list = U.getAbilities(speciesName) || [];
+    for (let i = 0; i < GENERIC_ABILITY_PRIORITY.length; i++) {
+      for (let j = 0; j < list.length; j++) {
+        if (U.toID(list[j]) === GENERIC_ABILITY_PRIORITY[i]) return list[j];
+      }
+    }
+    return list[0] || '';
+  }
+
   function genericFor(speciesName) {
     const sp = U.getSpecies(speciesName);
     if (!sp) return [];
-    const ability = (U.getAbilities(sp.name) || [])[0] || '';
-    const phys = U.baseStats(sp.name).atk >= U.baseStats(sp.name).spa;
-    const core = phys ? ['Earthquake', 'Knock Off', 'U-turn', 'Swords Dance']
-      : ['Psychic', 'Shadow Ball', 'Volt Switch', 'Calm Mind'];
+    const ability = genericAbility(sp.name);
+    /* A TIE GOES SPECIAL. Serperior is 75 Atk / 75 SpA, and `>=` called it a physical attacker:
+     * the fallback then handed a Leaf Storm user Adamant 252 Atk and priced its Fire Punch
+     * against a body whose real spread is special. Ties are rare and overwhelmingly special
+     * (the mixed 75/75 and 80/80 families are special attackers in practice), so the tie-break
+     * follows that fact rather than the order of the two stats. */
+    const base = U.baseStats(sp.name);
+    const phys = base.atk > base.spa;
+    /* The generic pool used to hand EVERY physical body Earthquake / Knock Off / U-turn / Swords
+     * Dance and every special one Psychic / Shadow Ball / Volt Switch / Calm Mind, whatever its
+     * typing. A Serperior was therefore modelled as a Psychic attacker and a Water type as an
+     * Earthquake user, which is how an uncurated species ends up "threatening" a move it cannot
+     * learn. These are the canonical STAB moves of each type, picked by the species' OWN typing
+     * and its attacking stat; no learnset data is vendored, so the pool is still a prior, but it
+     * is now a prior about this body rather than about Great Tusk. */
+    const GENERIC_STAB = {
+      Normal: ['Body Slam', 'Hyper Voice'], Fire: ['Flare Blitz', 'Flamethrower'],
+      Water: ['Liquidation', 'Surf'], Electric: ['Wild Charge', 'Thunderbolt'],
+      Grass: ['Wood Hammer', 'Giga Drain'], Ice: ['Icicle Crash', 'Ice Beam'],
+      Fighting: ['Close Combat', 'Focus Blast'], Poison: ['Gunk Shot', 'Sludge Bomb'],
+      Ground: ['Earthquake', 'Earth Power'], Flying: ['Brave Bird', 'Air Slash'],
+      Psychic: ['Zen Headbutt', 'Psychic'], Bug: ['Megahorn', 'Bug Buzz'],
+      Rock: ['Stone Edge', 'Power Gem'], Ghost: ['Poltergeist', 'Shadow Ball'],
+      Dragon: ['Dragon Claw', 'Dragon Pulse'], Dark: ['Crunch', 'Dark Pulse'],
+      Steel: ['Iron Head', 'Flash Cannon'], Fairy: ['Play Rough', 'Moonblast']
+    };
+    const stabOf = function (type, special) {
+      const pair = GENERIC_STAB[type];
+      if (!pair) return '';
+      return special ? pair[1] : pair[0];
+    };
+    const types = (sp.types || []).slice(0, 2);
+    const primaryStab = (phys ? stabOf(types[0]) : stabOf(types[0], true)) ||
+      (phys ? stabOf(types[1]) : stabOf(types[1], true));
+    const secondaryStab = phys ? stabOf(types[1]) : stabOf(types[1], true);
+    // The Choice Specs template is a SPECIAL set whatever the body's better stat is.
+    const specStab = stabOf(types[0], true) || stabOf(types[1], true);
+    const specStab2 = stabOf(types[1], true);
+    const core = [];
+    if (primaryStab) core.push(primaryStab);
+    if (secondaryStab && secondaryStab !== primaryStab) core.push(secondaryStab);
+    core.push('Knock Off');
+    core.push(phys ? 'Swords Dance' : 'Calm Mind');
     const withSpecies = function (s) {
       const copy = Object.assign({}, s);
       copy.species = sp.name;
       copy.id = U.toID(sp.name) + '-' + s.role;
-      copy.moves = s.moves.filter(function (m) { return !!U.getMoveData(m); });
+      const seen = {};
+      copy.moves = s.moves.filter(function (m) {
+        if (!m || !U.getMoveData(m)) return false;
+        const id = U.toID(m);
+        if (seen[id]) return false;
+        seen[id] = true;
+        return true;
+      });
       return copy;
     };
-    return [
-      withSpecies({ id: 'generic-boots', species: sp.name, role: 'bulky', item: 'Heavy-Duty Boots', ability: ability, nature: phys ? 'Adamant' : 'Modest', evs: ev(0, phys ? 252 : 0, 0, phys ? 0 : 252, 4, 252), ivs: Object.assign({}, IV_MAX), moves: core, weight: 0.34, tags: ['generic', 'boots'], isMega: false, isZCrystal: false, itemlessArchetype: false, notes: 'Generic filler set' }),
-      withSpecies({ id: 'generic-leftovers', species: sp.name, role: 'wall', item: 'Leftovers', ability: ability, nature: 'Bold', evs: ev(252, 0, 252, 0, 4, 0), ivs: Object.assign({}, IV_MAX), moves: ['Recover', 'Protect', 'Toxic', 'Earthquake'], weight: 0.26, tags: ['generic', 'wall'], isMega: false, isZCrystal: false, itemlessArchetype: false, notes: 'Generic filler set' }),
-      withSpecies({ id: 'generic-scarf', species: sp.name, role: 'scarf', item: 'Choice Scarf', ability: ability, nature: 'Jolly', evs: ev(0, 252, 0, 0, 4, 252), ivs: Object.assign({}, IV_MAX), moves: core, weight: 0.22, tags: ['generic', 'choice', 'scarf'], isMega: false, isZCrystal: false, itemlessArchetype: false, notes: 'Generic filler set' }),
-      withSpecies({ id: 'generic-specs', species: sp.name, role: 'specs', item: 'Choice Specs', ability: ability, nature: 'Modest', evs: ev(0, 0, 0, 252, 4, 252), ivs: Object.assign({}, IV_MAX), moves: ['Psychic', 'Shadow Ball', 'Focus Blast', 'Trick'], weight: 0.18, tags: ['generic', 'choice', 'specs'], isMega: false, isZCrystal: false, itemlessArchetype: false, notes: 'Generic filler set' })
+    const pool = [
+      withSpecies({ id: 'generic-boots', species: sp.name, role: 'fast', item: 'Heavy-Duty Boots', ability: ability, nature: phys ? 'Adamant' : 'Modest', evs: ev(0, phys ? 252 : 0, 0, phys ? 0 : 252, 4, 252), ivs: Object.assign({}, IV_MAX), moves: core, weight: 0.34, tags: ['generic', 'boots'], isMega: false, isZCrystal: false, itemlessArchetype: false, notes: 'Generic filler set' }),
+      withSpecies({ id: 'generic-leftovers', species: sp.name, role: 'wall', item: 'Leftovers', ability: ability, nature: 'Bold', evs: ev(252, 0, 252, 0, 4, 0), ivs: Object.assign({}, IV_MAX), moves: [primaryStab, 'Protect', 'Toxic', 'Rest'], weight: 0.26, tags: ['generic', 'wall'], isMega: false, isZCrystal: false, itemlessArchetype: false, notes: 'Generic filler set' }),
+      /* The Scarf template follows the same physical/special split as `core`: a Timid special
+       * Serperior was previously given a JOLLY 252 Atk spread, so its Speed was right but every
+       * damage number came off the wrong offence. */
+      withSpecies({ id: 'generic-scarf', species: sp.name, role: 'scarf', item: 'Choice Scarf', ability: ability, nature: phys ? 'Jolly' : 'Timid', evs: ev(0, phys ? 252 : 0, 0, phys ? 0 : 252, 4, 252), ivs: Object.assign({}, IV_MAX), moves: core, weight: 0.22, tags: ['generic', 'choice', 'scarf'], isMega: false, isZCrystal: false, itemlessArchetype: false, notes: 'Generic filler set' }),
+      withSpecies({ id: 'generic-specs', species: sp.name, role: 'specs', item: 'Choice Specs', ability: ability, nature: 'Modest', evs: ev(0, 0, 0, 252, 4, 252), ivs: Object.assign({}, IV_MAX), moves: [specStab, specStab2, 'Focus Blast', 'Trick'], weight: 0.18, tags: ['generic', 'choice', 'specs'], isMega: false, isZCrystal: false, itemlessArchetype: false, notes: 'Generic filler set' })
     ];
+    /* THE POOL MUST SPAN EVERY LEGAL ABILITY. The pruner eliminates candidate sets whose ability
+     * contradicts a REVEALED one, and the battle prints `|-ability|` as soon as it matters. A
+     * single-ability pool empties itself on that reveal, and the "never leave an empty space"
+     * fallback then re-publishes sets with the ability the log just disproved. One cheaper boots
+     * variant per remaining legal ability keeps every possible reveal representable. */
+    const legal = U.getAbilities(sp.name) || [];
+    const seenAb = {};
+    seenAb[U.toID(ability)] = true;
+    let alt = 0;
+    for (let i = 0; i < legal.length; i++) {
+      const id = U.toID(legal[i]);
+      if (!id || seenAb[id]) continue;
+      seenAb[id] = true;
+      alt++;
+      pool.push(withSpecies({
+        id: 'generic-alt-' + alt, species: sp.name, role: 'alt-' + alt, item: 'Heavy-Duty Boots',
+        ability: legal[i], nature: phys ? 'Adamant' : 'Modest',
+        evs: ev(0, phys ? 252 : 0, 0, phys ? 0 : 252, 4, 252), ivs: Object.assign({}, IV_MAX),
+        moves: core, weight: 0.12, tags: ['generic', 'boots', 'alt-ability'], isMega: false,
+        isZCrystal: false, itemlessArchetype: false, notes: 'Generic filler set (alternate ability)'
+      }));
+    }
+    return pool;
   }
 
   // Species-agnostic templates; world_sampler.js stamps the real species onto them.

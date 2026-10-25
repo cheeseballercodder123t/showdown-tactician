@@ -75,6 +75,43 @@
     raindance: 'rain', rain: 'rain', primordialsea: 'heavyrain', heavyrain: 'heavyrain',
     sandstorm: 'sandstorm', snow: 'snow', hail: 'snow', snowscape: 'snow', chillyreception: 'snow'
   };
+  /*
+   * BATTLE-FORME ALIASES — the bodies whose on-field species differs from the one the roster
+   * knows them by. These share a National Dex number with their base, so Species Clause means a
+   * team can never carry both, which is what makes matching them safe. Nothing outside this list
+   * is ever matched by name prefix: `Ursaluna` must not resolve to `Ursaluna-Bloodmoon` (a
+   * genuinely different Pokemon that IS legal next to it), and that rule is pinned by
+   * tests/hardening_audit.js.
+   */
+  const BATTLE_FORMES = {
+    aegislash: ['aegislashshield', 'aegislashblade'],
+    mimikyu: ['mimikyubusted'],
+    darmanitan: ['darmanitanzen'],
+    darmanitangalar: ['darmanitangalarzen'],
+    meloetta: ['meloettapirouette'],
+    zygarde: ['zygardecomplete'],
+    eiscue: ['eiscuenoice'],
+    wishiwashi: ['wishiwashischool'],
+    minior: ['miniormeteor', 'miniorcore', 'miniororange', 'minioryellow', 'miniorgreen', 'miniorblue', 'miniorindigo', 'miniorviolet'],
+    morpeko: ['morpekohangry'],
+    cramorant: ['cramorantgulping', 'cramorantgorging'],
+    palafin: ['palafinhero'],
+    zacian: ['zaciancrowned'],
+    zamazenta: ['zamazentacrowned'],
+    terapagos: ['terapagosterastal', 'terapagostellar'],
+    ogerpon: ['ogerponwellspring', 'ogerponhearthflame', 'ogerponcornerstone']
+  };
+  /** The base id this battle forme belongs to, or the id itself when it is a base. */
+  function battleFormeBase(id) {
+    if (!id) return '';
+    if (BATTLE_FORMES[id]) return id;
+    const keys = Object.keys(BATTLE_FORMES);
+    for (let i = 0; i < keys.length; i++) {
+      if (BATTLE_FORMES[keys[i]].indexOf(id) !== -1) return keys[i];
+    }
+    return null;
+  }
+
   const TERRAIN_ALIASES = {
     electricterrain: 'electric', psychicterrain: 'psychic', grassyterrain: 'grassy',
     mistyterrain: 'misty', electric: 'electric', psychic: 'psychic', grassy: 'grassy', misty: 'misty'
@@ -132,19 +169,35 @@
     return /(^|[-\s])(mega|primal)($|[-\s,])/i.test(s);
   }
 
-  /** '100/100' | '51/100 brn' | '0 fnt' -> { hp, status, fainted } */
+  /**
+   * '100/100' | '51/100 brn' | '0 fnt' -> { hp, status, fainted }
+   *
+   * `hp` is a PERCENT, and it is frequently fractional: the protocol parser has already divided
+   * the raw counter (`58/319` -> `18.18`) before this sees it, and the HP Percentage Mod prints
+   * `72.06/100`. The old reader only accepted whole numbers, so every fractional landing was
+   * rejected (`hp: null`) and the MonState kept whatever HP it had before — after the first
+   * non-round hit a body read 100% for the rest of the battle, which poisons the KO chance, the
+   * bench cards and every `hpPercent` arithmetic the engine does. Numbers are accepted directly
+   * (that is what events carry) and decimals are parsed rather than matched with \d+.
+   */
   function parseHPString(input) {
     const out = { hp: null, status: '', fainted: false };
     if (input === null || input === undefined || input === '') return out;
+    if (typeof input === 'number') {
+      if (!isFinite(input)) return out;
+      out.hp = clamp(Math.round(input * 100) / 100, 0, 100);
+      if (out.hp === 0) out.fainted = true;
+      return out;
+    }
     const s = String(input).trim();
     if (/fnt/i.test(s)) { out.hp = 0; out.fainted = true; return out; }
     const m = s.match(/^(\d+)\s*\/\s*(\d+)\s*(.*)$/);
     if (m) {
       const cur = parseInt(m[1], 10), max = parseInt(m[2], 10);
-      out.hp = max > 0 ? clamp(Math.round((cur / max) * 100), 0, 100) : 0;
+      out.hp = max > 0 ? clamp(Math.round((cur / max) * 10000) / 100, 0, 100) : 0;
       out.status = (m[3] || '').trim().slice(0, 3);
-    } else if (/^\d+$/.test(s)) {
-      out.hp = clamp(parseInt(s, 10), 0, 100);
+    } else if (/^\d+(?:\.\d+)?$/.test(s)) {
+      out.hp = clamp(parseFloat(s), 0, 100);
     }
     if (out.hp === 0) out.fainted = true;
     return out;
@@ -270,6 +323,13 @@
       return {
         id: toID(canonical),
         species: canonical,
+        /* The name this body is REGISTERED as: it never follows a battle-forme change, so an
+         * Aegislash that became Aegislash-Blade is still found when it switches back in. */
+        rosterSpecies: canonical,
+        /* Every species name this body has stood in, INCLUDING its battle-only formes. Aegislash
+         * enters as Aegislash-Shield, changes to Aegislash-Blade and returns as
+         * Aegislash-Shield; lookup has to recognise all of them as the same Pokemon. */
+        formsSeen: [canonical],
         side: side,
         slot: o.slot || null,
         index: typeof index === 'number' ? index : 0,
@@ -282,6 +342,15 @@
         hpPercent: o.hp === undefined || o.hp === null ? 100 : o.hp,
         fainted: !!o.fainted,
         status: o.status || '',
+        /* A battle-only TYPE override (Protean, Color Change, Soak, Burn Up…). The species on
+         * the wire never changes for these, so without it every later damage number used the
+         * original typing: a Protean Meowscarada that had become pure Grass kept taking 2x
+         * Fighting damage in the preview. Cleared on switch-in, exactly like the cartridge. */
+        typeOverride: null,
+        /* Mimikyu's Disguise is intact until the protocol says otherwise. The first damaging hit
+         * is absorbed completely, so pricing it as full damage was a guaranteed wrong answer
+         * (and "guaranteed OHKO" on a full-health Mimikyu was the worst version of it). */
+        disguiseIntact: /^mimikyu/i.test(canonical),
         statusTurns: 0,
         toxicCounter: 0,
         boosts: { atk: 0, def: 0, spa: 0, spd: 0, spe: 0, accuracy: 0, evasion: 0 },
@@ -481,11 +550,13 @@
     }
 
     setFormat(formatName) {
-      const name = String(formatName || '');
+      const name = String(formatName || '').trim();
       const st = this.state;
+      /* Room kinds are not formats. `|init|battle` is what a battle room opens with, and a
+       * stray one must never replace a real tier (see ProtocolParser's `init` handler). */
+      if (/^(battle|chat|room|lobby|teampreview|multi)$/i.test(name)) return st.formatSupported;
       st.format = name || st.format;
-      st.formatSupported = this._isSupportedFormat(name);
-      if (!name) st.formatSupported = true; // unknown header: assume supported and decide later
+      st.formatSupported = name ? this._isSupportedFormat(name) : true;
       this._touch('format');
       return st.formatSupported;
     }
@@ -531,16 +602,66 @@
       if (!id) return null;
       const base = id.replace(FORME_SUFFIX_RE, '');
       let best = null;
+      let roster = null;
       for (let i = 0; i < team.length; i++) {
         const m = team[i];
         if (!m) continue;
         if (m.id === id) return m;
+        if (m.formsSeen && m.formsSeen.length) {
+          for (let f = 0; f < m.formsSeen.length; f++) {
+            if (toID(m.formsSeen[f]) === id) return m;
+          }
+        }
+        /* STABLE ROSTER IDENTITY. `species` follows the body's BATTLE forme: Aegislash-Shield
+         * becomes `Aegislash-Blade` on |detailschange|, Mimikyu becomes `Mimikyu-Busted`, and
+         * so on. Those forme names are not the name the next |switch| line will use, so looking
+         * a body up by its CURRENT species missed it and _onSwitch minted a SECOND MonState for
+         * the same Pokemon — a seven-body team, a phantom bench card, a wrong alive count and a
+         * wrong Supreme Overlord tally. `rosterSpecies` is what the body was registered as and
+         * never follows a forme change. */
+        if (m.rosterSpecies && toID(m.rosterSpecies) === id) { if (!roster) roster = m; continue; }
         if (best) continue;
         const mid = toID(m.species) || m.id;
         if (mid === id) { best = m; continue; }
         if (base && mid.replace(FORME_SUFFIX_RE, '') === base) best = m;
       }
-      return best;
+      if (best) return best;
+      if (roster) return roster;
+      return this._findBattleForme(side, id);
+    }
+
+    /**
+     * _findBattleForme(side, id) -> a body whose roster name is the PREFIX of this battle forme.
+     *
+     * The team preview (`|poke|`) names the BASE species (`Aegislash`), while the first
+     * `|switch|` names the forme the client actually puts on the field (`Aegislash-Shield`).
+     * Without this the first switch-in of an Aegislash could never claim its preview entry and
+     * grew the roster instead of filling it. Only an entry that has NEVER held a slot may be
+     * matched this way: a preview placeholder is the one thing this can legitimately be, so the
+     * rule can never merge two real bodies on the same team. (Species Clause also rules out
+     * bringing two kindreds of the same dex number, which is what made prefix matching unsafe
+     * against `Ursaluna` / `Ursaluna-Bloodmoon` in the old full-team lookup.)
+     */
+    _findBattleForme(side, id) {
+      if (!id) return null;
+      const team = this._teamFor(side);
+      for (let i = 0; i < team.length; i++) {
+        const m = team[i];
+        if (!m || m.slot || m.isActive) continue;
+        const roster = toID(m.rosterSpecies || m.species);
+        if (!roster || roster.length < 4) continue;
+        // Both directions: the preview may name the base body while the switch names its battle
+        // forme (`Aegislash` -> `Aegislash-Shield`), or the paste may carry the forme while the
+        // protocol's switch-in uses the base name (`Aegislash` for an `Aegislash-Shield` entry,
+        // which is what @pkmn/sim prints). Only a NEVER-FIELDED placeholder is eligible, and the
+        // names must belong to the same battle-forme family from BATTLE_FORMES, so two real
+        // bodies can never be merged by this rule.
+        const incomingBase = battleFormeBase(id);
+        const rosterBase = battleFormeBase(roster);
+        if (!incomingBase || !rosterBase || incomingBase !== rosterBase) continue;
+        return m;
+      }
+      return null;
     }
 
     getTeam(side) {
@@ -630,6 +751,26 @@
       return st.myTeam;
     }
 
+    /**
+     * _battleLevel() -> the level the BATTLE is played at.
+     *
+     * A battle is played at one level for both sides, and the pasted team is where that number
+     * is actually known (100 unless the paste says otherwise). The `L50` in a `|poke|` or
+     * `|switch|` details string is NOT that number: Showdown prints a normalised level in the
+     * team-preview and replay text, and believing it priced a 252 HP Serperior at 150 max HP.
+     * Against a burned, Guts-boosted Ursaluna that read "388 - 457%" for a Fire Punch that does
+     * about 84-99% in the real battle, and the same half-stats error inflated every preview.
+     * Level is a property of the format, so the opponent is priced at OUR level.
+     */
+    _battleLevel() {
+      const mine = (this.state && this.state.myTeam) || [];
+      for (let i = 0; i < mine.length; i++) {
+        const m = mine[i];
+        if (m && m.fromPaste && typeof m.level === 'number' && m.level > 0) return m.level;
+      }
+      return 100;
+    }
+
     /** Team preview roster for the opponent (and for us when no paste is loaded). */
     _registerPreviewPoke(side, index, species, details, item, hp, status, gender, level) {
       const team = this._teamFor(side);
@@ -642,13 +783,15 @@
       }
       // NOTE: team preview order is NOT battle slot order. Slots are only ever assigned by an
       // actual |switch| line, so a preview entry stays slotless until it really enters.
+      const reported = level || tok.level || 100;
       const mon = this._newMon(tok.species || species, side, index, {
         slot: null,
-        level: level || tok.level || 100,
+        level: this._battleLevel(),
         gender: gender || tok.gender || '',
         hp: hp,
         status: status
       });
+      mon.reportedLevel = reported;
       const realItem = item && !/^item:?$/.test(String(item).trim()) ? String(item).replace(/^item:\s*/i, '') : null;
       if (realItem && U.isItemKnown(realItem)) {
         mon.currentBattleItem = realItem;
@@ -670,11 +813,15 @@
       if (!event || typeof event !== 'object') return this.state;
       const st = this.state;
       const type = event.type || 'unknown';
-      if (event.raw) this._pushLog(event.raw);
+      // Synthesised events (`speedfloor`, `residualorder`) reuse the raw line they were derived
+      // from, so pushing their `raw` again put the same move line in the transcript twice.
+      if (event.raw && !event.synthetic) this._pushLog(event.raw);
       if (type !== 'unknown') this._pushHistory(type, event);
 
+      if (['init', 'turn', 'switch', 'replace', 'upkeep', 'faint', 'cant', 'miss', 'fail'].includes(type)) this._damageMove = null;
       switch (type) {
         case 'init': this._onInit(event); break;
+        case 'format': this.setFormat(event.format); break;
         case 'player': this._onPlayer(event); break;
         case 'teamsize': this._onTeamsize(event); break;
         case 'poke': this._onPoke(event); break;
@@ -687,7 +834,14 @@
         case 'setboost': this._onSetBoost(event); break;
         case 'clearallboost': this._onClearAllBoost(); break;
         case 'clearnegativeboost': this._onClearNegativeBoost(event); break;
+        case 'clearpositiveboost': this._onClearPositiveBoost(event); break;
+        case 'invertboost': this._onInvertBoost(event); break;
+        case 'swapboost': this._onSwapBoost(event); break;
+        case 'copyboost': this._onCopyBoost(event); break;
         case 'crit': this._onCrit(event); break;
+        /* A `|-immune|` line changes no HP, but it is the only place a passive immunity
+         * ability (Levitate, Flash Fire, Sap Sipper, Water Absorb) is printed. */
+        case 'immune': this._onImmune(event); break;
         case 'damage': this._onHPDelta(event, 'damage'); break;
         case 'heal': this._onHPDelta(event, 'heal'); break;
         case 'sethp': this._onHPDelta(event, 'sethp'); break;
@@ -712,6 +866,7 @@
         case 'accuracy': this._onAccuracy(event); break;
         case 'residualorder': this._onResidualOrder(event); break;
         case 'formechange': this._onFormeChange(event); break;
+        case 'typechange': this._onTypeChange(event); break;
         case 'detailschange': this._onDetailsChange(event); break;
         case 'terastallize': this._onTerastallize(event); break;
         case 'zpower': this._onZPower(event); break;
@@ -819,10 +974,15 @@
       const tok = U.tokenizeDetails(details);
       if (!side || !slot) return;
       const st = this.state;
+      /* `|replace|` is Illusion breaking, NOT a switch: the body never left the field, so its
+       * stat stages, volatile, stint and switch-in-ability window all still belong to it. Treating
+       * it as a fresh switch erased boosts the battlefield still shows and re-stamped
+       * `switchedInTurn`, which tells the pruner a switch-in ability could have fired again. */
+      const replacing = event.from === 'replace';
 
       // 1) close the stint of whatever was in that slot (paradox + item inference)
       const previous = this._findBySlot(slot);
-      if (previous) this._endStint(previous, 'switch-out');
+      if (previous && !replacing) this._endStint(previous, 'switch-out');
 
       // 2) locate or create the mon
       let mon = this._findBySpecies(side, tok.species);
@@ -834,10 +994,15 @@
       }
       mon.slot = slot;
       mon.revealed = true;
+      if (tok.species && (!mon.formsSeen || mon.formsSeen.indexOf(tok.species) === -1)) {
+        mon.formsSeen = (mon.formsSeen || []).concat([tok.species]);
+      }
       // The pasted team owns level and gender: a protocol details string must never silently
       // retune the EV/IV/nature truth that every Speed and damage number is computed from.
       if (!mon.fromPaste) {
-        mon.level = event.level || tok.level || mon.level || 100;
+        // The details level is recorded, never adopted: see _battleLevel().
+        mon.reportedLevel = event.level || tok.level || mon.reportedLevel || null;
+        mon.level = this._battleLevel();
         mon.gender = event.gender || tok.gender || mon.gender;
       } else if (!mon.gender) {
         mon.gender = event.gender || tok.gender || '';
@@ -849,23 +1014,31 @@
       // only ever reads the absence within that window. The LEAD switches arrive BEFORE `|turn|1`
       // (the server prints `|switch|p1a:`, `|switch|p2a:`, then `|turn|1`), so a stamp of 0 would
       // never match the turn the decision is actually made on: attribute those to turn 1.
-      mon.switchedInTurn = st.turn > 0 ? st.turn : 1;
+      if (!replacing) mon.switchedInTurn = st.turn > 0 ? st.turn : 1;
       if (isMegaDetails(details)) this._markMega(mon, tok.species);
 
-      // rule 2: stint + boosts reset
-      mon.activeStintMoves = [];
-      mon.activeStintCount = 0;
-      mon.boosts = { atk: 0, def: 0, spa: 0, spd: 0, spe: 0, accuracy: 0, evasion: 0 };
-      mon.volatiles = {
-        substitute: false, leechseed: false, encore: false, taunt: false, disable: false,
-        confusion: false, trappedvolatile: false, ingrain: false, saltcure: false, cursed: false,
-        yawn: false, attract: false
-      };
-      mon.turnedThisTurn = false;
-      mon.paradoxStintActive = U.isParadox(mon.species);
-      mon.paradoxActivatedThisStint = false;
-      mon.boostedStat = null;                  // a fresh stint's boost is not stated until | -start |
-      this._addStint(mon, slot);
+      // rule 2: stint + boosts reset (only on a real switch-in)
+      if (!replacing) {
+        mon.activeStintMoves = [];
+        mon.activeStintCount = 0;
+        mon.boosts = { atk: 0, def: 0, spa: 0, spd: 0, spe: 0, accuracy: 0, evasion: 0 };
+        // Typing resets on entry; a broken Disguise stays broken.
+        mon.typeOverride = null;
+        mon.disguiseIntact = /^mimikyu/i.test(mon.species) && !/busted/i.test(mon.species) && mon.disguiseIntact !== false;
+        // A copied ability (Trace, Role Play) ends when the body leaves; it re-copies on entry.
+        mon.activeAbility = null;
+        mon.abilityOn = false;
+        mon.volatiles = {
+          substitute: false, leechseed: false, encore: false, taunt: false, disable: false,
+          confusion: false, trappedvolatile: false, ingrain: false, saltcure: false, cursed: false,
+          yawn: false, attract: false
+        };
+        mon.turnedThisTurn = false;
+        mon.paradoxStintActive = U.isParadox(mon.species);
+        mon.paradoxActivatedThisStint = false;
+        mon.boostedStat = null;                // a fresh stint's boost is not stated until | -start |
+        this._addStint(mon, slot);
+      }
 
       // Nobody else may keep this slot: a benched mon that still claims 'p2a' would make
       // every later `|move|p2a:` / `|-damage|p2a:` line resolve to the wrong Pokémon.
@@ -875,6 +1048,12 @@
         if (!other || other === mon) continue;
         if (other.slot === slot) { other.slot = null; other.isActive = false; }
       }
+
+      /* The KO tally is kept per SLOT, and the body that just left is not the body that owns the
+       * slot now. Without this clear, the last attacker to hit the previous occupant was credited
+       * with the next one's faint: a body that came in and died to Stealth Rock (no `[of]` clause,
+       * no attacker) inherited whatever hit landed on its predecessor. */
+      if (this.state._lastDamager && this.state._lastDamager[slot]) delete this.state._lastDamager[slot];
 
       // 3) HP / status
       if (event.hp !== undefined && event.hp !== null) this._setHP(mon, event.hp, event.status);
@@ -1046,13 +1225,27 @@
       if (!mon) return;
       const moveName = event.move || '';
       const moveId = event.moveId || toID(moveName);
+      this._damageMove = { attacker: mon, moveName: moveName, moveId: moveId, targetSlot: event.targetSlot, turn: this.state.turn };
+      const victim = event.targetSlot && this._findBySlot(event.targetSlot);
+      if (victim) victim.critTurn = null;
+      /* A CALLED move (`[from] Sleep Talk` / `Metronome` / `Dancer` / `Instruct`) is not a click.
+       * Its own `|move|` line names the caller, which already did the accounting. Counting the
+       * called move made two or three distinct moves in one stint, which the pruner reads as
+       * proof that no Choice item can be held ("choice lock broken" on bodies that never broke
+       * one), and it credited the body with moves it does not own (a Metronome Moonblast in the
+       * scout ledger). Everything BELOW that reads the board (a called Trick Room really does
+       * twist it, a called Knock Off really does connect) still runs; only the click accounting
+       * is skipped. */
+      const called = !!event.from;
       // Receipt: a turn of Trick Room OUR side actually attacked in. A hard switch under TR is
       // exactly the turn the receipt is meant to expose as wasted, so it is not counted here.
       if (this.state.field.trickRoom && side === this.state.mySide) this.state.battleStats.trAttackTurns++;
-      mon.lastMove = moveName;
-      mon.lastMoveTurn = this.state.turn;
+      if (!called) {
+        mon.lastMove = moveName;
+        mon.lastMoveTurn = this.state.turn;
+      }
       mon.turnedThisTurn = true;
-      if (moveName && mon.revealedMoves.indexOf(moveName) === -1) mon.revealedMoves.push(moveName);
+      if (!called && moveName && mon.revealedMoves.indexOf(moveName) === -1) mon.revealedMoves.push(moveName);
 
       // new active mon we have never seen (e.g. missed switch line)
       if (!mon.isActive) { mon.isActive = true; this._setActive(side, mon); }
@@ -1062,27 +1255,29 @@
       // pruner permanently blacklists every Choice item for that mon.
       // Observed PP usage: one click of a move is one PP, whether or not the page ever handed
       // us a snapshot. This is the fallback the gauge prints as "used N times".
-      if (moveId && !FORCED_MOVE_IDS.has(moveId)) {
-        mon.ppUsed[moveId] = (mon.ppUsed[moveId] || 0) + 1;
-      }
-      if (moveName && !FORCED_MOVE_IDS.has(moveId) && mon.activeStintMoves.indexOf(moveName) === -1) {
-        mon.activeStintMoves.push(moveName);
-        if (mon.activeStintMoves.length > MAX_ACTIVE_STINTS) mon.activeStintMoves.shift();
-      }
-      mon.activeStintCount = mon.activeStintMoves.length;
-      if (mon.activeStintCount === 1 && !mon.originalArchetypeItem) {
-        // First move of the stint: adopt the item of the currently believed set as the
-        // working hypothesis (never invented here — only read from the pruner's survivors).
-        const live = mon.liveSet || mon.candidateSets[0] || null;
-        if (live && live.item) mon.originalArchetypeItem = live.item;
-      }
-      if (mon.activeStintCount >= 2 && mon.originalArchetypeItem) {
-        mon.originalArchetypeItem = null;
-        this._addItemEvidence(mon, 'Used ' + mon.activeStintCount + ' different moves in one stint: item is not Choice-locked');
+      if (!called) {
+        if (moveId && !FORCED_MOVE_IDS.has(moveId)) {
+          mon.ppUsed[moveId] = (mon.ppUsed[moveId] || 0) + 1;
+        }
+        if (moveName && !FORCED_MOVE_IDS.has(moveId) && mon.activeStintMoves.indexOf(moveName) === -1) {
+          mon.activeStintMoves.push(moveName);
+          if (mon.activeStintMoves.length > MAX_ACTIVE_STINTS) mon.activeStintMoves.shift();
+        }
+        mon.activeStintCount = mon.activeStintMoves.length;
+        if (mon.activeStintCount === 1 && !mon.originalArchetypeItem) {
+          // First move of the stint: adopt the item of the currently believed set as the
+          // working hypothesis (never invented here — only read from the pruner's survivors).
+          const live = mon.liveSet || mon.candidateSets[0] || null;
+          if (live && live.item) mon.originalArchetypeItem = live.item;
+        }
+        if (mon.activeStintCount >= 2 && mon.originalArchetypeItem) {
+          mon.originalArchetypeItem = null;
+          this._addItemEvidence(mon, 'Used ' + mon.activeStintCount + ' different moves in one stint: item is not Choice-locked');
+        }
       }
 
       // recovery PP (rule 4)
-      if (U.is8PPRecoveryMove(moveId)) {
+      if (!called && U.is8PPRecoveryMove(moveId)) {
         const key = slot + ':' + moveId;
         const st = this.state;
         if (typeof st.recoveryPP[key] !== 'number') st.recoveryPP[key] = 8;
@@ -1173,6 +1368,12 @@
     _onBoost(event, sign) {
       const mon = this._findBySlot(event.slot);
       if (!mon) return;
+      /* A boost line is how several abilities announce themselves — `Speed Boost`, `Download`,
+       * `Moody`, `Weak Armor` all print `|-boost|…|[from] ability: <Name>`. The ledger and the
+       * pruner read `revealedAbility`, so the clause has to land here as well as on damage and
+       * weather lines. */
+      this._revealAbilityFromClause(event);
+      this._noteResidualItem(event, mon, String(event.from || ''));
       const stat = String(event.stat || '').toLowerCase();
       const key = stat === 'spa' ? 'spa' : stat === 'spd' ? 'spd' : stat === 'spe' ? 'spe'
         : stat === 'atk' ? 'atk' : stat === 'def' ? 'def'
@@ -1206,6 +1407,68 @@
       if (mon.boosts.evasion < 0) mon.boosts.evasion = 0;
     }
 
+    /** `|-clearpositiveboost|<target>|<source>|move: Defog` — the target's positive stages go. */
+    _onClearPositiveBoost(event) {
+      const mon = this._findBySlot(event.slot);
+      if (!mon) return;
+      this._revealAbilityFromClause(event);
+      U.STATS.forEach(function (s) { if (mon.boosts[s] > 0) mon.boosts[s] = 0; });
+      if (mon.boosts.accuracy > 0) mon.boosts.accuracy = 0;
+      if (mon.boosts.evasion > 0) mon.boosts.evasion = 0;
+    }
+
+    /** `|-invertboost|<target>` — Topsy-Turvy flips every stage. */
+    _onInvertBoost(event) {
+      const mon = this._findBySlot(event.slot);
+      if (!mon) return;
+      this._revealAbilityFromClause(event);
+      const keys = Object.keys(mon.boosts);
+      for (let i = 0; i < keys.length; i++) mon.boosts[keys[i]] = -mon.boosts[keys[i]];
+    }
+
+    /** The stage list the protocol names, or every stage when it names none. */
+    _boostKeys(stats) {
+      const all = ['atk', 'def', 'spa', 'spd', 'spe', 'accuracy', 'evasion'];
+      if (!Array.isArray(stats) || !stats.length) return all;
+      const out = [];
+      for (let i = 0; i < stats.length; i++) {
+        const key = String(stats[i] || '').toLowerCase();
+        if (all.indexOf(key) !== -1) out.push(key);
+      }
+      return out.length ? out : all;
+    }
+
+    _transferBoosts(event) {
+      const target = this._findBySlot(event.slot);
+      const source = this._findBySlot(event.otherSlot) ||
+        this._findBySpecies(event.otherSide, event.otherSpecies);
+      if (!target || !source) return null;
+      this._revealAbilityFromClause(event);
+      return { target: target, source: source, keys: this._boostKeys(event.stats) };
+    }
+
+    /** `|-swapboost|<target>|<source>|atk,def` — Heart Swap. */
+    _onSwapBoost(event) {
+      const pair = this._transferBoosts(event);
+      if (!pair) return;
+      for (let i = 0; i < pair.keys.length; i++) {
+        const key = pair.keys[i];
+        const tmp = pair.target.boosts[key];
+        pair.target.boosts[key] = pair.source.boosts[key];
+        pair.source.boosts[key] = tmp;
+      }
+    }
+
+    /** `|-copyboost|<target>|<source>|atk,def` — Psych Up. */
+    _onCopyBoost(event) {
+      const pair = this._transferBoosts(event);
+      if (!pair) return;
+      for (let i = 0; i < pair.keys.length; i++) {
+        const key = pair.keys[i];
+        pair.target.boosts[key] = pair.source.boosts[key];
+      }
+    }
+
     _onHPDelta(event, kind) {
       const side = event.side || sideOf(event.slot);
       const mon = this._findBySlot(event.slot) || this._findBySpecies(side, event.species);
@@ -1214,9 +1477,16 @@
       // Capture the pre-hit HP before _setHP overwrites it: the difference IS the damage roll we
       // are about to reason from, and it only exists for this instant.
       const hpBefore = typeof mon.hpPercent === 'number' ? mon.hpPercent : 100;
+      const defenderBefore = kind === 'damage' ? this._damageSnapshot(mon, true) : null;
       this._setHP(mon, event.hp, event.status);
+      // The residual lines are the commonest item reveal on the ladder: a Leftovers heal, a Life
+      // Orb recoil, a Sitrus Berry bite, Rocky Helmet damage with its `[of]` holder. The scout
+      // panel is supposed to log the item the battle PRINTED, and before this only |-item| (Knock
+      // Off, Trick) ever reached it, so half the revealed items were invisible.
+      this._noteResidualItem(event, mon, from);
+      this._revealAbilityFromClause(event);
       if (kind === 'damage') {
-        this._recordDamageObservation(event, mon, side, hpBefore, from);
+        this._recordDamageObservation(event, mon, side, hpBefore, from, defenderBefore);
         this._creditDamage(event, mon, side, hpBefore, from);
       }
       if (kind === 'damage') {
@@ -1324,12 +1594,25 @@
      * their candidate spreads can be tested against the number we just took. Stored on the
      * attacker, not the victim, because that is whose candidate pool the pruner will narrow.
      *
-     * Deliberately conservative: residual/recoil/hazard damage carries no `move:` clause and is
-     * ignored, only our own side is ever used as the ruler, and a critical hit is flagged rather
-     * than trusted. Anything this cannot model (weather, a screen, a boost) is stored alongside
-     * the number so the pruner can rebuild the exact context instead of guessing at it.
+     * Direct hits use the preceding move frame; attributed residuals require their own source.
+     * Snapshots preserve the field, boosts and known items at impact for later pruning.
      */
-    _recordDamageObservation(event, defender, defenderSide, hpBefore, from) {
+    _damageSnapshot(mon, includeSpread) {
+      const snapshot = {};
+      const keys = ['species', 'side', 'level', 'gender', 'hpPercent', 'status', 'toxicCounter', 'itemConsumed', 'itemRemoved', 'itemless', 'alliesFainted', 'boosterActive', 'boostedStat', 'abilityOn', 'typeOverride', 'disguiseIntact'];
+      for (const key of keys) if (mon[key] !== undefined) snapshot[key] = Array.isArray(mon[key]) ? mon[key].slice() : mon[key];
+      snapshot.boosts = Object.assign({}, mon.boosts || {});
+      const item = mon.currentBattleItem || mon.confirmedItem || (includeSpread ? mon.item : null);
+      if (item !== undefined && item !== null) snapshot.item = item;
+      const ability = mon.activeAbility || mon.revealedAbility || (includeSpread ? mon.ability : null);
+      if (ability) snapshot.ability = ability;
+      if (includeSpread) for (const key of ['evs', 'ivs', 'nature']) {
+        if (mon[key]) snapshot[key] = typeof mon[key] === 'object' ? Object.assign({}, mon[key]) : mon[key];
+      }
+      return snapshot;
+    }
+
+    _recordDamageObservation(event, defender, defenderSide, hpBefore, from, defenderBefore) {
       if (!defender) return;
       if (defenderSide !== this.state.mySide) return;          // only our body can be the ruler
       // `from` is the parsed clause list; fall back to the raw line so a shape the clause
@@ -1338,11 +1621,13 @@
       const raw = String(event.raw || '');
       const moveMatch = /move:\s*([^\[\]]*?)(?=\s*\[|$)/i.exec(from) ||
         /move:\s*([^\[\]]*?)(?=\s*\[|$)/i.exec(raw);
-      if (!moveMatch) return;                                  // hazards, recoil, Life Orb, ...
-      const moveName = moveMatch[1].trim();
+      const context = !from && this._damageMove && this._damageMove.turn === this.state.turn &&
+        this._damageMove.targetSlot === defender.slot ? this._damageMove : null;
+      if (!moveMatch && !context) return;
+      const moveName = moveMatch ? moveMatch[1].trim() : context.moveName;
       const moveId = toID(moveName);
       if (!moveId || moveId === 'struggle') return;
-      let attackerIdent = parseIdent(event.ofRaw || '');
+      let attackerIdent = context ? { side: context.attacker.side, slot: context.attacker.slot, name: context.attacker.species } : parseIdent(event.ofRaw || '');
       if (!attackerIdent.side) {
         const fallback = /\[of\]\s*(p[12][a-f]):\s*([^\[\]]*)/i.exec(raw);
         if (fallback) attackerIdent = { side: fallback[1].slice(0, 2), slot: fallback[1].toLowerCase(), name: (fallback[2] || '').trim() };
@@ -1372,6 +1657,11 @@
         defenderStatus: defender.status || '',
         weather: (this.state.field && this.state.field.weather) || '',
         terrain: (this.state.field && this.state.field.terrain) || '',
+        fieldSnapshot: JSON.parse(JSON.stringify(this.state.field || {})),
+        attackerSnapshot: this._damageSnapshot(attacker, false),
+        defenderSnapshot: defenderBefore || this._damageSnapshot(defender, true),
+        censored: hpAfter <= 0,
+        multiHit: !!(U.getMoveData(moveName) || {}).isMultihit,
         sig: this.state.turn + ':' + moveId + ':' + damagePercent + ':' + (defender.critTurn === this.state.turn ? 'crit' : '')
       };
       // An identical signature means we are re-reading the same hit (a mirrored poll line);
@@ -1408,6 +1698,13 @@
     _onStatus(event) {
       const mon = this._findBySlot(event.slot);
       if (!mon) return;
+      /* The commonest single-line item reveal on the ladder lives here: a Flame Orb printing
+       * `|-status|…|brn|[from] item: Flame Orb`. Status can also be an ability's doing
+       * (`Static`, `Flame Body`, `Poison Point`, `Effect Spore`, `Synchronize`), so both clauses
+       * are read before the status itself is stored. */
+      const from = String(event.from || '');
+      this._noteResidualItem(event, mon, from);
+      this._revealAbilityFromClause(event);
       const st = normalizeStatus(event.status);
       if (!st) return;
       mon.status = st;
@@ -1421,6 +1718,11 @@
     _onCureStatus(event) {
       const mon = this._findBySlot(event.slot);
       if (!mon) return;
+      /* `|-curestatus|…|[from] ability: Immunity` / `Shed Skin` / `Hydration` / `Natural Cure`, and
+       * `[from] item: Lum Berry`. Both were dropped, so those abilities never reached the
+       * ledger. */
+      this._noteResidualItem(event, mon, String(event.from || ''));
+      this._revealAbilityFromClause(event);
       mon.status = '';
       mon.statusTurns = 0;
       mon.toxicCounter = 0;
@@ -1454,6 +1756,9 @@
       mon.hp = 0;
       mon.hpPercent = 0;
       mon.status = '';
+      // A faint erases stat stages exactly like a switch-out does. Keeping them left the fainted
+      // body (still `active` until its replacement arrives) advertising boosts it no longer has.
+      mon.boosts = { atk: 0, def: 0, spa: 0, spd: 0, spe: 0, accuracy: 0, evasion: 0 };
       mon.isActive = false;
       this._endStint(mon, 'faint');
       // The fainted Pokémon is still the one standing in that slot until a replacement
@@ -1466,6 +1771,108 @@
       this._stampFallen();
     }
 
+    /**
+     * _noteResidualItem(event, mon, from) -> record an item whose EFFECT the log just printed.
+     *
+     * Only the `[from] item: X` clause is read, and the HOLDER is resolved from `[of]` when the
+     * clause names one: Rocky Helmet damage lands on the attacker while the helmet belongs to the
+     * `[of]` body, and crediting the victim would put the item on the wrong Pokémon. Without an
+     * `[of]` the damaged/healed body is the holder (Leftovers, Black Sludge, Life Orb, a berry).
+     * Never throws: an unknown `[from]` string simply records nothing.
+     */
+    _noteResidualItem(event, mon, from) {
+      if (!from || !/item:/i.test(from)) return null;
+      const match = /item:\s*([^|\]]+)/i.exec(from);
+      if (!match) return null;
+      const item = U.itemName(match[1].trim());
+      if (!item) return null;
+      let holder = mon;
+      if (event && event.ofRaw) {
+        const of = parseIdent(event.ofRaw);
+        if (of && (of.slot || of.side || of.name)) {
+          holder = this._findBySlot(of.slot) || this._findBySpecies(of.side, of.name) || mon;
+        }
+      }
+      if (!holder) return null;
+      if (U.isItemKnown(item)) {
+        holder.currentBattleItem = item;
+        holder.confirmedItem = item;
+        holder.itemless = false;
+        this._addItemEvidence(holder, 'Item revealed by its effect: ' + item);
+      } else if (!holder.currentBattleItem) {
+        holder.currentBattleItem = item;
+      }
+      return item;
+    }
+
+    /**
+     * _revealItem(mon, item, source) -> the canonical item name (or null).
+     * One place for "the log printed this item": a confirmed item is state, not a message, and
+     * every reveal path (|-item|, |-activate|, a Mega stone, an ability clause) has to land in
+     * the same fields or the scout ledger and the pruner disagree about what we know.
+     */
+    _revealItem(mon, item, source) {
+      if (!mon || !item) return null;
+      const name = U.itemName(String(item).replace(/^item:\s*/i, '').trim()) ||
+        String(item).replace(/^item:\s*/i, '').trim();
+      if (!name) return null;
+      // Do not spray duplicate evidence lines when the same fact arrives twice.
+      if (mon.confirmedItem !== name) mon.confirmedItem = name;
+      mon.currentBattleItem = name;
+      mon.itemless = false;
+      mon.itemKnockedOff = false;
+      if (U.isMegaStone(name) || U.isZCrystal(name)) {
+        mon.itemIsIrremovable = true;
+        mon.megaStone = U.isMegaStone(name) ? name : mon.megaStone;
+      }
+      if (U.isBoosterEnergy(name)) {
+        mon.boosterActive = true;
+        mon.paradoxActivatedThisStint = true;
+        mon.cannotBeBoosterEnergy = false;
+      }
+      this._addItemEvidence(mon, 'Item revealed: ' + name + (source ? ' (' + source + ')' : ''));
+      return name;
+    }
+
+    /**
+     * _revealAbilityFromClause(event) -> the ability name (or null).
+     *
+     * The protocol prints an ability in the `[from]` clause of the effect it caused far more
+     * often than it prints a dedicated `|-ability|` line: `|-weather|Snow|[from] ability: Snow
+     * Warning|[of] p1a: Abomasnow`, an Intimidate drop, a Rough Skin recoil, a Water Absorb heal.
+     * The holder is the `[of]` body when the clause names one, otherwise the event's own mon.
+     */
+    _revealAbilityFromClause(event) {
+      if (!event) return null;
+      /* AN ABILITY LINE'S `[of]` IS THE SOURCE, NOT THE HOLDER. Trace prints
+       * `|-ability|p2a: Porygon2|Intimidate|Trace|[from] ability: Trace|[of] p1a: Landorus`:
+       * Porygon2 copied Landorus's Intimidate, and reading the clause generically credited
+       * LANDORUS with Trace. `_onActivate` owns this reveal (it knows which field is the body's
+       * own ability and which is the copied effect). */
+      if (event.type === 'activate' && /^ability:/i.test(String(event.effect || ''))) return null;
+      const from = String(event.from || '');
+      if (!/ability:/i.test(from)) return null;
+      const match = /ability:\s*([^|\]]+)/i.exec(from);
+      if (!match) return null;
+      const ability = match[1].trim();
+      if (!ability) return null;
+      let holder = null;
+      if (event.ofRaw) {
+        const of = parseIdent(event.ofRaw);
+        if (of && (of.slot || of.side || of.name)) {
+          holder = this._findBySlot(of.slot) || this._findBySpecies(of.side, of.name) || null;
+        }
+      }
+      if (!holder) {
+        const side = event.side || sideOf(event.slot);
+        holder = this._findBySlot(event.slot) || this._findBySpecies(side, event.species) || null;
+      }
+      if (!holder) return null;
+      if (holder.revealedAbility && toID(holder.revealedAbility) === toID(ability)) return ability;
+      holder.revealedAbility = ability;
+      return ability;
+    }
+
     /** |-item| — reveals (and Trick swaps) items. */
     _onItem(event) {
       const side = event.side || sideOf(event.slot);
@@ -1473,19 +1880,10 @@
       if (!mon) return;
       const item = String(event.item || '').replace(/^item:\s*/i, '').trim();
       if (!item) return;
-      mon.currentBattleItem = item;
-      mon.confirmedItem = item;
       mon.declaredItem = mon.declaredItem || item;
-      mon.itemKnockedOff = false;
-      mon.itemless = false;
-      if (U.isMegaStone(item) || U.isZCrystal(item)) mon.itemIsIrremovable = true;
+      this._revealItem(mon, item, '|-item|');
       if (U.isChoiceItem(item)) {
         mon.originalArchetypeItem = mon.originalArchetypeItem || item;
-      }
-      if (U.isBoosterEnergy(item)) {
-        mon.boosterActive = true;
-        mon.paradoxActivatedThisStint = true;
-        mon.cannotBeBoosterEnergy = false;
       }
       const from = String(event.from || '');
       if (/trick|switcheroo|bestow/i.test(from) && event.ofSide) {
@@ -1519,6 +1917,7 @@
         mon.itemConsumed = true;
         this._addItemEvidence(mon, 'Item consumed: ' + (item || 'unknown') + (reason ? ' (' + reason.replace(/^\[from\]\s*/, '') + ')' : ''));
       }
+      this._revealAbilityFromClause(event);
       if (U.isBoosterEnergy(item)) {
         mon.boosterConsumed = true;
         mon.boosterActive = false;
@@ -1564,6 +1963,9 @@
     _onActivate(event) {
       const side = event.side || sideOf(event.slot);
       const mon = this._findBySlot(event.slot) || this._findBySpecies(side, event.species);
+      /* `|-activate|<mon>|ability: Disguise` is printed at the moment the disguise absorbs a
+       * hit, so it is the exact frame the disguise stops being intact. */
+      if (mon && /disguise/i.test(String(event.effect || event.effectName || ''))) mon.disguiseIntact = false;
       // Receipt counter, taken BEFORE the mon lookup so an activation on a body we have not
       // tracked yet is still tallied. Both the |-ability| and |-activate| shapes land here.
       if (/magic bounce/i.test(String(event.effect || event.effectName || ''))) this.state.battleStats.magicBounce++;
@@ -1571,23 +1973,40 @@
       const effect = String(event.effect || '');
       const abilityMatch = effect.match(/ability:\s*(.+)$/i);
       if (abilityMatch) {
-        const ability = abilityMatch[1].trim();
-        mon.revealedAbility = ability;
-        mon.ability = mon.ability || ability;
-        if (U.PARADOX_ABILITIES.has(toID(ability))) {
+        const activeAbility = abilityMatch[1].trim();
+        if (toID(activeAbility) === 'flashfire') mon.abilityOn = true;
+        /* `|-ability|<mon>|Intimidate|Trace|...` prints the COPIED effect first and the body's
+         * OWN ability as the third field. Recording the copied name as `revealedAbility` made a
+         * Trace Porygon2 look like an Intimidate body, and setting `mon.ability` from it made
+         * that permanent. The own name is only accepted when the species can actually have it,
+         * so a move/item token can never be read as an ability. */
+        const ownToken = (event.args && event.args[0]) ? String(event.args[0]).trim() : '';
+        const possible = U.getAbilities(mon.species) || [];
+        const ownKnown = ownToken && possible.some(function (a) { return toID(a) === toID(ownToken); });
+        mon.activeAbility = activeAbility;
+        mon.revealedAbility = ownKnown ? ownToken : activeAbility;
+        if (possible.some(function (a) { return toID(a) === toID(mon.revealedAbility); })) {
+          mon.ability = mon.ability || mon.revealedAbility;
+        }
+        if (U.PARADOX_ABILITIES.has(toID(activeAbility))) {
           mon.boosterActive = true;
           mon.paradoxActivatedThisStint = true;
         }
       }
       // |-mega| / |-primal| carry `megaKind` ('mega' | 'primal'), so no substring guessing.
-      if (event.megaKind) this._markMega(mon, event.megaForme || event.baseSpecies);
+      // The stone rides along: a Mega Stone is the single strongest item read in the battle, and
+      // the ledger used to drop it because only Booster Energy / Air Balloon were read here.
+      if (event.megaKind) this._markMega(mon, event.megaForme || event.baseSpecies, event.stone);
       if (/z-?power|z-move/i.test(effect)) this._markZMove(side, mon);
-      if (/item:\s*booster energy/i.test(effect)) {
-        mon.boosterActive = true;
-        mon.paradoxActivatedThisStint = true;
-        mon.confirmedItem = 'Booster Energy';
-      }
+      /* `|-activate|<mon>|item: <Item>` is how the protocol announces a Mega Stone reacting to
+       * its keystone, a Z-Crystal, a Focus Sash bracing, a berry being eaten. EVERY such line is
+       * a printed item fact, so the ledger takes the item itself rather than two hardcoded names:
+       * the scout panel's whole job is to show what the battle actually said. */
+      const activatedItem = /item:\s*(.+)$/i.exec(effect);
+      if (activatedItem) this._revealItem(mon, activatedItem[1], '|-activate|');
       if (/item:\s*air balloon/i.test(effect)) mon.currentBattleItem = mon.currentBattleItem || 'Air Balloon';
+      // `|-activate|<mon>|ability: <Ability>` (and |-ability|, same shape) — already handled above.
+      this._revealAbilityFromClause(event);
       const args = event.args || [];
       for (let i = 0; i < args.length; i++) this._addItemEvidence(mon, 'Activated: ' + args[i]);
     }
@@ -1597,6 +2016,24 @@
       if (!mon) return;
       const effect = String(event.effect || '');
       const lower = effect.toLowerCase();
+      if (/flash\s*fire/i.test(effect)) mon.abilityOn = true;
+      /* `|-start|<mon>|typechange|<Type>|[from] ability: Protean` is how Showdown reports a
+       * battle-only typing. `typeadd` (Trick-or-Treat, Forest's Curse) adds one instead of
+       * replacing. Both resolve the ability clause too — this line was the ONLY reveal Protean
+       * ever printed, so the ledger stayed silent about it. */
+      const effectId = String(event.effectId || '').toLowerCase();
+      if (effectId === 'typechange' || effectId === 'typeadd') {
+        const next = String((event.args && event.args[0]) || '').trim();
+        const types = next && next !== '???' ? next.split('/').map(function (t) { return t.trim(); }).filter(Boolean) : [];
+        if (effectId === 'typeadd') {
+          const base = (mon.typeOverride && mon.typeOverride.length) ? mon.typeOverride.slice() : (U.getSpecies(mon.species) || {}).types || [];
+          for (let i = 0; i < types.length; i++) if (base.indexOf(types[i]) === -1) base.push(types[i]);
+          mon.typeOverride = base.slice(0, 2);
+        } else {
+          mon.typeOverride = types.length ? types.slice(0, 2) : null;
+        }
+        this._revealAbilityFromClause(event);
+      }
       for (let i = 0; i < VOLATILE_KEYS.length; i++) {
         if (lower.indexOf(VOLATILE_KEYS[i][0].toLowerCase()) !== -1) {
           mon.volatiles[VOLATILE_KEYS[i][1]] = true;
@@ -1638,7 +2075,7 @@
       // That suffix is the only evidence of a SPEED boost; `boosterActive` alone is not, because
       // an Attack- or Special-Attack-boosted body is no faster at all. See boosterStatOf.
       const boosted = boosterStatOf(effect);
-      if (boosted) mon.boostedStat = boosted;
+      if (boosted) { mon.boostedStat = boosted; mon.boosterActive = true; }
     }
 
     _onEnd(event) {
@@ -1658,7 +2095,8 @@
       // `|-end|p1a: Great Tusk|Protosynthesis|[silent]` -- the boost ends and the stat is unknown
       // again, so a later stint cannot inherit this one's Speed reading. The end frame carries the
       // bare ability name (capitalised, no stat suffix), unlike the activation.
-      if (lower.indexOf('protosynthesis') !== -1 || lower.indexOf('quarkdrive') !== -1) mon.boostedStat = null;
+      if (lower.indexOf('protosynthesis') !== -1 || lower.indexOf('quarkdrive') !== -1) { mon.boostedStat = null; mon.boosterActive = false; }
+      if (/flash\s*fire/i.test(effect)) mon.abilityOn = false;
       for (let i = 0; i < VOLATILE_KEYS.length; i++) {
         if (lower.indexOf(VOLATILE_KEYS[i][0].toLowerCase()) !== -1) {
           mon.volatiles[VOLATILE_KEYS[i][1]] = false;
@@ -1669,6 +2107,7 @@
     _onSideStart(event) {
       const side = this._sideFromEvent(event);
       if (!side) return;
+      this._revealAbilityFromClause(event);
       const effect = String(event.effect || '');
       const haz = this.state.field.hazards[side];
       const scr = this.state.field.screens[side];
@@ -1734,12 +2173,12 @@
       const weather = this._weatherFromEffect(full);
       if (weather) {
         st.field.weather = weather;
-        st.field.weatherTurnsLeft = 5; // 5 is the standard duration; rocks extend it to 8 unmodelled
+        st.field.weatherTurnsLeft = this._fieldDuration(event, weather, false);
       }
       const terrain = this._terrainFromEffect(full);
       if (terrain) {
         st.field.terrain = terrain;
-        st.field.terrainTurnsLeft = 5;
+        st.field.terrainTurnsLeft = this._fieldDuration(event, terrain, true);
       }
       if (/gravity/i.test(full)) st.field.gravity = true;
       if (/electric terrain/i.test(full)) st.field.terrain = 'electric';
@@ -1791,26 +2230,45 @@
       if (/gravity/i.test(effect)) st.field.gravity = false;
     }
 
+    _fieldDuration(event, effect, terrain) {
+      if (['harshsun', 'heavyrain', 'strongwinds', 'deltastream'].includes(effect)) return null;
+      const ident = parseIdent(event.ofRaw || '');
+      const context = this._damageMove;
+      const holder = this._findBySlot(ident.slot) || (context && context.turn === this.state.turn ? context.attacker : null);
+      if (!holder) return null;
+      const known = holder.side === this.state.mySide || holder.confirmedItem || holder.itemless || holder.itemConsumed || holder.itemRemoved;
+      if (!known) return null;
+      const item = holder.itemConsumed || holder.itemRemoved ? '' : toID(holder.currentBattleItem || holder.confirmedItem || holder.item || '');
+      const extender = terrain ? 'terrainextender' : ({ rain: 'damprock', sun: 'heatrock', sandstorm: 'smoothrock', snow: 'icyrock', hail: 'icyrock' })[effect];
+      return item === extender ? 8 : 5;
+    }
+
     _onWeather(event) {
       const raw = String(event.weather || '');
       const st = this.state;
+      this._revealAbilityFromClause(event);
       if (!raw) {
         st.field.weather = '';
         st.field.weatherTurnsLeft = null;
         return;
       }
       const alias = WEATHER_ALIASES[toID(raw)] || toID(raw);
+      if (event.upkeep || /\[upkeep\]/.test(event.raw || '')) {
+        st.field.weather = alias || '';
+        return;
+      }
       st.field.weather = alias || '';
-      st.field.weatherTurnsLeft = alias ? 5 : null;
+      st.field.weatherTurnsLeft = alias ? this._fieldDuration(event, alias, false) : null;
     }
 
     _onTerrain(event) {
       const raw = String(event.terrain || '');
       const st = this.state;
+      this._revealAbilityFromClause(event);
       if (!raw) { st.field.terrain = ''; st.field.terrainTurnsLeft = null; return; }
       const alias = TERRAIN_ALIASES[toID(raw)] || toID(raw);
       st.field.terrain = alias || '';
-      st.field.terrainTurnsLeft = alias ? 5 : null;
+      st.field.terrainTurnsLeft = alias ? this._fieldDuration(event, alias, true) : null;
     }
 
     /** |turn| — the clock: TR countdown, weather, protect rhythm, status timers. */
@@ -1829,11 +2287,11 @@
       }
       if (typeof st.field.weatherTurnsLeft === 'number' && st.field.weatherTurnsLeft > 0) {
         st.field.weatherTurnsLeft = Math.max(0, st.field.weatherTurnsLeft - 1);
-        if (st.field.weatherTurnsLeft === 0) st.field.weather = '';
+        if (st.field.weatherTurnsLeft === 0) st.field.weatherTurnsLeft = null;
       }
       if (typeof st.field.terrainTurnsLeft === 'number' && st.field.terrainTurnsLeft > 0) {
         st.field.terrainTurnsLeft = Math.max(0, st.field.terrainTurnsLeft - 1);
-        if (st.field.terrainTurnsLeft === 0) st.field.terrain = '';
+        if (st.field.terrainTurnsLeft === 0) st.field.terrainTurnsLeft = null;
       }
       this._tickDelayedMoves(n);
 
@@ -2074,8 +2532,34 @@
       this._recountOppMegas();
     }
 
+    /**
+     * `|-immune|<mon>|[from] ability: Levitate` — the target took nothing, and the line names
+     * the reason. Neither the ability nor an immunity item (an Air Balloon popping) reached the
+     * ledger before, so the scout panel could not show the single most important fact about a
+     * Cresselia: Ground does not touch it.
+     */
+    _onImmune(event) {
+      const side = event.side || sideOf(event.slot);
+      const mon = this._findBySlot(event.slot) || this._findBySpecies(side, event.species);
+      if (!mon) return;
+      this._revealAbilityFromClause(event);
+      this._noteResidualItem(event, mon, String(event.from || ''));
+    }
+
+    /** `|-formechange|<mon>|<species>` — Stance Change / Disguise announce themselves here. */
     _onFormeChange(event) {
+      this._revealAbilityFromClause(event);
       this._onDetailsChange(event);
+    }
+
+    /** `|-typechange|<mon>|<Type>[|<Type>]` — Soak, Magic Powder, Burn Up, Revelation Dance… */
+    _onTypeChange(event) {
+      const side = event.side || sideOf(event.slot);
+      const mon = this._findBySlot(event.slot) || this._findBySpecies(side, event.species);
+      if (!mon) return;
+      const types = Array.isArray(event.types) ? event.types.filter(Boolean) : [];
+      mon.typeOverride = types.length ? types.slice(0, 2) : null;
+      this._revealAbilityFromClause(event);
     }
 
     _onDetailsChange(event) {
@@ -2091,6 +2575,12 @@
       if (tok.species) {
         mon.species = tok.species;
         mon.id = toID(tok.species);
+        // A Disguise breaking is reported as a forme change to Mimikyu-Busted.
+        if (/^mimikyu/i.test(tok.species)) mon.disguiseIntact = !/busted/i.test(tok.species);
+        // Keep the alias so a later |switch| back to the base forme finds this same body
+        // instead of minting a duplicate (Aegislash-Shield <-> Aegislash-Blade).
+        if (!mon.formsSeen) mon.formsSeen = [];
+        if (mon.formsSeen.indexOf(tok.species) === -1) mon.formsSeen.push(tok.species);
       }
       if (event.hp !== undefined && event.hp !== null) this._setHP(mon, event.hp, event.status);
     }
@@ -2111,9 +2601,13 @@
      * battle. Showdown sends no separate |detailschange| line for a Mega, so this is the only
      * place the forme can be adopted.
      */
-    _markMega(mon, forme) {
+    _markMega(mon, forme, stone) {
       if (!mon) return;
       mon.megaEvolved = true;
+      // The stone is a confirmed item, not a guess: record it so the scout ledger and the item
+      // candidate pool both see it. (A Mega Stone can never be knocked off, so this also rules
+      // the whole Choice/Boots/Life Orb space out for that body.)
+      if (stone) this._revealItem(mon, stone, 'Mega Evolution');
       // The turn it happened, for the format sentinel's "BURNED (X, turn N)" line.
       if (!mon.megaTurn) mon.megaTurn = this.state.turn;
       const name = String(forme === undefined || forme === null ? '' : forme).trim();
@@ -2122,7 +2616,22 @@
         const was = mon.species;
         mon.species = info.name;
         mon.id = toID(info.name);
+        if (!mon.formsSeen) mon.formsSeen = [was];
+        if (mon.formsSeen.indexOf(info.name) === -1) mon.formsSeen.push(info.name);
         this._addItemEvidence(mon, 'Mega forme adopted: ' + was + ' -> ' + info.name);
+        /* THE MEGA'S ABILITY IS A FIXED FACT, AND THE PROTOCOL DOES NOT PRINT IT.
+         * Mega Evolution changes the ability (Limber -> Scrappy, Intimidate -> Mold Breaker,
+         * Levitate -> Sand Force) and Showdown sends no `|-ability|` line for it. The engine kept
+         * the base ability for the rest of the battle: the scout ledger named the wrong ability,
+         * Scrappy was missing (Normal/Fighting into a Ghost priced as immune) and Mold Breaker
+         * was missing from their threat model. Every Mega forme has exactly one ability, so a
+         * single-entry answer is safe to adopt; anything else is left alone. */
+        const megaAbilities = U.getAbilities(mon.species) || [];
+        if (megaAbilities.length === 1) {
+          mon.revealedAbility = megaAbilities[0];
+          mon.ability = megaAbilities[0];
+          mon.activeAbility = megaAbilities[0];
+        }
       }
       const st = this.state;
       if (mon.side === st.oppSide) {

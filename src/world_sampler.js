@@ -62,6 +62,14 @@
       if (db && typeof db.forSpecies === 'function') {
         const sets = db.forSpecies(mon.species || mon.id);
         if (sets && sets.length) return sets;
+        // Species-specific templates first: the shared DEFAULT pool is stamped with Great
+        // Tusk's ability, so using it for an uncurated species simulated a Protosynthesis
+        // body with Great Tusk's moves. `genericFor` keeps the species' own ability and its
+        // physical/special split (see set_pruner._seedPool for the full failure).
+        if (mon.species && typeof db.genericFor === 'function') {
+          const generic = db.genericFor(mon.species);
+          if (generic && generic.length) return generic;
+        }
         if (db.DEFAULT && db.DEFAULT.length) return db.DEFAULT;
       }
       return [];
@@ -150,7 +158,7 @@
 
         hp: base.hp === undefined ? 100 : base.hp,
         maxhp: 100,
-        hpPercent: base.hp === undefined ? 100 : base.hp,
+        hpPercent: base.hpPercent === undefined ? (base.hp === undefined ? 100 : base.hp) : base.hpPercent,
         fainted: !!base.fainted,
         status: base.status || '',
         statusTurns: base.statusTurns || 0,
@@ -174,6 +182,12 @@
         usedZMove: !!base.usedZMove,
         boosterConsumed: !!base.boosterConsumed,
         boosterActive: !!base.boosterActive,
+        boostedStat: base.boostedStat || null,
+        alliesFainted: base.alliesFainted || 0,
+        typeOverride: base.typeOverride ? base.typeOverride.slice() : null,
+        disguiseIntact: !!base.disguiseIntact,
+        activeAbility: base.activeAbility || null,
+        abilityOn: !!base.abilityOn,
 
         revealedMoves: (base.revealedMoves || []).slice(),
         activeStintMoves: (base.activeStintMoves || []).slice(),
@@ -199,8 +213,8 @@
         evs: set.evs,
         ivs: set.ivs,
         nature: set.nature,
-        ability: set.ability,
-        item: set.item,
+        ability: base.activeAbility || base.revealedAbility || set.ability,
+        item: base.itemConsumed || base.itemRemoved ? '' : base.currentBattleItem || base.confirmedItem || set.item,
         setMoves: (set.moves || []).slice(),
         isTR: this._isTRSet(set),
         isActive: !!base.isActive
@@ -339,7 +353,12 @@
         }
         if (!acceptable) {
           const dbx = this._db();
-          const fallback = dbx && dbx.DEFAULT && dbx.DEFAULT.length ? dbx.DEFAULT[i % dbx.DEFAULT.length] : null;
+          let fallback = null;
+          if (dbx && base && base.species && typeof dbx.genericFor === 'function') {
+            const generic = dbx.genericFor(base.species);
+            if (generic && generic.length) fallback = generic[i % generic.length];
+          }
+          if (!fallback) fallback = dbx && dbx.DEFAULT && dbx.DEFAULT.length ? dbx.DEFAULT[i % dbx.DEFAULT.length] : null;
           if (!fallback) continue;
           acceptable = fallback;
           violations.push((base.species || base.id) + ': no legal candidate set, used a generic filler');

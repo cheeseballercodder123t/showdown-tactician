@@ -382,7 +382,7 @@ node tests/injected_bridge.js #  23 checks: the MAIN-world WebSocket bridge (fak
 node tests/config_check.js    #  85 checks: RULE 4 — the config is the only home for a heuristic
 node tests/blackbox_guard.js  #  28 checks: RULE 1 — no handwritten math, 50,616 stats diffed
 node tests/parser_fuzz.js     #  44 checks: RULE 3 — the real log, all its prefixes, junk lines
-node tests/hardening_audit.js #  64 checks: the bug-hunt regressions + a 40-battle invariant fuzz
+node tests/hardening_audit.js # 186 checks: bug-hunt and calculator regressions + a 40-battle invariant fuzz
 node tests/upgrades_check.js  # 118 checks: the mixed-strategy solve, the vetoes, the clock, damage evidence
 node tests/chaos_sync_check.js # 70 checks: the chaos sync + the usage overlay (fixtures only, no network)
 node tests/weights_check.js   # 277 checks: the downloader + the extractor (and its --set) + the fitter +
@@ -953,12 +953,16 @@ computes no game logic of its own, and every threshold it colours against is in 
    active pair, and the selection is dropped the moment that body leaves the bench.
 2. **The lethal-roll gauges.** The same preview drives a colour-coded bar per button — green for a
    guaranteed KO, gold/slate for a KO chance at or above `hud.lethal.high`/`mid`, grey for no
-   chance — with the verdict spelled out (`54–64% (2HKO)`, `0% (Immune)`, `68% KO chance`). The
-   KO probability is the calculator's own `koChance`, not an estimate.
-3. **Detective-Unmasked badges.** Every deduction the engines proved is surfaced as a badge:
-   Heavy-Duty Boots confirmed by a hazard-free entry, the Choice lock broken by two moves in one
-   stint, and the format lockout once their Mega or Z-Move is spent (with the number of bench
-   bodies that can therefore hold neither).
+   chance — with the verdict spelled out (`54–64% (2HKO)`, `0% (Immune)`, `68% KO chance`). A
+   bench-targeted bar names the body it was priced against (`54–64% vs Corviknight`) and drops the
+   verdict, because that range is not the live matchup. The KO probability is the calculator's own
+   `koChance`, not an estimate, and both sides are priced at the level the battle is played at
+   (`state._battleLevel()`), never at the normalised `L50` in Showdown's details string.
+3. **The opponent scout ledger.** One row per revealed opponent carrying the facts the protocol
+   actually printed: the moves it has used, the item it has shown (`|-item|`, a Leftovers heal, a
+   Life Orb recoil, a Sitrus bite, Rocky Helmet's `[of]` holder) and the ability it has revealed.
+   It is an observation log, not a candidate-set summary — and it replaces the old "confirmed
+   reads" ticket row, whose only recurring line was the negative CHOICE ITEMS RULED OUT.
 4. **The Trick Room haptic.** On the turn Trick Room drops to its last one, the chip repaints gold
    (`tr-gold`) and `navigator.vibrate(hud.vibrate.pattern)` pulses once for the battle. Silent on
    platforms without the Vibration API, and never thrown. The gold chip always appears; the pulse
@@ -1001,9 +1005,12 @@ on `documentElement`, and the desktop rules in `styles/overlay.css` are scoped t
 the options page and the test harness keep the phone layout untouched.
 
 Showdown's desktop layout puts the battle arena in a **fixed 640 px column at x=0** on both clients,
-with the scrollable battle log entirely to the right of x=640, so the desktop HUD docks a single
-`.st-console` column under the move bar at x 0..640 and never touches a PS control, the log or the
-topbar. On a phone the same five elements are `position: fixed` nodes in `<body>`, as before.
+with the scrollable battle log to the right of x=640. The desktop HUD is a single `.st-console`
+docked to the **bottom-right corner**, sized to its content and capped at 72vh: the battle scene,
+the move bar and the top of the log stay visible, and the console's own body scrolls when the
+cards no longer fit. (An earlier full-height right rail covered the whole chat column, including
+the battle log, which made WIDE unusable.) A collapsed console is a 360x48 title bar. On a phone
+the same elements are `position: fixed` nodes in `<body>`, as before.
 
 A small **📱/🖥️ pill next to the TAC button** switches between the two at any time; it blurs itself
 after the click so it can never hold keyboard focus (Showdown's own chat and shortcuts stay

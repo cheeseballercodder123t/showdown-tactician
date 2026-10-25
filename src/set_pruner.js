@@ -146,6 +146,12 @@
      * species id for the bare fixture objects the unit tests build, where a species is only
      * ever seen once.
      */
+    poolStatus(mon) {
+      if (!mon) return null;
+      const pool = this._pristine[this._poolKey(mon)];
+      return { seeded: pool ? pool.length : null, remaining: (mon.candidateSets || []).length };
+    }
+
     _poolKey(mon) {
       if (!mon) return '';
       const base = mon.id || U.toID(mon.species);
@@ -237,7 +243,24 @@
         }
       }
       if (!source || !source.length) {
-        source = (ST.SetDatabase && ST.SetDatabase.DEFAULT) ? ST.SetDatabase.DEFAULT : [];
+        /* SPECIES-SPECIFIC GENERIC TEMPLATES before the shared DEFAULT pool.
+         *
+         * DEFAULT is built from Great Tusk (`sets_db.js`), and it is stamped with that
+         * Pokemon's ability. Cloning it for a species the curated database does not cover
+         * therefore handed every such body Protosynthesis as its ability and a physical
+         * 252 Atk / 252 Spe spread, whatever it actually is. In a real battle that produced
+         * `Serperior … bulky @ Heavy-Duty Boots [ATK 252 / SPE 252]` in the HUD and a
+         * `guaranteed OHKO` on a Fire Punch that left Serperior at 2% — the number was not a
+         * roll, it was a mislabelled body. `genericFor` derives the ability from the species
+         * itself and splits physical/special from its base stats, so the fallback describes
+         * the monster in front of us even when the curated list does not.
+         */
+        if (mon.species && ST.SetDatabase && typeof ST.SetDatabase.genericFor === 'function') {
+          try { source = ST.SetDatabase.genericFor(mon.species); } catch (e) { source = null; }
+        }
+        if (!source || !source.length) {
+          source = (ST.SetDatabase && ST.SetDatabase.DEFAULT) ? ST.SetDatabase.DEFAULT : [];
+        }
       }
       const pool = [];
       for (let i = 0; i < source.length; i++) {
@@ -700,10 +723,10 @@
       const committed = Object.create(null);
       for (let o = 0; o < obs.length && o < DMG_MAX_OBS; o++) {
         const observation = obs[o];
-        if (!observation || observation.crit) continue;
+        if (!observation || observation.crit || observation.censored || observation.multiHit) continue;
         if (observation.damagePercent < DMG_MIN_PCT) continue;          // chip, not evidence
         if (UNPREDICTABLE_DAMAGE.has(observation.moveId)) continue;
-        const defender = this._myMonById(state, observation.defenderId);
+        const defender = observation.defenderSnapshot || this._myMonById(state, observation.defenderId);
         if (!defender) continue;                                        // no ruler, no measurement
         const perObservation = Object.create(null);
         let survivors = 0, tested = 0;
@@ -763,7 +786,7 @@
     _damageVerdict(set, observation, defender, state) {
       let res = null;
       try {
-        res = this.damage.calculateDamage(set, defender, observation.moveName, (state && state.field) || null, {
+        res = this.damage.calculateDamage(Object.assign({}, set, observation.attackerSnapshot || {}), observation.defenderSnapshot || defender, observation.moveName, observation.fieldSnapshot || (state && state.field) || null, {
           attackerIsP1: !!observation.attackerIsP1,
           weather: observation.weather || '',
           terrain: observation.terrain || '',
@@ -814,7 +837,7 @@
       if (UNPREDICTABLE_DAMAGE.has(observation.moveId)) return null;
       let res = null;
       try {
-        res = this.damage.calculateDamage(set, defender, observation.moveName, (state && state.field) || null, {
+        res = this.damage.calculateDamage(Object.assign({}, set, observation.attackerSnapshot || {}), observation.defenderSnapshot || defender, observation.moveName, observation.fieldSnapshot || (state && state.field) || null, {
           attackerIsP1: !!observation.attackerIsP1,
           weather: observation.weather || '',
           terrain: observation.terrain || '',

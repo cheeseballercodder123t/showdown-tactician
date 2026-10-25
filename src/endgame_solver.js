@@ -450,7 +450,7 @@
       if (!name || typeof U.getMoveData !== 'function') return null;
       const data = U.getMoveData(name);
       if (!data) return null;
-      if (!data.isStatus && data.basePower > 0) return 'attack';
+      if (!data.isStatus) return 'attack';
       if (this.includeRecoveryAndProtect) {
         if (typeof U.isRecoveryMove === 'function' && U.isRecoveryMove(name)) return 'recover';
         if (typeof U.isProtectMove === 'function' && U.isProtectMove(name)) return 'protect';
@@ -656,7 +656,9 @@
       const acts = order === 'my' ? [['my', myAct], ['opp', theirAct]] : [['opp', theirAct], ['my', myAct]];
       for (let i = 0; i < acts.length; i++) {
         const side = acts[i][0], action = acts[i][1];
-        if (this._aliveCount(cur[side]) === 0) continue;
+        const actor = node[side].bodies[node[side].active];
+        const current = cur[side].bodies[node[side].active];
+        if (!actor || !current || current.hp <= 0) continue;
         cur = this._applyAction(cur, side, action, prot);
       }
       if (this.includeRecoveryAndProtect && cur === node) cur = this._cloneNode(node);

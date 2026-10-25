@@ -305,6 +305,373 @@ check('a base name still resolves to its own Mega forme',
   !!megaMon && megaLookup.state._findBySpecies('p2', 'Abomasnow') === megaMon,
   JSON.stringify(megaMon && megaMon.species));
 
+/* ================================= 5b. battle formes keep ONE roster entry
+ *
+ * Aegislash-Shield becomes Aegislash-Blade on |detailschange|, Mimikyu becomes Mimikyu-Busted,
+ * and the next |switch| line names the base body again. The lookup keyed on the CURRENT
+ * species, so the body that came back could not be found and _onSwitch minted a SECOND
+ * MonState for it: a seven-body team, a phantom bench card, a wrong alive count and a wrong
+ * Supreme Overlord tally. Measured on a real @pkmn/sim battle before the fix.
+ */
+section('5b. a battle-forme change never mints a duplicate body');
+{
+  const fx = pipeline([
+    '|poke|p2|Aegislash-Shield, L50, M|',
+    '|poke|p2|Kartana, L50, M|',
+    '|switch|p2a: Aegislash|Aegislash, L50, M|100/100',
+    '|detailschange|p2a: Aegislash|Aegislash-Blade, L50, M',
+    '|switch|p2a: Kartana|Kartana, L50, M|100/100',
+    '|switch|p2a: Aegislash|Aegislash, L50, M|100/100'
+  ]);
+  const team = fx.battle.oppTeam || [];
+  const blades = team.filter(function (m) { return m && U.toID(m.species).indexOf('aegislash') === 0; });
+  check('the roster stays at its six-or-fewer shape', team.filter(Boolean).length <= 2,
+    JSON.stringify(team.map(function (m) { return m && m.species; })));
+  eq('one Aegislash entry, not two', blades.length, 1);
+  check('...and the entry that left as Blade came back out', !!blades[0] && blades[0].isActive === true,
+    blades[0] && String(blades[0].isActive));
+  check('...with a roster alias that still matches either forme',
+    !!blades[0] && fx.state._findBySpecies('p2', 'Aegislash-Blade') === blades[0],
+    blades[0] && JSON.stringify(blades[0].formsSeen));
+
+  const mimi = pipeline([
+    '|poke|p2|Mimikyu, L50, M|',
+    '|switch|p2a: Mimikyu|Mimikyu, L50, M|100/100',
+    '|detailschange|p2a: Mimikyu|Mimikyu-Busted, L50, M'
+  ]);
+  const mimiMon = (mimi.battle.oppTeam || []).filter(function (m) { return m && U.toID(m.species) === 'mimikyubusted'; })[0];
+  check('a Disguise break renames the body in place', !!mimiMon && mimiMon.isActive === true,
+    JSON.stringify((mimi.battle.oppTeam || []).map(function (m) { return m && m.species; })));
+}
+
+/* ================================= 5c. the scout ledger records printed facts
+ *
+ * A Mega Stone rides on `|-activate|…|item: <Stone>` and a weather/terrain ability rides on
+ * the `[from] ability:` clause. Neither reached the ledger: only Booster Energy and Air Balloon
+ * were read out of |-activate|, and `[from] ability:` was never read at all, so the HUD's
+ * "opponent scout" panel showed moves only — exactly the complaint that it does not log the
+ * enemy's items or abilities.
+ */
+section('5c. items and abilities the protocol printed reach the ledger');
+{
+  const fx = pipeline([
+    '|switch|p2a: Peace|Lopunny, L50, M|100/100',
+    '|-activate|p2a: Peace|item: Lopunnite',
+    '|-mega|p2a: Peace|Lopunny-Mega|Lopunnite',
+    '|switch|p2b: Serenity|Ninetales-Alola, L50, F|100/100',
+    '|-weather|Snow|[from] ability: Snow Warning|[of] p2b: Serenity'
+  ]);
+  const lop = (fx.battle.oppTeam || []).filter(function (m) { return m && U.toID(m.species).indexOf('lopunny') === 0; })[0];
+  const ninetales = (fx.battle.oppTeam || []).filter(function (m) { return m && U.toID(m.species).indexOf('ninetales') === 0; })[0];
+  eq('the Mega Stone is a confirmed item', lop && lop.confirmedItem, 'Lopunnite');
+  eq('...and the Mega forme was adopted', lop && U.toID(lop.species), 'lopunnymega');
+  check('the stone is marked irremovable', !!lop && lop.itemIsIrremovable === true);
+  eq('the weather ability is a revealed ability', ninetales && ninetales.revealedAbility, 'Snow Warning');
+  // The Mega's OWN ability is a fixed fact (Mega Lopunny is always Scrappy) and Showdown never
+  // prints an |-ability| line for it, so the state manager adopts it from the dex. What this
+  // check really guards is the cross-body leak: the weather ability belongs to Ninetales and
+  // must never be credited to the Lopunny.
+  check('and it is not credited to the wrong body',
+    !!lop && U.toID(lop.revealedAbility) !== 'snowwarning', String(lop && lop.revealedAbility));
+  eq('the Mega forme\'s own ability is adopted', lop && lop.revealedAbility, 'Scrappy');
+}
+
+/* ================================= 5d. an uncurated species is still itself
+ *
+ * The pruner's fallback pool was the species-agnostic DEFAULT built from Great Tusk, so an
+ * uncurated body was simulated with Great Tusk's ability (Protosynthesis) and a physical
+ * 252 Atk spread. A Serperior therefore read `bulky @ Heavy-Duty Boots [ATK 252 / SPE 252]`
+ * and its Fire Punch matchup was priced off a body that cannot exist.
+ */
+section('5d. the generic fallback describes the species, not Great Tusk');
+{
+  const fx = pipeline([
+    '|poke|p2|Serperior, L50, M|',
+    '|switch|p2a: Diligence|Serperior, L50, M|100/100'
+  ]);
+  const serp = (fx.battle.oppTeam || []).filter(function (m) { return m && U.toID(m.species) === 'serperior'; })[0];
+  check('the Serperior entry exists', !!serp);
+  const pruner = new ST.ArchetypePruner({ damage: new ST.DamageEngine({ gen: 9 }) });
+  pruner.prune(serp, fx.battle);
+  const pool = (serp && serp.candidateSets) || [];
+  check('a fallback pool was published', pool.length > 0, String(pool.length));
+  const abilities = pool.map(function (s) { return U.toID(s.ability); });
+  check('no fallback set is a different species\'s Paradox ability',
+    abilities.every(function (a) { return a !== 'protosynthesis' && a !== 'quarkdrive'; }), JSON.stringify(abilities));
+  check('the ability is one Serperior can actually have (Overgrow / Contrary)',
+    abilities.every(function (a) { return a === 'overgrow' || a === 'contrary'; }), JSON.stringify(abilities));
+  const live = serp && serp.liveSet;
+  check('the believed spread invests Special Attack, not Attack',
+    !!live && (live.evs.spa || 0) > (live.evs.atk || 0), live && JSON.stringify(live.evs));
+  /* THE DEX ORDER IS NOT THE COMPETITIVE ABILITY. abilities[0] gave every uncurated body its
+   * placeholder (Serperior Overgrow instead of Contrary, Dragonite Inner Focus instead of
+   * Multiscale, Scizor Swarm instead of Technician), and the pruner then dropped the whole pool
+   * the moment the real ability printed. */
+  const serpTop = pool.slice().sort(function (a, b) { return (b.weight || 0) - (a.weight || 0); })[0];
+  eq('the generic pool prefers Contrary over the dex-order Overgrow', serpTop && serpTop.ability, 'Contrary');
+  check('...while still representing the other legal ability, so a reveal cannot empty the pool',
+    abilities.indexOf('overgrow') !== -1, JSON.stringify(abilities));
+  const dnite = ST.SetDatabase.genericFor('Dragonite') || [];
+  const dniteAbilities = dnite.map(function (s) { return s.ability; });
+  const dniteTop = dnite.slice().sort(function (a, b) { return (b.weight || 0) - (a.weight || 0); })[0];
+  eq('Dragonite is modelled with Multiscale, not Inner Focus', dniteTop && dniteTop.ability, 'Multiscale');
+  check('...and Inner Focus is still a candidate', dniteAbilities.indexOf('Inner Focus') !== -1, JSON.stringify(dniteAbilities));
+  /* And the moves are the body's OWN typing: the old pool gave every special attacker Psychic /
+   * Shadow Ball / Volt Switch / Calm Mind, so a Grass type was modelled as a Psychic threat. */
+  const genericMoves = [];
+  for (let i = 0; i < dnite.length; i++) genericMoves.push.apply(genericMoves, dnite[i].moves || []);
+  check('a generic Dragonite does not carry a Psychic/Fighting filler move',
+    genericMoves.every(function (m) { return U.toID(m) !== 'psychic' && U.toID(m) !== 'shadowball' && U.toID(m) !== 'voltswitch'; }),
+    JSON.stringify(genericMoves));
+  check('...and its STAB is a Dragon move it could plausibly click',
+    genericMoves.some(function (m) { return U.toID(m).indexOf('dragon') === 0; }), JSON.stringify(genericMoves));
+  const serpPool = ST.SetDatabase.genericFor('Serperior') || [];
+  const serpGrass = serpPool.every(function (s) {
+    return (s.moves || []).some(function (m) { const d = U.getMoveData(m); return d && d.type === 'Grass'; });
+  });
+  check('every generic Serperior set leads with a Grass move', serpGrass, JSON.stringify(serpPool.map(function (s) { return s.moves; })));
+  const scarves = serpPool.filter(function (s) { return s.item === 'Choice Scarf'; });
+  check('the Scarf template follows the special split (Timid, 252 SpA)',
+    scarves.length > 0 && scarves.every(function (s) { return s.nature === 'Timid' && (s.evs.spa || 0) === 252 && (s.evs.atk || 0) === 0; }),
+    JSON.stringify(scarves.map(function (s) { return { nature: s.nature, evs: s.evs }; })));
+}
+
+/* ================================= 5e. immunity and forme clauses reach the ledger
+ *
+ * `|-immune|` changes no HP, so it was parsed as an unknown command; `|-formechange|` was
+ * treated as a rename only. Both carry a `[from] ability:` clause, and both were dropped, so a
+ * Cresselia's Levitate and an Aegislash's Stance Change never reached the scout ledger.
+ */
+section('5e. an immunity line and a forme line both reveal their ability');
+{
+  const fx = pipeline([
+    '|switch|p2a: Cresselia|Cresselia, L50, F|100/100',
+    '|-immune|p2a: Cresselia|[from] ability: Levitate',
+    '|switch|p2b: Blade|Aegislash, L50, M|100/100',
+    '|-formechange|p2b: Blade|Aegislash-Blade|[from] ability: Stance Change'
+  ]);
+  const cress = (fx.battle.oppTeam || []).filter(function (m) { return m && U.toID(m.species) === 'cresselia'; })[0];
+  const aegis = (fx.battle.oppTeam || []).filter(function (m) { return m && U.toID(m.species).indexOf('aegislash') === 0; })[0];
+  eq('Levitate is read off the immunity line', cress && cress.revealedAbility, 'Levitate');
+  eq('Stance Change is read off the forme line', aegis && aegis.revealedAbility, 'Stance Change');
+  check('...and the body keeps its roster identity',
+    !!aegis && U.toID(aegis.rosterSpecies).indexOf('aegislash') === 0, aegis && aegis.rosterSpecies);
+
+  /* Trace prints the COPIED ability first and the body's own ability third. The generic
+   * `[from] ability:` reader credited the SOURCE body with Trace. */
+  const traceFx = pipeline([
+    '|switch|p2a: Porygon2|Porygon2, L100, M|100/100',
+    '|switch|p2b: Landorus|Landorus, L100, M|100/100',
+    '|-ability|p2a: Porygon2|Intimidate|Trace|[from] ability: Trace|[of] p2b: Landorus'
+  ]);
+  const pory = (traceFx.battle.oppTeam || []).filter(function (m) { return m && U.toID(m.species) === 'porygon2'; })[0];
+  const lando = (traceFx.battle.oppTeam || []).filter(function (m) { return m && U.toID(m.species) === 'landorus'; })[0];
+  eq('a copied ability is not credited to the body it came from', lando && lando.revealedAbility, null);
+  eq('the copying body keeps its own ability', pory && pory.revealedAbility, 'Trace');
+  eq('...and the copied effect is recorded separately', pory && pory.activeAbility, 'Intimidate');
+}
+
+/* ================================= 5f. the damage model the ladder actually showed
+ *
+ * Four pricing errors found against real @pkmn/sim damage (102 hits, 100 inside the envelope):
+ * multi-hit moves were always priced at the library's midpoint of 3, a Choice Band that had been
+ * knocked off kept multiplying every later hit by 1.5, a battle-only type change was ignored, and
+ * Mimikyu's Disguise was priced as a normal hit.
+ */
+section('5f. multi-hit, lost items, type changes and Disguise are all priced');
+{
+  const dm = new ST.DamageEngine({ gen: 9 });
+  const evsAtk = { hp: 0, atk: 252, def: 0, spa: 0, spd: 4, spe: 252 };
+  const evsWall = { hp: 252, atk: 0, def: 252, spa: 0, spd: 4, spe: 0 };
+  const tusk = { species: 'Great Tusk', level: 100, nature: 'Adamant', evs: evsAtk, ivs: U.DEFAULT_IVS };
+  const wall = { species: 'Toxapex', level: 100, nature: 'Bold', evs: evsWall, ivs: U.DEFAULT_IVS };
+
+  const skill = dm.calculateDamage(Object.assign({}, tusk, { ability: 'Skill Link' }), wall, 'Bullet Seed', {});
+  const plain = dm.calculateDamage(Object.assign({}, tusk, { ability: 'Overgrow' }), wall, 'Bullet Seed', {});
+  check('Skill Link prices Bullet Seed at five hits, not three',
+    skill && plain && skill.minDmg > plain.maxDmg, JSON.stringify({ skill: skill && skill.minDmg, plain: plain && plain.maxDmg }));
+  const dice = dm.calculateDamage(Object.assign({}, tusk, { ability: 'Overgrow', item: 'Loaded Dice' }), wall, 'Bullet Seed', {});
+  check('Loaded Dice lifts the floor to four', dice && dice.minDmg > plain.minDmg, JSON.stringify({ dice: dice && dice.minDmg, plain: plain && plain.minDmg }));
+
+  const banded = dm.calculateDamage(Object.assign({}, tusk, { item: 'Choice Band' }), wall, 'Headlong Rush', {});
+  const knocked = dm.calculateDamage(Object.assign({}, tusk, { item: 'Choice Band', itemRemoved: true }), wall, 'Headlong Rush', {});
+  const consumed = dm.calculateDamage(Object.assign({}, tusk, { item: 'Choice Band', itemConsumed: true }), wall, 'Headlong Rush', {});
+  check('a knocked-off Choice Band stops multiplying damage',
+    banded && knocked && knocked.maxDmg < banded.minDmg, JSON.stringify({ banded: banded && banded.minDmg, knocked: knocked && knocked.maxDmg }));
+  check('...and so does one that was consumed',
+    consumed && consumed.maxDmg === knocked.maxDmg, JSON.stringify({ consumed: consumed && consumed.maxDmg, knocked: knocked && knocked.maxDmg }));
+
+  const feline = { species: 'Meowscarada', level: 100, nature: 'Jolly', evs: evsAtk, ivs: U.DEFAULT_IVS };
+  const normalTyping = dm.calculateDamage(tusk, feline, 'Close Combat', {});
+  const pureGrass = dm.calculateDamage(tusk, Object.assign({}, feline, { typeOverride: ['Grass'] }), 'Close Combat', {});
+  check('a Grass/Dark body takes 2x from Fighting', !!normalTyping && normalTyping.maxPercent > 0);
+  check('...but once Protean makes it pure Grass the same hit is neutral',
+    !!pureGrass && pureGrass.maxDmg < normalTyping.minDmg * 0.7,
+    JSON.stringify({ normal: normalTyping && normalTyping.minDmg, grass: pureGrass && pureGrass.maxDmg }));
+
+  const disguiseState = new ST.BattleStateManager();
+  const dp = new ST.ProtocolParser();
+  disguiseState.attachParser(dp);
+  disguiseState.setFormat('[Gen 9] National Dex');
+  disguiseState.registerMyTeam(ST.TeamParser.parsePokepaste([
+    'Great Tusk @ Leftovers', 'Ability: Protosynthesis', 'EVs: 252 Atk / 4 SpD / 252 Spe', 'Jolly Nature',
+    '- Close Combat', '- Headlong Rush', '- Ice Spinner', '- Rapid Spin'
+  ].join('\n')).pokemon);
+  dp.feedAll([
+    '|switch|p1a: Great Tusk|Great Tusk, L100, M|100/100',
+    '|switch|p2a: Mimikyu|Mimikyu, L100, M|100/100',
+    '|turn|1'
+  ]);
+  const disguiseEngine = new ST.LaplaceEngine({ K: 2 });
+  const attempt = function (fn) {
+    try { return { ok: true, value: fn() }; } catch (e) { return { ok: false, error: e && e.message }; }
+  };
+  const disguised = attempt(function () { return disguiseEngine.preview(disguiseState.state.active.opp, disguiseState.state); });
+  // Ice Spinner, not Close Combat: Mimikyu is a Ghost, so Fighting is immune to it with or
+  // without the costume and would prove nothing.
+  const dress = disguised.value && disguised.value.lines.filter(function (l) { return l.moveId === 'icespinner'; })[0];
+  check('an intact Disguise is priced at zero, never an OHKO', !!dress && dress.maxPercent === 0 && dress.isOHKO === false,
+    JSON.stringify(dress && [dress.minPercent, dress.maxPercent, dress.isOHKO]));
+  check('...and the bar says why', !!dress && /disguise/i.test(dress.verdict || ''), dress && dress.verdict);
+  dp.feed('|-activate|p2a: Mimikyu|ability: Disguise');
+  const brokenPreview = attempt(function () { return disguiseEngine.preview(disguiseState.state.active.opp, disguiseState.state); });
+  const broken = brokenPreview.value && brokenPreview.value.lines.filter(function (l) { return l.moveId === 'icespinner'; })[0];
+  check('once the costume breaks the hit is priced again', !!broken && broken.maxPercent > 0,
+    JSON.stringify(broken && [broken.minPercent, broken.maxPercent]));
+}
+
+/* ================================= 5g. stat stages, fractional HP and frame noise
+ *
+ * Every stage the battle erases has to leave the state, or the evaluator prices the next hit off
+ * a boost that no longer exists. The four transfer commands, the faint reset, fractional HP and
+ * Showdown's timestamp frame were all dropped before this sweep.
+ */
+section('5g. stat stages follow the protocol, and frame noise stays out');
+{
+  const boots = [
+    '|switch|p1a: Great Tusk|Great Tusk, L100, M|100/100',
+    '|switch|p2a: Corviknight|Corviknight, L100, M|100/100'
+  ];
+  const stageLines = function (extra) { return pipeline(boots.concat(extra)); };
+  const left = function (fx, side, stat) {
+    const mon = side === 'p1' ? fx.battle.active.my : fx.battle.active.opp;
+    return mon && mon.boosts ? mon.boosts[stat] : null;
+  };
+
+  const cleared = stageLines(['|-boost|p1a: Great Tusk|atk|2', '|-unboost|p1a: Great Tusk|def|1',
+    '|-clearpositiveboost|p1a: Great Tusk|p2a: Corviknight|move: Defog']);
+  eq('Defog clears the positive stages', left(cleared, 'p1', 'atk'), 0);
+  eq('...and leaves the negative ones alone', left(cleared, 'p1', 'def'), -1);
+
+  const inverted = stageLines(['|-boost|p1a: Great Tusk|atk|2', '|-unboost|p1a: Great Tusk|spe|1',
+    '|-invertboost|p1a: Great Tusk']);
+  eq('Topsy-Turvy flips Atk to -2', left(inverted, 'p1', 'atk'), -2);
+  eq('...and Spe to +1', left(inverted, 'p1', 'spe'), 1);
+
+  const swapped = stageLines(['|-boost|p1a: Great Tusk|atk|2', '|-unboost|p2a: Corviknight|atk|1',
+    '|-swapboost|p1a: Great Tusk|p2a: Corviknight|atk,def']);
+  eq('Heart Swap moves our +2 Atk to them', left(swapped, 'p2', 'atk'), 2);
+  eq('...and their -1 Atk to us', left(swapped, 'p1', 'atk'), -1);
+
+  const copied = stageLines(['|-boost|p1a: Great Tusk|spd|2',
+    '|-copyboost|p2a: Corviknight|p1a: Great Tusk|spd']);
+  eq('Psych Up copies the stage across', left(copied, 'p2', 'spd'), 2);
+
+  const fainted = stageLines(['|-boost|p2a: Corviknight|atk|3', '|faint|p2a: Corviknight']);
+  const corpse = (fainted.battle.oppTeam || []).filter(function (m) { return m && m.fainted; })[0];
+  eq('a faint erases the stages it carried', corpse && corpse.boosts.atk, 0);
+
+  const fractional = stageLines(['|-damage|p2a: Corviknight|72.06/100']);
+  check('a fractional landing is stored, not discarded',
+    !!fractional.battle.active.opp && Math.abs(fractional.battle.active.opp.hpPercent - 72.06) < 1e-6,
+    String(fractional.battle.active.opp && fractional.battle.active.opp.hpPercent));
+
+  const noise = new ST.ProtocolParser();
+  eq('the timestamp frame is not an event', noise.parseLine('|t:|1792877078'), null);
+  eq('the blank turn separator is not an event', noise.parseLine('|'), null);
+}
+
+/* ============================ 5h. KO credit and Illusion belong to the right body */
+
+section('5h. a faint is credited to the slot\'s CURRENT occupant\'s attacker, and |replace| is not a switch');
+{
+  /* The KO tally is kept per SLOT. Without clearing it on switch-in, the body that came in and
+   * died to Stealth Rock inherited the attacker from its predecessor and was credited with a KO
+   * it never landed. */
+  const koFx = pipeline([
+    '|switch|p1a: Abomasnow|Abomasnow, L100, M|100/100',
+    '|switch|p2a: Gholdengo|Gholdengo, L100, M|100/100',
+    '|turn|1',
+    '|-damage|p1a: Abomasnow|50/100|[from] move: Make It Rain|[of] p2a: Gholdengo',
+    '|turn|2',
+    '|switch|p1a: Hatterene|Hatterene, L100, F|100/100',
+    '|-damage|p1a: Hatterene|0 fnt|[from] Stealth Rock',
+    '|faint|p1a: Hatterene'
+  ]);
+  const kos = (koFx.battle.battleStats || {}).kos || {};
+  check('a hazard faint is not credited to the previous occupant\'s attacker',
+    !kos.gholdengo, JSON.stringify(kos));
+
+  /* `|replace|` is Illusion breaking: the body never left. Its stages, stint and switch-in
+   * window must survive; treating it as a fresh switch erased the boosts the board still shows. */
+  const repFx = pipeline([
+    '|switch|p2a: Zoroark|Zoroark, L100, M|100/100',
+    '|turn|1',
+    '|move|p2a: Zoroark|Night Slash|p1a: Abomasnow',
+    '|-boost|p2a: Zoroark|atk|2',
+    '|turn|2',
+    '|replace|p2a: Zoroark|Zoroark, L100, M|100/100'
+  ]);
+  const zoro = (repFx.battle.oppTeam || []).filter(function (m) { return m && U.toID(m.species) === 'zoroark'; })[0];
+  eq('a replace keeps the boosts on the board', zoro && zoro.boosts.atk, 2);
+  eq('...and keeps the stint', zoro && zoro.activeStintMoves, ['Night Slash']);
+  eq('...and does not re-open the switch-in ability window', zoro && zoro.switchedInTurn, 1);
+}
+
+/* ================================ 5i. the reported hit, end to end through preview()
+ *
+ * The original report: a burned Guts Ursaluna's Fire Punch into Serperior previewed 12% and did
+ * 98%. This is the same board, through the same entry point the HUD bars use, with the pruner
+ * pool in place and no bench selection. The 12% is now impossible: the envelope is the pool's,
+ * and even its BULKIEST spread (252 HP / 252+ Def) takes more than half.
+ */
+section('5i. burned Guts Ursaluna Fire Punch into Serperior is priced at the board');
+{
+  const mine = [
+    'Ursaluna @ Flame Orb', 'Ability: Guts', 'EVs: 252 HP / 252 Atk / 4 SpD', 'Brave Nature',
+    'IVs: 0 Spe', '- Fire Punch', '- Headlong Rush', '- Facade', '- Protect'
+  ].join('\n');
+  const st = new ST.BattleStateManager({ debug: false });
+  const prsr = new ST.ProtocolParser();
+  st.attachParser(prsr);
+  st.setFormat('[Gen 9] National Dex OU');
+  st.registerMyTeam(ST.TeamParser.parsePokepaste(mine).pokemon);
+  [
+    '|switch|p1a: 3rd Degree Burn|Ursaluna, L100, M|100/100',
+    '|switch|p2a: Diligence|Serperior, L100, M|100/100',
+    '|turn|1',
+    '|-status|p1a: Ursaluna|brn|[from] item: Flame Orb'
+  ].forEach(function (l) { prsr.feed(l); });
+  const b = st.state;
+  const dmg = new ST.DamageEngine({ gen: 9 });
+  const eng = new ST.LaplaceEngine({ damage: dmg, K: 2 });
+  new ST.ArchetypePruner({ damage: dmg }).prune(b.active.opp, b);
+  const pv = eng.preview(b.active.opp, b);
+  const fp = pv && (pv.lines || []).filter(function (l) { return U.toID(l.name) === 'firepunch'; })[0];
+  check('the Fire Punch line exists', !!fp);
+  check('the attacker is burned and Guts is its known ability',
+    b.active.my.status === 'brn' && U.toID(b.active.my.ability) === 'guts',
+    JSON.stringify({ status: b.active.my.status, ability: b.active.my.ability }));
+  check('the range covers more than one believed spread', !!fp && fp.spreadCount >= 2,
+    fp && String(fp.spreadCount));
+  check('even the bulkiest believed Serperior takes more than half', !!fp && fp.minPercent >= 55,
+    fp && String(fp.minPercent));
+  check('the top of the range is a knockout, not 12%', !!fp && fp.maxPercent >= 95,
+    fp && String(fp.maxPercent));
+  check('the verdict is never the old "leaves them at ~0%"',
+    !!fp && /2HKO|lethal/.test(fp.verdict || ''), fp && fp.verdict);
+}
+
 /* ================================================== 6. the damage memo key */
 
 section('6. two different IV spreads must not share a memo entry');
@@ -356,6 +723,35 @@ const realFixture = pipeline([
 const realMon = (realFixture.battle.oppTeam || []).find(function (m) { return m && U.toID(m.species) === 'kingambit'; });
 const realVerdict = pruner.applyChoiceLockRule(realMon, realFixture.battle);
 check('two real moves DO disprove a Choice item', realVerdict.pruned === true, JSON.stringify(realVerdict));
+
+/* A move the battle CALLED is not a click. Showdown prints a second `|move|` line for Sleep Talk,
+ * Metronome, Dancer and Instruct with `[from] <cause>`; counting it gave the body 2+ distinct
+ * moves in one stint, which the pruner reads as proof that no Choice item is held (the recurring
+ * "CHOICE LOCK BROKEN" ticket on bodies that never broke one) and credited it with a move it
+ * does not own (a Metronome Moonblast in the scout ledger). */
+const calledFixture = pipeline([
+  '|switch|p2a: Clefable|Clefable, L50, M|100/100',
+  '|turn|1',
+  '|move|p2a: Clefable|Sleep Talk|p2a: Clefable',
+  '|move|p2a: Clefable|Moonblast|p1a: Abomasnow|[from]Sleep Talk',
+  '|turn|2'
+]);
+const calledMon = (calledFixture.battle.oppTeam || []).find(function (m) { return m && U.toID(m.species) === 'clefable'; });
+check('the Sleep Talk user is in the state', !!calledMon);
+eq('a called move does not join the stint', calledMon && calledMon.activeStintMoves, ['Sleep Talk']);
+eq('...and is not credited to the body as a known move', calledMon && calledMon.revealedMoves, ['Sleep Talk']);
+eq('the click that counts is the caller', calledMon && calledMon.lastMove, 'Sleep Talk');
+const calledVerdict = pruner.applyChoiceLockRule(calledMon, calledFixture.battle);
+check('a called move does not trip the Choice-lock rule', calledVerdict.pruned === false, JSON.stringify(calledVerdict));
+/* ...but the board effect of a called move is REAL and must still be applied. */
+const calledTR = pipeline([
+  '|switch|p2a: Clefable|Clefable, L50, M|100/100',
+  '|switch|p1a: Abomasnow|Abomasnow, L50, M|100/100',
+  '|turn|1',
+  '|move|p2a: Clefable|Sleep Talk|p2a: Clefable',
+  '|move|p2a: Clefable|Trick Room|p2a: Clefable|[from]Sleep Talk'
+]);
+check('a called Trick Room still twists the dimensions', calledTR.battle.field.trickRoom === true);
 
 /* ===================================== 8. candidate pools are per-Pokémon, not per-species */
 
@@ -667,6 +1063,148 @@ for (let s = 1; s <= SEEDS; s++) {
 eq('all ' + SEEDS + ' random battles kept every solver invariant', fuzzFailures.slice(0, 5), []);
 check('the fuzz actually exercised the solver', fuzzStates >= SEEDS && fuzzActions > 100,
   'states=' + fuzzStates + ' actions=' + fuzzActions);
+
+section('12. calculator and inference audit regressions');
+{
+  const damage = new ST.DamageEngine();
+  const mew = { species: 'Mew', ability: 'Synchronize', hp: 100, hpPercent: 100 };
+  const ice = { species: 'Glaceon', ability: 'Ice Body', hp: 100 };
+  const clear = damage.calculateDamage(mew, ice, 'Body Slam', {});
+  const snow = damage.calculateDamage(mew, ice, 'Body Slam', { weather: 'snow' });
+  eq('snow applies Ice Defense at the calculator boundary', [clear.minDmg, clear.maxDmg, snow.minDmg, snow.maxDmg], [56, 67, 38, 45]);
+  eq('snow leaves ordinary special damage alone', damage.calculateDamage(mew, ice, 'Psychic', {}).minDmg,
+    damage.calculateDamage(mew, ice, 'Psychic', { weather: 'snow' }).minDmg);
+  check('snow also modifies Psyshock Defense', damage.calculateDamage(mew, ice, 'Psyshock', { weather: 'snow' }).maxDmg < damage.calculateDamage(mew, ice, 'Psyshock', {}).minDmg);
+  for (const mySide of ['p1', 'p2']) {
+    const oppSide = mySide === 'p1' ? 'p2' : 'p1';
+    const screens = { screens: { [mySide]: { reflect: true, lightscreen: true } } };
+    for (const move of ['Earthquake', 'Psychic']) {
+      const theirs = Object.assign({}, mew, { side: oppSide, setMoves: [move] });
+      const ours = Object.assign({}, mew, { side: mySide });
+      const reference = damage.calculateDamage(theirs, ours, move, screens, { attackerIsP1: oppSide === 'p1' });
+      eq('incoming ' + move + ' respects screens for ' + mySide, damage.getBestIncomingThreat(theirs, ours, screens).maxDmg, reference.maxDmg);
+    }
+  }
+  const tusk = { species: 'Great Tusk', ability: 'Protosynthesis', boosterActive: true, boostedStat: 'atk', itemConsumed: true, evs: { atk: 252 }, nature: 'Adamant' };
+  eq('consumed Booster Energy preserves the proven Attack boost', damage.calculateDamage(tusk, mew, 'Headlong Rush', {}).maxDmg, 333);
+  eq('unknown boosted stat is resolved from the actual spread', damage.calculateDamage(Object.assign({}, tusk, { boostedStat: null }), mew, 'Headlong Rush', {}).maxDmg, 333);
+  check('ending the paradox boost invalidates the cached damage', damage.calculateDamage(Object.assign({}, tusk, { boosterActive: false }), mew, 'Headlong Rush', {}).maxDmg < 333);
+  const heatran = { species: 'Heatran', ability: 'Flash Fire', abilityOn: true };
+  eq('activated Flash Fire is forwarded', damage.calculateDamage(heatran, mew, 'Flamethrower', {}).maxDmg, 216);
+  check('inactive Flash Fire has a different cache entry', damage.calculateDamage(Object.assign({}, heatran, { abilityOn: false }), mew, 'Flamethrower', {}).maxDmg < 216);
+  const lycanroc = { species: 'Lycanroc', ability: 'Sand Rush', item: 'Lycanium Z' };
+  const normal = damage.calculateDamage(lycanroc, mew, 'Stone Edge', {});
+  const zCrystal = damage.calculateDamage(lycanroc, mew, 'Stone Edge', {}, { zCrystal: 'Lycanium Z' });
+  eq('signature Z crystal changes the move after a normal cache entry', zCrystal.maxDmg, 271);
+  check('signature Z damage exceeds the base move', zCrystal.minDmg > normal.maxDmg);
+  eq('useZ also inherits the actual held crystal', damage.calculateDamage(lycanroc, mew, 'Stone Edge', {}, { useZ: true }).maxDmg, zCrystal.maxDmg);
+  eq('fixed damage remains available to incoming threat checks', damage.getBestIncomingThreat({ species: 'Blissey', setMoves: ['Seismic Toss'] }, mew, {}).maxDmg, 100);
+  const unreliable = damage.calculateDamage(Object.assign({}, mew, { boosts: { spa: 2 } }), Object.assign({}, mew, { item: 'Leftovers' }), 'Fire Blast', {});
+  check('a low-probability two-hit KO is not labelled guaranteed', !unreliable.is2HKO && unreliable.twoHitChancePct > 0 && unreliable.twoHitChancePct < 10, JSON.stringify(unreliable));
+  const engine = new ST.LaplaceEngine({ damage: damage });
+  eq('endgame search classifies fixed damage as an attack', engine.endgame._classifyMove('Seismic Toss'), 'attack');
+  const target = { species: 'Mimikyu', ability: 'Disguise', disguiseIntact: true, hp: 100, hpPercent: 100 };
+  const drill = { species: 'Excadrill', ability: 'Mold Breaker', evs: { atk: 252 }, hp: 100 };
+  const previewState = { active: { my: drill, opp: target }, field: {}, legalActions: { moves: [{ name: 'Iron Head' }] } };
+  check('Mold Breaker preview bypasses Disguise', engine.preview(target, previewState).lines[0].minPercent > 100);
+  eq('intact Disguise blocks an ordinary single hit centrally', damage.calculateDamage(mew, target, 'Psychic', {}).maxDmg, 0);
+  const multi = damage.calculateDamage({ species: 'Cinccino', ability: 'Skill Link' }, target, 'Bullet Seed', {});
+  const multiOpen = damage.calculateDamage({ species: 'Cinccino', ability: 'Skill Link' }, Object.assign({}, target, { disguiseIntact: false }), 'Bullet Seed', {});
+  check('later multihit strikes get through Disguise', multi.minDmg > 0 && multi.maxDmg < multiOpen.maxDmg);
+  const tr = new ST.TrickRoomEngine();
+  for (const [move, priority] of [['Fake Out', 3], ['Feint', 2], ['First Impression', 2], ['Payback', 0], ['Metal Burst', 0]]) {
+    eq(move + ' has its real priority', tr.moveBracket(move), priority);
+  }
+}
+{
+  const damage = new ST.DamageEngine();
+  const sampler = new ST.WorldSampler();
+  const base = { species: 'Kingambit', id: 'kingambit', side: 'p2', isActive: true, hp: 100, hpPercent: 80, alliesFainted: 5, typeOverride: ['Water'], boostedStat: 'atk', abilityOn: true, disguiseIntact: true };
+  const set = { species: 'Kingambit', ability: 'Supreme Overlord', item: 'Choice Band', nature: 'Adamant', evs: { atk: 252 }, moves: ['Kowtow Cleave'] };
+  const sampled = sampler._monFromSet(base, set, 0);
+  eq('sampled worlds retain the recorded battle state', [sampled.hpPercent, sampled.alliesFainted, sampled.typeOverride, sampled.boostedStat, sampled.abilityOn, sampled.disguiseIntact], [80, 5, ['Water'], 'atk', true, true]);
+  check('sampled typing is copied independently', sampled.typeOverride !== base.typeOverride);
+  const my = { species: 'Mew', side: 'p1', hp: 100, hpPercent: 100, ability: 'Synchronize' };
+  const live = { species: 'Garchomp', id: 'garchomp', side: 'p2', hp: 100, isActive: true, item: '', evs: { atk: 0 }, ability: 'Rough Skin' };
+  const state = { active: { my: my, opp: live }, myTeam: [my], oppTeam: [live], field: {}, mySide: 'p1', oppSide: 'p2' };
+  const calls = [];
+  const engine = new ST.LaplaceEngine({ evaluator: { evaluate: function () { return 0; } }, damage: { calculateDamage: function (a, d, m, f, o) { calls.push([a.item, a.evs && a.evs.atk, d.item]); return damage.calculateDamage(a, d, m, f, o); } } });
+  for (const item of ['Choice Band', 'Choice Scarf']) {
+    calls.length = 0;
+    const mon = sampler._monFromSet(live, { species: 'Garchomp', ability: 'Rough Skin', item: item, evs: { atk: 252 }, moves: ['Earthquake'] }, 0);
+    engine._payoff({ kind: 'move', name: 'Psychic' }, { kind: 'move', name: 'Earthquake' }, state, state.field, { team: [mon] });
+    check('main payoff reads the ' + item + ' world', calls.some(function (c) { return c[0] === item && c[1] === 252; }), JSON.stringify(calls));
+  }
+  eq('world evaluation leaves the live item alone', live.item, '');
+  const eg = new ST.EndgameSolver({ damage: damage, evaluator: { evaluate: function () { return 0; } } });
+  const weak = { species: 'Pikachu', hp: 1, hpPercent: 1, isActive: true };
+  const node = eg._nodeFrom({ active: { my: my, opp: weak }, myTeam: [my], oppTeam: [weak, { species: 'Blissey', hp: 100 }], field: {} }, null);
+  const after = eg._applyPair(node, { kind: 'attack', name: 'Psychic' }, { kind: 'attack', name: 'Thunderbolt' }, 'my');
+  eq('replacement cannot execute the fainted actor move', after.my.bodies[0].hp, 100);
+  eq('the fainted actor is still fainted', after.opp.bodies[0].hp, 0);
+  eq('pair resolution leaves the original node intact', node.opp.bodies[0].hp, 1);
+}
+{
+  const manager = new ST.BattleStateManager();
+  const parser = new ST.ProtocolParser();
+  manager.attachParser(parser);
+  const feed = function (lines) { lines.forEach(function (line) { parser.feed(line); }); };
+  feed(['|switch|p1a: Mew|Mew|100/100', '|switch|p2a: Garchomp|Garchomp|100/100', '|turn|1', '|move|p2a: Garchomp|Earthquake|p1a: Mew', '|-damage|p1a: Mew|65/100']);
+  const my = manager.state.active.my, foe = manager.state.active.opp;
+  eq('ordinary native damage produces an observation', foe.damageDealt.length, 1);
+  eq('native damage is attributed to the preceding attack', foe.damageDealt[0].moveName, 'Earthquake');
+  eq('native damage keeps the pre-hit defender HP', foe.damageDealt[0].defenderSnapshot.hpPercent, 100);
+  parser.feed('|-damage|p1a: Mew|65/100');
+  eq('identical split/poll HP frames do not duplicate evidence', foe.damageDealt.length, 1);
+  parser.feed('|-damage|p1a: Mew|59/100|[from] brn');
+  eq('residual damage does not become attack evidence', foe.damageDealt.length, 1);
+  const obs = foe.damageDealt[0];
+  manager.state.field.screens.p1.reflect = true;
+  my.item = 'Assault Vest'; my.boosts.def = 6;
+  eq('historical field is independent of the current screen', !!obs.fieldSnapshot.screens.p1.reflect, false);
+  eq('historical defender retains its original boosts', obs.defenderSnapshot.boosts.def, 0);
+  feed(['|turn|2', '|move|p2a: Garchomp|Earthquake|p1a: Mew', '|-crit|p1a: Mew', '|-damage|p1a: Mew|40/100']);
+  check('critical hits remain flagged', foe.damageDealt[1].crit);
+  feed(['|move|p2a: Garchomp|Earthquake|p1a: Mew', '|-damage|p1a: Mew|20/100']);
+  check('another hit in the same turn does not inherit the critical flag', !foe.damageDealt[2].crit);
+  feed(['|turn|3', '|move|p2a: Garchomp|Earthquake|p1a: Mew', '|-damage|p1a: Mew|0 fnt']);
+  check('KO damage records its censored measurement', foe.damageDealt[3].censored);
+  const damage = new ST.DamageEngine(), pruner = new ST.ArchetypePruner({ damage: damage });
+  const set = { species: 'Mew', ability: 'Synchronize', evs: { spa: 252 }, nature: 'Modest' };
+  const defender = { species: 'Mew', ability: 'Synchronize' };
+  const range = damage.calculateDamage(set, defender, 'Flamethrower', {});
+  const observation = { moveName: 'Flamethrower', damagePercent: range.maxPercent, hpBefore: 100, defenderBoosts: {}, defenderStatus: '', weather: '', terrain: '', attackerIsP1: true, fieldSnapshot: {}, defenderSnapshot: defender };
+  eq('historical clear weather overrides present rain', pruner._damageVerdict(set, observation, defender, { field: { weather: 'rain' } }), null);
+  eq('legacy clear-weather observation also clears present rain', pruner._damageVerdict(set, Object.assign({}, observation, { fieldSnapshot: null }), defender, { field: { weather: 'rain' } }), null);
+  const boostedSet = Object.assign({}, set, { boosts: { spa: 2 } });
+  const boostedRange = damage.calculateDamage(boostedSet, defender, 'Flamethrower', {});
+  const boostedObservation = Object.assign({}, observation, { damagePercent: boostedRange.maxPercent, attackerSnapshot: { boosts: { spa: 2 } } });
+  eq('damage pruning uses the attacker boosts recorded at impact', pruner._damageVerdict(set, boostedObservation, defender, { field: {} }), null);
+  feed(['|switch|p2a: Heatran|Heatran|100/100', '|-activate|p2a: Heatran|ability: Flash Fire']);
+  check('the real activation frame enables Flash Fire', manager.state.active.opp.abilityOn);
+  feed(['|switch|p2a: Garchomp|Garchomp|100/100', '|switch|p2a: Heatran|Heatran|100/100']);
+  check('switching resets Flash Fire', !manager.state.active.opp.abilityOn);
+  feed(['|-start|p2a: Heatran|protosynthesisatk', '|-end|p2a: Heatran|Protosynthesis']);
+  check('an ended paradox effect clears its active flag', !manager.state.active.opp.boosterActive);
+}
+{
+  const manager = new ST.BattleStateManager(), parser = new ST.ProtocolParser(); manager.attachParser(parser);
+  parser.feed('|switch|p1a: Abomasnow|Abomasnow|100/100');
+  manager.state.active.my.item = 'Icy Rock';
+  parser.feed('|turn|1');
+  parser.feed('|-weather|Snowscape|[from] ability: Snow Warning|[of] p1a: Abomasnow');
+  eq('known Icy Rock gives eight snow turns', manager.state.field.weatherTurnsLeft, 8);
+  parser.feed('|-weather|Snowscape|[upkeep]'); parser.feed('|turn|2');
+  eq('weather upkeep does not restart its timer', manager.state.field.weatherTurnsLeft, 7);
+  parser.feed('|-weather|Snowscape|[upkeep]'); parser.feed('|turn|3');
+  eq('weather continues counting down', manager.state.field.weatherTurnsLeft, 6);
+  parser.feed('|-weather|Rain');
+  eq('an unknown setter does not imply a known duration', manager.state.field.weatherTurnsLeft, null);
+  parser.feed('|turn|10');
+  eq('weather waits for the observed end frame', manager.state.field.weather, 'rain');
+  parser.feed('|-weather|none');
+  eq('the observed weather end clears it', manager.state.field.weather, '');
+}
 
 /* ------------------------------------------------------------------ summary */
 
