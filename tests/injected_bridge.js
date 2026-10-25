@@ -327,6 +327,26 @@ check('changing rooms restores the live decision request', betaEvents[betaEvents
 betaClient.room = { id: 'options' };
 betaSandbox.__ST_INJECTED_FLUSH();
 eq('a beta popup retains its underlying battle', betaDoc.documentElement['data-st-room'], secondRoom.id);
+betaBefore = betaEvents.length;
+secondRoom.battle.tier = '[Gen 9] National Dex';
+betaSandbox.__ST_INJECTED_FLUSH();
+eq('a captured client tier recovers a missed tier frame', betaEvents.slice(betaBefore), ['|tier|[Gen 9] National Dex']);
+betaBefore = betaEvents.length;
+betaSandbox.__ST_INJECTED_FLUSH();
+eq('an unchanged tier is forwarded only once', betaEvents.length, betaBefore);
+secondRoom.battle.tier = '[Gen 9] OU';
+betaSandbox.__ST_INJECTED_FLUSH();
+eq('tier recovery preserves unsupported format names', betaEvents[betaEvents.length - 1], '|tier|[Gen 9] OU');
+secondRoom.battle.tier = 'battle';
+betaBefore = betaEvents.length;
+betaSandbox.__ST_INJECTED_FLUSH();
+eq('the room kind is never forwarded as the captured tier', betaEvents.length, betaBefore);
+const lateRoom = { id: 'battle-late-3', battle: { tier: '[Gen 9] National Dex', stepQueue: ['|turn|4'] }, request: secondRoom.request };
+betaClient.room = betaClient.baseRoom = lateRoom;
+betaBefore = betaEvents.length;
+betaSandbox.__ST_INJECTED_FLUSH();
+eq('room changes send their captured tier before the decision request', betaEvents.slice(betaBefore, betaBefore + 3), ['|init|battle', '|turn|4', '|tier|[Gen 9] National Dex']);
+check('the recovered room still sends its request last', betaEvents[betaEvents.length - 1].startsWith('|request|'));
 
 console.log('checks passed: ' + passed + '  failed: ' + failures.length);
 failures.forEach(function (f) { console.log('  x ' + f); });

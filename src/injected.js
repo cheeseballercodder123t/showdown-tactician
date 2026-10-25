@@ -561,6 +561,21 @@
   }
 
   var lastBattle = null;
+  var tierBattle = null;
+  var lastTier = '';
+  function pollTierSnapshot(battle) {
+    if (!battle) return;
+    if (tierBattle !== battle) { tierBattle = battle; lastTier = ''; }
+    var format = battle.format;
+    var tier = typeof battle.tier === 'string' && battle.tier.trim()
+      ? battle.tier.trim() : format && (format.name || format.id);
+    if (typeof tier !== 'string') return;
+    tier = tier.trim();
+    if (!tier || /[\r\n|]/.test(tier) || /^(battle|chat|room|lobby|teampreview|multi|battle-.*)$/i.test(tier) || tier === lastTier) return;
+    lastTier = tier;
+    forward('|tier|' + tier, 'poll');
+  }
+
   function syncBattleRoom(room, battle) {
     if (!battle || battle === lastBattle) return;
     var changed = !!lastBattle;
@@ -573,6 +588,7 @@
     lastForwarded = { line: null, kind: null };
     forward('|init|battle', 'poll');
     pollBattleBuffer(battle);
+    pollTierSnapshot(battle);
     if (room.request && typeof room.request === 'object') {
       forward('|request|' + JSON.stringify(room.request), 'poll');
     }
@@ -590,6 +606,7 @@
       // The buffer is a FALLBACK: it only speaks while app.receive has not delivered a line, so
       // the two paths never hand the same frame to the parser twice.
       if (!appReceiveHooked || !appReceiveLines) pollBattleBuffer(battle);
+      pollTierSnapshot(battle);
       pollPpSnapshot();
       pollAccuracySnapshot(battle);
     } catch (e) {

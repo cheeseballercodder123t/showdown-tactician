@@ -278,6 +278,18 @@
       if (event.type === 'request') {
         return this._onRequest();
       }
+      if (event.type === 'format') {
+        const state = this.state && (this.state.state || this.state);
+        if (state && state.request) {
+          if (state.formatSupported === false) {
+            this._closePonderWindow();
+            this._renderScreenExtras(state);
+          }
+          this.lastEvaluateFrame = null;
+          this.lastEvaluateTurn = -1;
+          return this._onRequest();
+        }
+      }
       if (event.type === 'speedfloor') {
         if (this.pruner && typeof this.pruner.handleSpeedFloorEvent === 'function' && this.state) {
           try { this.pruner.handleSpeedFloorEvent(event, this.state.state || this.state); } catch (e) { this._error('speedfloor', e); }

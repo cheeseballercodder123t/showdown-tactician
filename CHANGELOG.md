@@ -11,6 +11,13 @@ reaches a verdict.
 
 ## Unreleased
 
+### Fixed — 1.0.1 battle format recovery
+
+* The bridge forwards the client's captured tier even when the initial tier frame was missed or
+  polling has yielded to the receive hook. Room changes restore that tier before the request.
+* A recovered tier immediately reevaluates an existing decision; unsupported tiers remain gated
+  off and clear stale damage previews. Both extension manifests identify this build as 1.0.1.
+
 ### Changed — responsive battle control center
 
 * Rebuilt the battle HUD with Battle, Intel, Field and Review views, a resizable desktop dock and a

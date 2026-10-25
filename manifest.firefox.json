@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Showdown Tactician - Laplace NatDex Engine",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Client-side Laplace engine for [Gen 9] National Dex OU: determinized world sampling, blunder vetoes, Trick Room lifecycle and a 128D/10D evaluation stack rendered as a touch HUD.",
   "browser_specific_settings": {
     "gecko": {

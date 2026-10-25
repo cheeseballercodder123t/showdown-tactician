@@ -1,6 +1,6 @@
 {
   "name": "showdown-tactician",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "Client-side Laplace decision engine for [Gen 9] National Dex OU on Pokemon Showdown, shipped as a Manifest V3 browser extension.",
   "license": "MIT",

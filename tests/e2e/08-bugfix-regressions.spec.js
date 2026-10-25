@@ -61,6 +61,30 @@ test('a live room opening with |init|battle stays online instead of reading "bat
   await opened.page.close();
 });
 
+for (const client of ['classic', 'beta']) {
+  test(client + ': a missed tier is recovered from live metadata and resumes the pending decision', async function () {
+    const opened = await H.openBattle(env.ctx, { client: client });
+    const page = opened.page;
+    await H.pushLines(page, ['|tier|[Gen 9] OU', H.buildRequest()]);
+    await expect(page.locator('[data-st-banner]')).toContainText('ENGINE OFFLINE');
+    await page.evaluate(function () {
+      window.__mock.battle.tier = '[Gen 9] National Dex';
+      window.__ST_INJECTED_FLUSH();
+    });
+    await expect(page.locator('button.movebutton .elo-helper-badge')).toHaveCount(4);
+    await expect(page.locator('[data-st-banner]')).not.toContainText('ENGINE OFFLINE');
+    await expect(page.locator('.st-lethal-bar')).toHaveCount(4);
+    await page.evaluate(function () {
+      window.__mock.battle.tier = '[Gen 9] National Dex Ubers';
+      window.__ST_INJECTED_FLUSH();
+    });
+    await expect(page.locator('[data-st-banner]')).toContainText('ENGINE OFFLINE');
+    await expect(page.locator('.st-lethal-bar')).toHaveCount(0);
+    expect(opened.errors).toEqual([]);
+    await page.close();
+  });
+}
+
 test('a normalized L50 detail in a level-100 battle cannot double the opponent into 300%+', async function () {
   /* The reported failure: Showdown prints `L50` in |poke|/|switch| details even though the
    * format is played at level 100. Believing it halved the opponent's HP and defenses, so Ice
