@@ -27,6 +27,12 @@
 
   const CONFIG = {
     version: '1.0.0',
+    tactical: {
+      coverage: 55, redundantAnswer: 0.2, roomAccess: 45, breakerPressure: 45,
+      priorityFinish: 50, damageTieBreak: 0.001, myCandidates: 3, oppCandidates: 2, rootReplies: 6,
+      closeGap: 15, consistentShare: 0.7, tailFraction: 0.25,
+      scoreBlend: { worst: 0.5, mean: 0.25, tail: 0.25 }, regretPenalty: 0.12
+    },
 
     /* ---------------------------------------------------------------- laplace */
     // The master solver: how many worlds to sample, how the simultaneous matrix is solved

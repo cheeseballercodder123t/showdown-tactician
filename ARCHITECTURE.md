@@ -1,7 +1,7 @@
 # Showdown Tactician — Interface Contract (read before editing any module)
 
 Everything in `src/` is a **classic script** (no ES modules, no `import`/`export`).
-Each file is wrapped in an IIFE and publishes exactly one class onto the shared global
+Each file is wrapped in an IIFE and publishes its API onto the shared global
 namespace `window.ST`. `window.ST.CONFIG` (from `src/config.js`), `window.ST.util` (from
 `src/util.js`) and the vendored `window.calc` dex are already loaded before every other module,
 because the manifest lists scripts in this order:
@@ -19,6 +19,7 @@ src/state_manager.js   -> ST.BattleStateManager
 src/set_pruner.js      -> ST.ArchetypePruner
 src/calc_engine.js     -> ST.DamageEngine
 src/trick_room.js      -> ST.TrickRoomEngine
+src/turn_model.js      -> ST.TurnModel / ST.TeamPlan / ST.TacticalSearch
 src/evaluator_128d.js  -> ST.DenseStateEvaluator
 src/tempo_vector.js    -> ST.TempoEngine
 src/opponent_clock.js  -> ST.OpponentClock
@@ -1312,7 +1313,7 @@ switch-penalising change before one is written. And the band table that maps a r
 is labelled UNCALIBRATED in the report itself.
 
 
-## Verified live battle path (1.1.0)
+## Verified live battle path (1.2.0)
 
 `injected.js -> ProtocolParser -> BattleStateManager.sides.p1/p2 -> local perspective -> WorldSampler -> TurnModel -> TacticalSearch -> MobileHUD`.
 
@@ -1320,8 +1321,12 @@ The canonical sides own rosters, active references and benches. Existing `myTeam
 
 Request stats and exact own HP take precedence in the calculator and survive its internal Pokemon clones. Cache keys include those inputs. Damage observations retain historical stats and field inputs. The preview envelope spans candidate spreads; the UI distinguishes this uncertainty from within-set damage rolls.
 
-Verified requests use the shared turn model for root actions and continuations. Search completes successive full horizons before publishing deeper scores, with node/time limits. Trick Room planning attempts up to four turns, Standard up to two; both retain legal setup actions. Faint replacements are decision nodes; pivots use heuristic entry selection. Scores blend worst and mean modeled replies across weighted worlds. They are evaluation units, not calibrated win probabilities. No selective result is a proof. Unsupported effects and horizon limits are published in Review.
+Verified requests use the shared turn model for root actions and continuations. Search completes successive full horizons before publishing deeper scores, with node/time limits. Trick Room planning attempts up to four turns, Standard up to two; both retain legal setup actions. Faint replacements are decision nodes; pivots use heuristic entry selection. Scores combine worst and mean replies, a weighted lower tail across opposing sets, and regret against each set's best action. They are evaluation units, not calibrated win probabilities. No selective result is a proof. Unsupported effects and horizon limits are published in Review.
+
+`TeamPlan`, exported by `turn_model.js`, precomputes direct matchup damage through the shared calculator. Its leaf contribution values remaining answers, redundancy, and usable Trick Room access. Entry hazards, remaining HP, priority and effective Speed determine whether a direct answer remains available. Matchup damage stays fixed to each world's starting sets; the turn model separately handles changing boosts and damage in simulated turns. Tunable weights live under `tactical` in config.js. This heuristic is provisional and does not establish a playing-strength gain.
+
+Search keys include the opposing set combination as well as HP, boosts, status, volatiles, move availability and Protect history. Distinct hidden spreads cannot reuse each other's search values. Candidate comparisons use a temporary sampled body and never write a candidate into the live roster. Review retains at most twelve immutable decision snapshots in memory, replaces deeper passes for the same request, and clears history on battle changes. Copies occur only on a user click.
 
 The legacy Laplace heuristic path remains available for synthetic/unverified integrations and its independent regression suites. Browser requests use the verified path. Live observations invalidate the previous recommendation; revision checks reject stale narration. Battle-plan preferences are saved per roster on the local Showdown origin. Review copies a local decision snapshot only on a user click.
 
-`tests/control_engine_check.js` and browser suite 11 cover ownership, HP, actual request stats, setup safety, sacrifice versus hard switching, coverage selection, and responsive controls. The supplied transcript is retained in `tests/fixtures/`; the reconstructed protocol is explicitly incomplete and does not invent exact unknown stats or rounded residual HP.
+`tests/control_engine_check.js` and browser suite 11 cover ownership, HP, actual request stats, setup safety, sacrifice versus hard switching, coverage selection, preservation, priority finishes, set-risk comparisons, decision history and responsive controls. `tests/fixtures/team-plan-positions.json` stores concrete preservation and priority positions. The supplied transcript is retained in `tests/fixtures/`; the reconstructed protocol is explicitly incomplete and does not invent exact unknown stats or rounded residual HP.

@@ -717,7 +717,9 @@
       clone.oppTeam = clone.oppTeam.map(this._reviveMon);
       for (const key of ['my', 'opp']) {
         const team = clone[key + 'Team'];
-        clone.active[key] = team.find(function (m) { return m && m.isActive; }) || null;
+        const current = this.state.active[key];
+        clone.active[key] = team.find(function (m) { return m && m.isActive; }) ||
+          team.find(function (m) { return current && (current.uid ? m.uid === current.uid : m.id === current.id); }) || null;
         clone.bench[key] = team.filter(function (m) { return m && !m.isActive && !m.fainted; });
       }
       return clone;
@@ -824,8 +826,9 @@
       st.mySide = side;
       st.oppSide = otherSide(side);
       st.ownershipResolved = true;
-      st.active.my = st.myTeam.find(function (m) { return m && m.isActive; }) || null;
-      st.active.opp = st.oppTeam.find(function (m) { return m && m.isActive; }) || null;
+      const myActive = st.active.my, oppActive = st.active.opp;
+      st.active.my = st.myTeam.find(function (m) { return m && m.isActive; }) || (st.myTeam.includes(myActive) ? myActive : null);
+      st.active.opp = st.oppTeam.find(function (m) { return m && m.isActive; }) || (st.oppTeam.includes(oppActive) ? oppActive : null);
       this._refreshBench();
     }
 

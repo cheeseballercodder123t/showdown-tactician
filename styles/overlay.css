@@ -451,3 +451,9 @@ button.st-optimal { outline: 2px solid #6f5948; outline-offset: -2px; }
 .st-calc-detail, .st-action-analysis, .st-pruning-ledger { font-size: 12px; line-height: 1.45; padding: 6px 0; }
 .st-calc-detail summary, .st-action-analysis summary, .st-pruning-ledger summary { cursor: pointer; }
 .st-quick-summary p { margin: 6px 0; }
+.st-pick-stability, .st-room-budget, .st-preserve-note, .st-intel-change, .st-safer-line { font-size: 12px; line-height: 1.45; color: var(--st-muted); }
+.st-team-plan { margin-top: 12px; font-size: 12px; }
+.st-team-plan summary { cursor: pointer; }
+.st-review-picker, .st-compare-set { min-height: 44px; max-width: 100%; background: var(--st-ink-2); color: var(--st-text); border: 1px solid var(--st-hairline-bold); border-radius: 0; padding: 8px; font: inherit; }
+.st-review-picker { width: 100%; }
+.st-review-picker:focus-visible, .st-compare-set:focus-visible { outline: 2px solid var(--st-rail); outline-offset: 2px; }

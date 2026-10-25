@@ -13,6 +13,15 @@ async function seatTwo(client,width){
  return opened;
 }
 for(const client of ['classic','beta']){
+ test(client+': a pivot KO still receives a replacement recommendation',async()=>{
+  const {page,errors}=await seatTwo(client,1440);
+  const req=JSON.parse(H.buildRequest({rqid:2}).slice(9));req.side.id='p2';req.side.pokemon[0].ident='p2: Great Tusk';
+  req.side.pokemon.push({ident:'p2: Pikachu',details:'Pikachu',active:false,condition:'211/211',moves:['thunderbolt']});
+  delete req.active;req.forceSwitch=[true];
+  await H.pushLines(page,['|poke|p1|Mew|item','|faint|p1a: Foe','|request|'+JSON.stringify(req)]);
+  await expect(page.locator('.st-play-name')).toContainText('Switch to Pikachu');
+  expect(errors).toEqual([]);await page.close();
+ });
  test(client+': player two owns its roster and HP updates without a request',async()=>{
   const {page,errors}=await seatTwo(client,1440);
   await expect(page.locator('[data-st-bench="landorustherian"]')).toHaveCount(1);
@@ -34,6 +43,8 @@ for(const client of ['classic','beta']){
   await center.locator('[data-st-plan]').selectOption('trickroom');
   await expect(center.locator('[data-st-plan]')).toHaveValue('trickroom');
   await expect(center.locator('.st-play-name')).toBeInViewport();
+  await expect(center.locator('.st-pick-stability')).toContainText(/sampled sets|set combination|opposing set/);
+  await expect(center.locator('.st-team-plan')).toHaveCount(1);
   const values=await center.locator('.st-action-row > .st-fact-row .st-fact-value').allTextContents();
   expect(values.length).toBeGreaterThan(1);expect(values.every(v=>!v.includes('%'))).toBe(true);
   for(const view of ['intel','field','review','battle']){
@@ -44,6 +55,11 @@ for(const client of ['classic','beta']){
   }
   await center.locator('[data-st-view-button="intel"]').click();
   await expect(center.locator('.st-intel-overview')).toContainText('Landorus-Therian');
+  const candidate=center.locator('.st-candidate').first();
+  await candidate.evaluate(el=>{el.open=true;});
+  await candidate.locator('.st-compare-set').click();
+  await expect(candidate.locator('.st-set-comparison')).toContainText('Temporary calculation');
+  await expect(candidate.locator('.st-set-comparison')).toContainText('Ice Spinner');
   await page.keyboard.press('Escape');
   const saved=await page.evaluate(()=>JSON.parse(localStorage.getItem('stBattlePlans')||'{}'));
   expect(saved.greattusk).toBe('trickroom');expect(errors).toEqual([]);await page.close();
@@ -62,6 +78,11 @@ for(const client of ['classic','beta']){
   await page.locator('[data-st-view-button="review"]').click();
   await expect(page.locator('.st-engine-review')).toContainText('Selective search does not establish a forced win');
   await expect(page.locator('.st-copy-decision')).toBeVisible();
+  const next=JSON.parse(H.buildRequest({rqid:2}).slice(9));next.side.id='p2';next.side.pokemon[0].ident='p2: Great Tusk';
+  await H.pushLines(page,['|turn|2','|request|'+JSON.stringify(next)]);
+  await expect(page.locator('.st-review-picker')).toHaveCount(1);
+  await page.locator('.st-review-picker').selectOption('1:1');
+  await expect(page.locator('.st-engine-review')).toContainText('Recorded turn 1');
   expect(errors).toEqual([]);await page.close();
  });
 }

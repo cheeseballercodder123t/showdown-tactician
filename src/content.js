@@ -64,6 +64,7 @@
         },
         onBenchTap: function (id) { return self._selectBenchTarget(id); },
         onBattlePlanChange: function (mode) { return self.setBattlePlan(mode); },
+        onCompareSet: function (monId, setId) { return self.compareCandidate(monId, setId); },
         onCopyReceipt: function (text) { return self._copyReceipt(text); }
       }) : null;
       this.team = null;
@@ -939,6 +940,20 @@
         this.selectedBenchId = null;
       }
       return this.engine.preview(oppActive, state);
+    }
+
+    compareCandidate(monId, setId) {
+      const state = this.state && this.state.state;
+      if (!state || !state.ownershipResolved || !this.sampler || !this.damage) return null;
+      const mon = state.oppTeam.find(m => m.id === monId);
+      const index = mon && (mon.candidateSets || []).findIndex((set, i) => String(set.id || i) === String(setId));
+      if (!mon || index < 0 || !state.active.my) return null;
+      const target = this.sampler._monFromSet(mon, mon.candidateSets[index], mon.index || 0);
+      return { attacker: state.active.my.species, defender: target.species, lines: this.damage.movesFor(state.active.my, 4).map(name => {
+        const hit = this.damage.calculateDamage(state.active.my, target, name, state.field);
+        return { name: U.getMoveData(name)?.name || name, status: !!U.getMoveData(name)?.isStatus, failed: !hit || hit.failed,
+          min: hit && hit.minPercent, max: hit && hit.maxPercent, inputs: hit && hit.inputs };
+      }) };
     }
 
     /**

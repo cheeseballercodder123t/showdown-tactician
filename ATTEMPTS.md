@@ -23,6 +23,15 @@ Status vocabulary, and it is deliberately not two-valued:
 
 ## 0. The two measurements, and why both exist
 
+### 2026-10-25 live tactical changes
+
+| Change | Status | Evidence |
+|---|---|---|
+| Separate hidden spreads in search memo keys; retain legal priority finishes and Protect replies | ADOPTED correctness fixes | `tests/control_engine_check.js`, `tests/fixtures/team-plan-positions.json` |
+| Value remaining direct answers and usable Trick Room access | OPEN strength verdict; provisional live weights | Equal-material preservation ablation in `tests/control_engine_check.js`. No paired win-rate gate run. |
+| Lower-tail set risk and per-set regret | OPEN strength verdict; provisional live weights | Explicit brittle-versus-reliable score benchmark and duplicate-set checks in `tests/control_engine_check.js`. This is a policy preference test, not a win-rate measurement. |
+
+
 This repository keeps **policy agreement** and **playing strength** strictly apart, because they have
 been observed to disagree in both directions:
 

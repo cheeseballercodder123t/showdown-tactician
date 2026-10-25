@@ -9,6 +9,15 @@ rejected, inert, unresolved) and the artifact behind it, indexed by the shape of
 re-proposal can be matched to a prior attempt — is `ATTEMPTS.md`. Add a row there when a row here
 reaches a verdict.
 
+## 1.2.0 - 2026-10-25
+
+- Price remaining direct matchup answers and access to Trick Room when evaluating team preservation. Publish sampled roles, scarce answers, and the turn cost of entering a breaker.
+- Compare actions across weighted opposing sets using reply scores, the weakest quarter of set weight, and loss against each set's best action. Distinguish repeated samples from distinct sets.
+- Separate hidden spreads in search caches. Keep legal priority finishes and Protect continuations, consider setup replies, and choose a defensively relevant opposing switch instead of the first roster entry.
+- Spend PP and apply/reset Choice locks during simulated turns. Preserve fainted slot references across replacement requests and snapshots, including a pivot KO that leaves both sides choosing replacements. Map Protect recommendations correctly in the battle runner.
+- Add temporary candidate damage comparisons, recent scouting changes, explicit sacrifice tradeoffs, and twelve local decision records with their original assumptions. Preserve the existing desktop/mobile layout and native move ranges.
+- Targeted regressions demonstrate the preservation distinction and priority finishing behavior. The new scoring weights are provisional; no paired win-rate improvement or ladder strength is established.
+
 ## 1.1.0 - 2026-10-25
 
 - Keep protocol p1/p2 rosters and active references independent of the local player seat. Recover missed live requests; match team imports to the authenticated roster.

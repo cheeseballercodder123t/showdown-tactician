@@ -253,7 +253,7 @@ function accuracyLines(request) {
  */
 function choiceForRanked(entry) {
   if (!entry || !entry.kind) return null;
-  if (entry.kind === 'move') {
+  if (entry.kind === 'move' || entry.kind === 'protect') {
     const id = entry.moveId || (entry.name ? String(entry.name).toLowerCase().replace(/[^a-z0-9]/g, '') : '');
     if (!id) return null;
     return 'move ' + id;

@@ -1613,6 +1613,7 @@
     renderControlCenter(state, readout, meta) {
       if (!state || !this._document()) return;
       this._centerState = state;
+      this._recordIntelChanges(state);
       this._battleState = state;
       if (readout !== undefined) this._readout = readout;
       if (meta) this._centerMeta = meta;
@@ -1645,10 +1646,17 @@
         this._appendChild(section, this._el('div', 'st-eyebrow', 'Suggested play'));
         this._appendChild(section, this._el('div', 'st-play-name', (pick.kind === 'switch' ? 'Switch to ' : '') + pick.name));
         this._appendChild(section, this._el('p', 'st-play-reason', pick.reason || 'Compare the available lines below.'));
+        if (pick.stability) this._appendChild(section, this._el('p', 'st-pick-stability', pick.stability));
         const alternatives = (this._lastRanked || []).filter(function (a) { return a !== pick && !a.isVetoed; }).slice(0, 2);
         if (alternatives.length) this._appendChild(section, this._el('p', 'st-quick-alternatives', 'Also compare: ' + alternatives.map(function (a) { return (a.kind === 'switch' ? 'Switch to ' : '') + a.name; }).join(' / ')));
       }
       const tactical = this._readout && this._readout.tactical;
+      if (tactical && !this._centerMeta.historical) {
+        const room = tactical.teamPlans && tactical.teamPlans[0]?.report.room;
+        if (room && room.turns) this._appendChild(section, this._el('p', 'st-room-budget', room.text));
+        const preserve = tactical.preserve && tactical.preserve[0];
+        if (preserve) this._appendChild(section, this._el('p', 'st-preserve-note', 'Keep ' + preserve.species + ' available for ' + preserve.threat + ' / sampled matchups.'));
+      }
       if (this._centerMeta.historical) this._appendChild(section, this._el('p', 'st-range-note', 'Battle changed. Waiting for the next decision request.'));
       else if (tactical) this._appendChild(section, this._el('p', 'st-range-note',
         (tactical.completed ? tactical.completed.depth + ' turn selective search' : 'Search unavailable') +
@@ -1746,7 +1754,7 @@
       if (this.resolvedLayout === 'desktop' && !this._panelOpen) return;
       const view = this._centerView || 'battle';
       const stats = this._centerMeta.stats || {};
-      const key = [view, state.revision, state.turn, this._inspectedId, stats.evaluations, stats.ponders].join('|');
+      const key = [view, state.revision, state.turn, this._inspectedId, this._reviewRecord, stats.evaluations, stats.ponders].join('|');
       if (key === this._renderedCenterKey && this._renderedCenterState === state && this._renderedCenterReadout === this._readout) return;
       this._renderedCenterKey = key;
       this._renderedCenterState = state;
@@ -1787,15 +1795,32 @@
         const reason = action.vetoReason || action.reason || this._lastReasonByMove[U.toID(action.moveId || action.name)];
         if (reason) this._appendChild(row, this._el('p', 'st-action-reason', this._centerText(reason)));
         if (action.tradeoff) this._appendChild(row, this._el('p', 'st-action-tradeoff', action.tradeoff));
+        if (action.stability) this._appendChild(row, this._el('p', 'st-range-note', action.stability));
         if (typeof action.score === 'number' && isFinite(action.score)) {
           const detail = this._el('details', 'st-action-analysis');
           this._appendChild(detail, this._el('summary', '', 'Search details'));
           this._centerPair(detail, 'Position score', U.round1(action.score));
           this._centerPair(detail, 'Strategy weight', pct(action.confidence));
+          if (action.comparison) {
+            this._centerPair(detail, 'Average loss against each set\'s best action', U.round1(action.comparison.regret));
+            this._centerPair(detail, 'Worst quarter of sampled set weight', U.round1(action.comparison.tailScore));
+          }
           this._appendChild(detail, this._el('p', 'st-range-note', 'Evaluation units and strategy weights are not win probabilities.'));
           this._appendChild(row, detail);
         }
         this._appendChild(section, row);
+      }
+      const best = actions.find(a => a.isOptimal);
+      if (best && best.saferAlternative) this._appendChild(section, this._el('p', 'st-safer-line', 'Preserve more HP: ' +
+        (best.saferAlternative.kind === 'switch' ? 'Switch to ' : '') + best.saferAlternative.name + '. ' + best.saferAlternative.reason));
+      const plan = this._readout && this._readout.tactical?.teamPlans?.[0]?.report;
+      if (plan) {
+        const detail = this._el('details', 'st-team-plan');
+        this._appendChild(detail, this._el('summary', '', 'Team roles and remaining threats / sampled set'));
+        for (const role of plan.roles) this._centerPair(detail, role.species, role.roles.join(' / '));
+        for (const threat of plan.threats) this._centerPair(detail, threat.species, threat.answers.length ? 'Direct answers: ' + threat.answers.join(', ') : 'No safe direct answer in this sample');
+        this._appendChild(detail, this._el('p', 'st-range-note', plan.basis));
+        this._appendChild(section, detail);
       }
       this._appendChild(section, this._el('p', 'st-range-note', 'Compare outcomes and assumptions. Search details contain model scores.'));
     }
@@ -1804,6 +1829,10 @@
       const section = this._centerSection('intelligence', 'st-intelligence', 'Opponent intelligence and set pruning');
       if (!section) return;
       this._centerHeading(section, '02 / INTELLIGENCE', 'Opponent intelligence', 'Revealed facts first. Select a Pokemon for estimates and evidence.');
+      if (this._intelChanges?.length) {
+        this._appendChild(section, this._el('h3', 'st-section-title', 'Latest information'));
+        for (const change of this._intelChanges.slice(-4).reverse()) this._appendChild(section, this._el('p', 'st-intel-change', change));
+      }
       const team = (state.oppTeam || []).filter(Boolean);
       const overview = this._el('div', 'st-intel-overview');
       overview.setAttribute('aria-label', 'Opponent scouting overview');
@@ -1891,6 +1920,19 @@
         this._centerPair(detail, 'EVs', this._evText(set.evs));
         if (set.ivs) this._centerPair(detail, 'IVs', this._evText(set.ivs));
         this._centerPair(detail, 'Moves', (set.moves || []).join(' / ') || 'Unknown');
+        if (this.options.onCompareSet) {
+          const button = this._el('button', 'st-compare-set', 'Compare damage with this set');
+          button.setAttribute('type', 'button');
+          const result = this._el('div', 'st-set-comparison');
+          button.addEventListener('click', () => {
+            this._clearChildren(result);
+            const comparison = this.options.onCompareSet(chosen.id, String(set.id || i));
+            if (!comparison) { this._appendChild(result, this._el('p', '', 'Candidate no longer available.')); return; }
+            this._appendChild(result, this._el('p', 'st-range-note', 'Temporary calculation: ' + comparison.attacker + ' into ' + comparison.defender + '. The main recommendation uses the full candidate pool.'));
+            for (const line of comparison.lines) this._centerPair(result, line.name, line.status ? 'Status' : line.failed ? 'Unavailable' : Math.round(line.min) + '-' + Math.round(line.max) + '%');
+          });
+          this._appendChild(detail, button); this._appendChild(detail, result);
+        }
         this._appendChild(section, detail);
       }, this);
       if (!sets.length) this._appendChild(section, this._el('p', 'st-empty', 'A candidate pool has not been recorded for this Pokemon.'));
@@ -1901,6 +1943,30 @@
       const labels = { hp: 'HP', atk: 'Atk', def: 'Def', spa: 'SpA', spd: 'SpD', spe: 'Spe' };
       return Object.keys(labels).filter(function (key) { return typeof evs[key] === 'number'; })
         .map(function (key) { return evs[key] + ' ' + labels[key]; }).join(' / ') || 'Unknown';
+    }
+
+    _recordIntelChanges(state) {
+      if (this._intelBattle !== state.battleId || (this._intelTurn || 0) > state.turn) { this._intelFacts = {}; this._intelChanges = []; this._intelField = null; }
+      this._intelBattle = state.battleId; this._intelTurn = state.turn;
+      this._intelFacts = this._intelFacts || {}; this._intelChanges = this._intelChanges || [];
+      const field = state.field || {};
+      const fieldFacts = { weather: field.weather || 'clear', terrain: field.terrain || 'none', screens: JSON.stringify(field.screens || {}) };
+      if (this._intelField) for (const key of ['weather', 'terrain', 'screens']) if (fieldFacts[key] !== this._intelField[key])
+        this._intelChanges.push('Turn ' + state.turn + ' / ' + (key === 'screens' ? 'Screens changed' : key + ' now ' + fieldFacts[key]) + '; damage ranges recalculated.');
+      this._intelField = fieldFacts;
+      for (const mon of state.oppTeam || []) {
+        const key = mon.uid || mon.id, old = this._intelFacts[key] || {};
+        const facts = { item: mon.itemRemoved || mon.itemConsumed ? 'Item removed or consumed' : mon.confirmedItem || '',
+          ability: mon.revealedAbility || '', moves: (mon.revealedMoves || []).slice(), count: mon.candidateSets?.length || 0,
+          speed: (mon.speedFloor || '?') + '-' + (mon.speedCeiling || '?') };
+        const prefix = 'Turn ' + state.turn + ' / ' + mon.species + ': ';
+        for (const field of ['item', 'ability']) if (facts[field] && facts[field] !== old[field]) this._intelChanges.push(prefix + facts[field] + ' observed.');
+        for (const move of facts.moves) if (!(old.moves || []).includes(move)) this._intelChanges.push(prefix + move + ' revealed.');
+        if (old.count && facts.count < old.count) this._intelChanges.push(prefix + old.count + ' to ' + facts.count + ' candidate sets after evidence.');
+        if (old.speed && facts.speed !== old.speed) this._intelChanges.push(prefix + 'Speed bracket now ' + facts.speed + '.');
+        this._intelFacts[key] = facts;
+      }
+      this._intelChanges = this._intelChanges.slice(-12);
     }
 
     _renderFieldBoard(state) {
@@ -1942,6 +2008,7 @@
     }
 
     _report(parent, label, value, depth) {
+      if (typeof value === 'function') return;
       if (value === undefined || value === null) {
         this._centerPair(parent, label, 'No report for this turn');
         return;
@@ -1971,10 +2038,24 @@
       const section = this._centerSection('engineReview', 'st-engine-review', 'Engine reasoning and search reports');
       if (!section) return;
       this._centerHeading(section, '04 / REVIEW', 'Decision record', 'Inspect the models, searches, and evidence used for this decision.');
-      const readout = this._readout;
+      const latest = this._readout;
+      const history = latest && latest.history || [];
+      const readout = this._reviewRecord && history.find(record => record.turn + ':' + record.requestId === this._reviewRecord) || latest;
       if (!readout || state.formatSupported === false) { this._appendChild(section, this._el('p', 'st-empty', 'Search reports appear after a supported decision is evaluated.')); return; }
+      if (history.length > 1) {
+        const selector = this._el('select', 'st-review-picker'); selector.setAttribute('aria-label', 'Recorded decision');
+        const current = this._el('option', '', 'Latest decision'); current.value = ''; this._appendChild(selector, current);
+        for (const record of history.slice(0, -1).reverse()) {
+          const option = this._el('option', '', 'Turn ' + record.turn + ' / ' + (record.ranked[0]?.name || 'Decision'));
+          option.value = record.turn + ':' + record.requestId; this._appendChild(selector, option);
+        }
+        selector.value = this._reviewRecord || '';
+        selector.addEventListener('change', () => { this._reviewRecord = selector.value; this._renderCenterView(); });
+        this._appendChild(section, selector);
+      }
+      if (readout !== latest) this._appendChild(section, this._el('p', 'st-pool-warning', 'Recorded turn ' + readout.turn + '. Assumptions and ranges reflect that decision.'));
       if (this._centerMeta.historical) this._appendChild(section, this._el('p', 'st-pool-warning', 'Previous decision record. The battle has changed; recommendations resume with the next request.'));
-      this._centerPair(section, 'Decision recorded', typeof this._readoutTurn === 'number' ? 'Turn ' + this._readoutTurn : 'Current decision');
+      this._centerPair(section, 'Decision recorded', typeof readout.turn === 'number' ? 'Turn ' + readout.turn : 'Current decision');
       this._centerPair(section, 'Evaluation passes', this._centerMeta.stats && this._centerMeta.stats.evaluations !== undefined ? this._centerMeta.stats.evaluations : 'Unknown');
       if (readout.tactical) this._report(section, 'Turn search and limitations', readout.tactical, 0);
       const copy = this._el('button', 'st-copy-decision', 'Copy decision snapshot');
@@ -1984,7 +2065,7 @@
         if (this.options.onCopyReceipt) Promise.resolve(this.options.onCopyReceipt(JSON.stringify(snapshot))).then(function (ok) { copy.textContent = ok ? 'Snapshot copied' : 'Copy unavailable'; });
       });
       this._appendChild(section, copy);
-      this._centerPair(section, 'Set combinations sampled', (readout.worlds || []).length);
+      this._centerPair(section, 'Set combinations sampled', readout.worldCount || (readout.worlds || []).length);
       this._centerPair(section, 'Evaluation time', typeof readout.elapsedMs === 'number' ? readout.elapsedMs + ' ms' : 'Unknown');
       const reports = [
         ['Opponent action mix', readout.oppStrategy], ['Ranked action evaluations', readout.ranked], ['Opponent tendencies', readout.profile],
@@ -3376,6 +3457,8 @@
       this._centerState = null;
       this._centerMeta = {};
       this._inspectedId = null;
+      this._reviewRecord = null;
+      this._intelFacts = {}; this._intelChanges = []; this._intelBattle = null; this._intelTurn = 0;
       this._centerView = 'battle';
       this._recommended = null;   // the banner's 'PLAY: …' line is per-battle too
       this.lastBadgeCount = 0;

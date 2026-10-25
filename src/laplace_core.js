@@ -1427,6 +1427,9 @@
       if (world && world.team && world.team.length) {
         const active = world.team.find(function (m) { return m.isActive; });
         if (active) return active;
+        const observed = state.active && state.active.opp;
+        const retained = observed && world.team.find(function (m) { return observed.uid ? m.uid === observed.uid : m.id === observed.id; });
+        if (retained) return retained;
         const first = world.team[0];
         if (first) return first;
       }
@@ -3857,14 +3860,19 @@
       const tiers = this._tiers(state, worlds, actions);
       this.tacticalSearch = this.tacticalSearch || new ST.TacticalSearch(this.damage);
       const report = this.tacticalSearch.evaluate(state, actions, worlds, this, opts);
+      if (!report.completed) {
+        this.lastRanked = [];
+        this.lastReadout = { ranked: [], optimal: null, tactical: report, turn: state.turn, elapsedMs: Date.now() - started };
+        return [];
+      }
       const scores = report.completed && report.completed.scores;
       const preview = this.preview(state.active.opp, state);
       const ranked = actions.map((action, i) => {
         const data = scores && scores[i];
-        const score = data ? 0.65 * data.worst + 0.35 * data.mean : -Infinity;
+        const score = data ? data.robustScore : -Infinity;
         const row = Object.assign({}, action, { score: score, minScore: data && data.worst,
           isVetoed: false, isOptimal: false, confidence: 0, scoreSource: 'Selective turn search',
-          comparison: data, searchDepth: report.completed && report.completed.depth });
+          comparison: data, searchDepth: report.completed && report.completed.depth, stability: data && data.stability });
         const immunity = this.veto && this.veto.vetoAbilityImmunity(action, state);
         if (immunity && immunity.isVetoed) {
           row.isVetoed = true; row.vetoReason = immunity.reason; row.score = VETO_SCORE;
@@ -3886,6 +3894,11 @@
         if (data && data.replies.length) {
           const worst = data.replies.reduce(function (a, b) { return a.score < b.score ? a : b; });
           row.tradeoff = 'Most costly modeled reply: ' + worst.name + '.';
+          row.outcome = worst;
+          if (mid === 'trickroom' && !state.field.trickRoom && worst.roomChance < 1)
+            row.tradeoff += ' Trick Room can fail to activate before the setter faints.';
+          if (worst.faintChance >= 0.5) row.tradeoff += ' Your current ' + state.active.my.species + ' may faint on this line.';
+          if (worst.kind === 'switch') row.tradeoff += ' Search includes this defensive switch as possible counterplay.';
         }
         return row;
       });
@@ -3898,7 +3911,28 @@
         const weights = ranked.map(function (a) { return a.isVetoed ? 0 : Math.exp((a.score - best.score) / scale); });
         const total = weights.reduce(function (a, b) { return a + b; }, 0);
         ranked.forEach(function (a, i) { a.confidence = a.strategyWeight = weights[i] / total * 100; a.scoreGap = U.round1(best.score - a.score); });
+        const escape = live.find(a => a.kind === 'switch');
+        if (best.kind === 'move' && best.outcome?.faintChance >= 0.5 && escape && best.score - escape.score > 15)
+          best.reason += ' Trading ' + state.active.my.species + ' scores better than hard switching in the completed search.';
+        const safer = live.filter(a => a !== best && a.outcome && best.outcome && a.outcome.ownHP > best.outcome.ownHP + 10)
+          .sort((a, b) => b.outcome.ownHP - a.outcome.ownHP)[0];
+        if (safer) best.saferAlternative = { name: safer.name, kind: safer.kind, reason: 'Preserves more team HP against its most costly modeled reply; lower overall position score.' };
+        const strongerHit = live.filter(a => a.damage && !a.damage.isStatus && a.damage.avgPercent > (best.damage?.avgPercent || 0))
+          .sort((a, b) => b.damage.avgPercent - a.damage.avgPercent)[0];
+        if (strongerHit && best.damage && best.outcome && strongerHit.outcome) {
+          const saved = Math.round(best.outcome.ownHP - strongerHit.outcome.ownHP);
+          if (saved > 10) best.reason += ' Keeps about ' + saved + ' more combined team HP points than ' + strongerHit.name + ' under each line\'s most costly reply.';
+          else if (U.toID(best.name) === 'mysticalfire') best.reason += ' Its Special Attack drop is included in subsequent damage calculations.';
+          else best.reason += ' Its modeled follow-up scores above ' + strongerHit.name + '; inspect the reply comparison before committing.';
+        }
       }
+      const preserve = new Map();
+      for (const sample of report.teamPlans || []) for (const threat of sample.report.threats) if (threat.answers.length === 1) {
+        const key = threat.answers[0] + '>' + threat.species;
+        const held = preserve.get(key) || { species: threat.answers[0], threat: threat.species, support: 0 };
+        held.support += sample.weight; preserve.set(key, held);
+      }
+      report.preserve = Array.from(preserve.values()).filter(row => row.support >= (ST.configGet ? ST.configGet('tactical.consistentShare', 0.7) : 0.7));
       this.lastReadout = { worlds: worlds, ranked: ranked, optimal: best || null, elapsedMs: Date.now() - started,
         profile: tiers.profile, scouting: tiers.scouting, wincon: tiers.wincon,
         tactical: report, plan: report.plan, turn: state.turn, stateRevision: state.revision, requestId: state.request && state.request.rqid,
@@ -3907,6 +3941,17 @@
       this.lastReadout.decisionSnapshot = U.deepClone({ turn: state.turn, revision: state.revision, battleId: state.battleId,
         mySide: state.mySide, oppSide: state.oppSide, myTeam: state.myTeam, oppTeam: state.oppTeam,
         field: state.field, request: state.request, legalActions: state.legalActions, battlePlan: state.battlePlan });
+      if (this._historyBattle !== state.battleId || (this._historyTurn || 0) > state.turn) this.decisionHistory = [];
+      this._historyBattle = state.battleId; this._historyTurn = state.turn;
+      const record = U.deepClone({ turn: state.turn, requestId: this.lastReadout.requestId, stateRevision: state.revision,
+        decisionSnapshot: this.lastReadout.decisionSnapshot, ranked: ranked, tactical: report,
+        elapsedMs: this.lastReadout.elapsedMs, worldCount: worlds.length });
+      this.decisionHistory = this.decisionHistory || [];
+      const previous = this.decisionHistory[this.decisionHistory.length - 1];
+      if (previous && previous.turn === record.turn && previous.requestId === record.requestId) this.decisionHistory.pop();
+      this.decisionHistory.push(record);
+      if (this.decisionHistory.length > 12) this.decisionHistory.shift();
+      this.lastReadout.history = this.decisionHistory.slice();
       this.lastRanked = ranked;
       return ranked;
     }

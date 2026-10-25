@@ -177,5 +177,101 @@ function engineFor(state){return new ST.LaplaceEngine({damage,sampler:{sampleWor
  p.manager.registerMyTeam([{species:'Pikachu',moves:['Thunderbolt']}]);
  check('changing to a mismatched import clears stale spread assumptions',!p.manager.state.active.my.fromPaste&&p.manager.state.active.my.evs===null);
 }
+{
+ const fixtures=JSON.parse(fs.readFileSync('tests/fixtures/team-plan-positions.json','utf8'));
+ const make=(spec,side,extra={})=>mon(spec.species,side,spec.moves,Object.assign({},spec,{hpPercent:spec.hp===undefined?100:spec.hp},extra));
+ const puzzle=fixtures.lastAnswer;
+ const answer=make(puzzle.answer,'p2',{isActive:false}),reserve=make(puzzle.reserve,'p2',{isActive:false}),threat=make(puzzle.threat,'p1',{isActive:false});
+ const state=board(mon('Mew','p2',['Psychic']),mon('Mew','p1',['Psychic']),[answer,reserve],[threat]);
+ const plan=new ST.TeamPlan(damage,model,state),search=new ST.TacticalSearch(damage);
+ state._teamPlan=plan;
+ const report=plan.report(state),dragon=report.threats.find(t=>t.species==='Dragonite');
+ eq('last-answer puzzle identifies Weavile from actual damage and priority',dragon.answers,['Weavile']);
+ const loseAnswer=model.clone(state),loseReserve=model.clone(state);
+ model.hp(loseAnswer.myTeam[1],0);model.hp(loseReserve.myTeam[2],0);
+ check('equal material is worth more when the last Dragonite answer survives',search.value(loseReserve)>search.value(loseAnswer)+20);
+ delete loseAnswer._teamPlan;delete loseReserve._teamPlan;
+ eq('preservation ablation otherwise scores the equal-material positions equally',search.value(loseReserve),search.value(loseAnswer));
+ const hazardous=model.clone(state);hazardous.myTeam[1].hp=hazardous.myTeam[1].hpPercent=20;hazardous.field.hazards.p2={rocks:true};
+ eq('an answer that faints to entry hazards is not counted',plan.answer(hazardous,hazardous.myTeam[1],hazardous.oppTeam[1]),0);
+ const finish=board(make(fixtures.priorityFinish.attacker,'p2'),make(fixtures.priorityFinish.defender,'p1'));
+ eq('successor search keeps the priority KO over a stronger move that loses move order',search.bestHit(finish,'my').name,fixtures.priorityFinish.expected);
+ const result=model.resolve(finish,move('Ice Shard'),move('Outrage'),()=>null);
+ check('priority puzzle wins all modeled rolls before taking Outrage',result.every(b=>b.state.active.opp.fainted&&b.state.active.my.hp===100));
+ finish.active.my.movePP={iceshard:0};
+ eq('spent priority PP removes that continuation',search.bestHit(finish,'my').name,'Icicle Crash');
+ const room=Object.assign({},state,{field:Object.assign({},state.field,{trickRoom:true,trickRoomTurnsLeft:1})});
+ eq('final room turn has no attack available after a switch',plan.room(room).attacksAfterEntry,0);
+ room.field.trickRoomTurnsLeft=3;eq('three room turns permit at most two attacks after entry',plan.room(room).attacksAfterEntry,2);
+ const shield=board(mon('Mew','p2',['Thunderbolt','Protect']),mon('Ursaluna','p1',['Facade']),[],[],{trickRoom:true,trickRoomTurnsLeft:1});
+ check('opponent continuations include Protect to stall Trick Room',search.candidates(Object.assign({},shield,{active:{my:shield.active.opp,opp:shield.active.my},myTeam:shield.oppTeam,oppTeam:shield.myTeam}),'opp').some(a=>a.name==='Protect'));
+}
+{
+ const search=new ST.TacticalSearch(damage);
+ const rows=[
+  {mean:80,worst:80,worlds:[{worst:100,weight:0.8},{worst:0,weight:0.2}]},
+  {mean:70,worst:70,worlds:[{worst:70,weight:0.8},{worst:70,weight:0.2}]}
+ ];
+ search.compareWorlds(rows);
+ check('set-risk benchmark baseline prefers the brittle move',0.65*rows[0].worst+0.35*rows[0].mean>0.65*rows[1].worst+0.35*rows[1].mean);
+ check('set-risk scoring prefers the reliable move when a plausible set punishes the brittle move',rows[1].robustScore>rows[0].robustScore);
+ check('set comparisons expose the brittle move\'s loss against the counter set',rows[0].regret>0&&rows[0].tailScore<rows[1].tailScore);
+ const single=[{mean:100,worst:100,worlds:[{worst:100,weight:1}]}];search.compareWorlds(single);
+ eq('one sampled set does not imply robustness',single[0].stability,'Only one set combination tested');
+ const repeated=[{mean:100,worst:100,worlds:[{worst:100,weight:0.5,signature:'same'},{worst:100,weight:0.5,signature:'same'}]}];search.compareWorlds(repeated);
+ eq('drawing the same set twice does not inflate set diversity',repeated[0].stability,'Only one set combination tested');
+ const keyed=board(mon('Mew','p2',['Psychic']),mon('Mew','p1',['Tackle']));
+ keyed._worldSignature='defensive';const a=search.key(keyed,1);keyed._worldSignature='offensive';
+ check('search memo separates hidden spreads with identical HP and items',a!==search.key(keyed,1));
+ const b=search.key(keyed,1);keyed.active.my.hp-=0.01;
+ check('search memo preserves small HP differences near KO thresholds',b!==search.key(keyed,1));
+ const exhausted=board(mon('Mew','p2',['Psychic','Thunderbolt'],{movePP:{psychic:1,thunderbolt:10}}),mon('Blissey','p1',['Splash']));
+ const after=model.resolve(exhausted,move('Psychic'),move('Splash'),()=>null)[0].state;
+ check('a move with one PP cannot be reused in the next simulated turn',!model.actions(after,'my').some(action=>action.name==='Psychic'));
+ eq('simulated PP spending never changes live PP',exhausted.active.my.movePP.psychic,1);
+ exhausted.active.my.item='Choice Scarf';
+ const locked=model.resolve(exhausted,move('Thunderbolt'),move('Splash'),()=>null)[0].state;
+ eq('a simulated Choice move locks subsequent attacks',model.actions(locked,'my').filter(action=>action.kind==='move').map(action=>action.name),['Thunderbolt']);
+ const reserve=mon('Pikachu','p2',['Thunderbolt'],{isActive:false});locked.myTeam.push(reserve);
+ model.enter(locked,'my',reserve);model.enter(locked,'my',locked.myTeam[0]);
+ check('switching resets the simulated Choice lock',!locked.active.my.choiceLocked);
+}
+{
+ const state=board(mon('Mew','p2',['Psychic','Thunderbolt']),mon('Mew','p1',['Tackle']));state.battleId='history-test';
+ const engine=engineFor(state);engine.evaluateTurn(state);
+ state.active.my.hp=state.active.my.hpPercent=50;state.revision++;state.turn++;engine.evaluateTurn(state);
+ eq('decision history retains the previous turn',engine.lastReadout.history.length,2);
+ eq('past decision HP remains immutable after live updates',engine.lastReadout.history[0].decisionSnapshot.myTeam[0].hp,100);
+ engine.evaluateTurn(state,{reread:true});eq('a deeper pass replaces the same decision rather than duplicating it',engine.lastReadout.history.length,2);
+ state.battleId='another-battle';engine.evaluateTurn(state);eq('decision history resets between battles',engine.lastReadout.history.length,1);
+ const sampled=new ST.WorldSampler(),boot=new ST.TacticianBoot();
+ const foe=state.active.opp;
+ foe.candidateSets=[{id:'defensive',species:'Mew',nature:'Calm',evs:{hp:252,spd:252},moves:['Tackle'],item:'Leftovers',ability:'Synchronize'},{id:'offensive',species:'Mew',nature:'Modest',evs:{spa:252},moves:['Tackle'],item:'Life Orb',ability:'Synchronize'}];
+ boot.state.state=state;boot.sampler=sampled;
+ const before=JSON.stringify(state),calc=boot.compareCandidate(foe.id,'defensive');
+ check('candidate comparison produces concrete move ranges',calc.lines.some(line=>line.name==='Psychic'&&line.max>0));
+ eq('candidate comparisons leave the live state untouched',JSON.stringify(state),before);
+ eq('candidate comparison rejects a removed set',boot.compareCandidate(foe.id,'removed'),null);
+ const hud=new ST.MobileHUD();hud._recordIntelChanges(state);const count=hud._intelChanges.length;
+ hud._recordIntelChanges(state);eq('Intel observations do not repeat on redraw',hud._intelChanges.length,count);
+ foe.revealedMoves=['Tackle'];foe.candidateSets.pop();hud._recordIntelChanges(state);
+ check('Intel highlights the newly revealed move',hud._intelChanges.some(note=>note.includes('Tackle revealed')));
+ check('Intel highlights actual pool reduction',hud._intelChanges.some(note=>note.includes('2 to 1 candidate')));
+}
+{
+ const p=pipe();p.feed('|init|battle');p.feed('|tier|[Gen 9] National Dex');
+ p.feed('|poke|p1|Mew|item');p.feed('|poke|p1|Pikachu|item');p.feed('|poke|p2|Blissey|item');p.feed('|poke|p2|Garchomp|item');
+ p.feed('|switch|p1a: Mew|Mew|100/100');p.feed('|switch|p2a: Blissey|Blissey|100/100');
+ const roster=[member('p1','Mew',true,'404/404',['U-turn']),member('p1','Pikachu',false,'211/211',['Thunderbolt'])];
+ p.feed(request('p1',roster,['U-turn']));p.feed('|faint|p2a: Blissey');
+ p.feed('|request|'+JSON.stringify({rqid:2,side:{id:'p1',pokemon:roster},forceSwitch:[true]}));
+ const state=p.manager.state,snapshot=p.manager.snapshot();
+ check('pivot-KO requests retain the fainted opposing slot until replacement',state.active.opp&&state.active.opp.species==='Blissey'&&state.active.opp.fainted);
+ check('snapshot retains the fainted opponent as its roster body',snapshot.active.opp&&snapshot.oppTeam.includes(snapshot.active.opp));
+ const engine=engineFor(snapshot),ranked=engine.evaluateTurn(snapshot);
+ check('pivot-KO forced replacements still receive a recommendation',ranked.length>0&&ranked[0].kind==='switch');
+ const world={team:snapshot.oppTeam.slice().reverse()};
+ eq('a reordered sampled roster preserves the actual fainted opposing slot',engine._oppActive(world,snapshot).species,'Blissey');
+}
 console.log('CONTROL ENGINE: '+passed+' passed, '+failures.length+' failed');
 process.exit(failures.length?1:0);

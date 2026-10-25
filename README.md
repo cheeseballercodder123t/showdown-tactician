@@ -4,6 +4,8 @@ A standalone **Manifest V3** Chrome extension that recreates the 2231-Elo "Lapla
 engine for **[Gen 9] National Dex OU** and renders its verdict as a thumb-friendly portrait HUD.
 Built for Chromium-on-Android (Lemur Browser, Samsung Galaxy S24 FE, 1080×2340).
 
+Version 1.2.0 adds matchup-based team preservation, explicit Trick Room turn costs, comparisons across opposing sets, temporary candidate damage calculations, recent scouting changes, and twelve local decision records. Live battles use the bounded turn search documented at the end of `ARCHITECTURE.md`; its scores and strategy weights are not win probabilities. Targeted tactical checks cover known failures. Overall playing-strength gains from the provisional scoring weights remain unmeasured.
+
 * Format: `[Gen 9] National Dex OU` — Megas, Z-Moves and Gen 9 Paradox mons are live;
   **Terastallization is tracked but never simulated** (banned in this format) — and the two 128D dims
   that used to price it, 120/121, carry the cleaner advantage instead while the ban is set.

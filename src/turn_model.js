@@ -6,6 +6,7 @@
   const alive = function (m) { return m && !m.fainted && m.hp > 0; };
   const ability = function (m) { return id(m.activeAbility || m.revealedAbility || m.ability); };
   const item = function (m) { return m.itemRemoved || m.itemConsumed ? '' : id(m.item || m.currentBattleItem || m.confirmedItem); };
+  const setting = function (key, fallback) { return ST.configGet ? ST.configGet('tactical.' + key, fallback) : fallback; };
 
   class TurnModel {
     constructor(damage) { this.damage = damage; this.nodes = 0; }
@@ -63,10 +64,12 @@
         if (ability(outgoing) === 'regenerator') this.hp(outgoing, outgoing.hp + 100 / 3);
         if (ability(outgoing) === 'naturalcure') outgoing.status = '';
       }
+      if (outgoing) { outgoing.choiceLocked = false; outgoing.choiceLockedMove = null; }
       if (outgoing) outgoing.isActive = false;
       target.isActive = true; target.boosts = {}; target.volatiles = {}; target.abilityOn = false;
       target.boosterActive = false; target.boostedStat = null; target.switchedInTurn = state.turn;
       target.activeStintMoves = []; target.hasActedSinceEntry = false;
+      target.choiceLocked = false; target.choiceLockedMove = null;
       state.active[side] = target;
       const hazards = state.field.hazards && state.field.hazards[target.side] || {};
       this.hp(target, target.hp - U.hazardPercent(target.species, item(target), ability(target), hazards));
@@ -247,6 +250,9 @@
             }
             if (mon._modelFlinched) { next.push(branch); continue; }
             if (['slp', 'frz'].includes(mon.status)) { this.warn(st, 'Sleep or freeze duration is uncertain'); next.push(branch); continue; }
+            const moveId = id(action.name);
+            if (typeof mon.movePP?.[moveId] === 'number') mon.movePP = Object.assign({}, mon.movePP, { [moveId]: Math.max(0, mon.movePP[moveId] - 1) });
+            if (U.isChoiceItem(item(mon))) { mon.choiceLocked = true; mon.choiceLockedMove = moveId; }
             for (const part of ['my', 'opp']) {
               const count = st[part + 'Team'].filter(function (m) { return m.fainted; }).length;
               for (const member of st[part + 'Team']) member.alliesFainted = count;
@@ -285,6 +291,129 @@
   }
   ST.TurnModel = TurnModel;
 
+  class TeamPlan {
+    constructor(damage, model, state) {
+      this.model = model;
+      this.damage = damage;
+      this.matchups = new Map();
+      this.speeds = new Map();
+      this.positions = new Map();
+      for (const side of ['my', 'opp']) for (const mon of state[side + 'Team'].filter(alive)) {
+        for (const foe of state[(side === 'my' ? 'opp' : 'my') + 'Team'].filter(alive)) {
+          let best = { name: '', damage: 0, min: 0, max: 0 };
+          for (const name of damage.movesFor(mon, 4)) {
+            if (U.getMoveData(name)?.isStatus || ['futuresight', 'doomdesire'].includes(id(name))) continue;
+            if (mon.movePP?.[id(name)] === 0 || mon.choiceLocked && id(name) !== id(mon.choiceLockedMove)) continue;
+            const hit = damage.calculateDamage(mon, foe, name, state.field);
+            if (hit && !hit.failed && hit.avgPercent > best.damage) best = {
+              name: name, damage: hit.avgPercent, min: hit.minPercent, max: hit.maxPercent
+            };
+          }
+          this.matchups.set(this.key(mon, foe), best);
+        }
+      }
+    }
+
+    key(mon, foe) { return (mon.uid || mon.side + ':' + mon.id) + '>' + (foe.uid || foe.side + ':' + foe.id); }
+    hit(mon, foe) { return this.matchups.get(this.key(mon, foe)) || { name: '', damage: 0, min: 0, max: 0 }; }
+
+    speed(state, mon) {
+      const key = [mon.uid, mon.boosts?.spe || 0, mon.status, item(mon), ability(mon), mon.boosterActive, mon.boostedStat,
+        mon.unburdenActive, state.field.weather, state.field.terrain, state.field.tailwind?.[mon.side]].join(':');
+      if (!this.speeds.has(key)) this.speeds.set(key, this.model.speed(mon, state));
+      return this.speeds.get(key);
+    }
+
+    answer(state, mon, foe) {
+      if (!alive(mon) || !alive(foe)) return 0;
+      const outgoing = this.hit(mon, foe), incoming = this.hit(foe, mon);
+      if (!outgoing.damage) return 0;
+      const hazards = state.field.hazards?.[mon.side] || {};
+      const hp = mon.hp - (mon.isActive ? 0 : U.hazardPercent(mon.species, item(mon), ability(mon), hazards));
+      if (hp <= 0) return 0;
+      const priority = U.movePriority(outgoing.name) - U.movePriority(incoming.name || 'Splash');
+      const speed = priority ? 0 : this.speed(state, mon) - this.speed(state, foe);
+      const first = priority ? priority > 0 : speed ? (state.field.trickRoom ? speed < 0 : speed > 0) : null;
+      const hitsNeeded = Math.ceil(foe.hp / Math.max(1, outgoing.min));
+      const hitsSurvived = incoming.max > 0 ? Math.max(0, Math.ceil(hp / incoming.max) - 1) : 4;
+      const attacks = hitsSurvived + (first === null ? 0.5 : first ? 1 : 0);
+      return U.clamp(attacks / Math.max(1, hitsNeeded), 0, 1);
+    }
+
+    coverage(state, side) {
+      const mine = state[side + 'Team'].filter(alive), foes = state[(side === 'my' ? 'opp' : 'my') + 'Team'].filter(alive);
+      let score = 0;
+      for (const foe of foes) {
+        const answers = mine.map(mon => this.answer(state, mon, foe)).sort((a, b) => b - a);
+        score += setting('coverage', 55) * ((answers[0] || 0) + setting('redundantAnswer', 0.2) * (answers[1] || 0));
+      }
+      return score;
+    }
+
+    roomAccess(state, side) {
+      if (state.field.trickRoom) return 0;
+      const mine = state[side + 'Team'].filter(alive), foes = state[(side === 'my' ? 'opp' : 'my') + 'Team'].filter(alive);
+      const activeFoe = state.active[side === 'my' ? 'opp' : 'my'];
+      const setters = mine.filter(mon => !['slp', 'frz'].includes(mon.status) && !mon.volatiles?.taunt &&
+        mon.movePP?.trickroom !== 0 && (!mon.choiceLocked || id(mon.choiceLockedMove) === 'trickroom') &&
+        this.damage.movesFor(mon, 4).some(name => id(name) === 'trickroom'));
+      if (!setters.length || !alive(activeFoe)) return 0;
+      const safe = setters.some(mon => mon.hp - (mon.isActive ? 0 : U.hazardPercent(mon.species, item(mon), ability(mon), state.field.hazards?.[mon.side] || {})) > this.hit(activeFoe, mon).max);
+      if (!safe) return 0;
+      const room = Object.assign({}, state, { field: Object.assign({}, state.field, { trickRoom: true }) });
+      let benefit = 0;
+      for (const foe of foes) {
+        const normal = Math.max(...mine.map(mon => this.answer(state, mon, foe)));
+        const reversed = Math.max(...mine.map(mon => this.answer(room, mon, foe)));
+        benefit += Math.max(0, reversed - normal);
+      }
+      return setting('roomAccess', 45) * benefit / Math.max(1, foes.length);
+    }
+
+    position(state) {
+      const mon = m => [m.uid, m.hp, m.isActive, m.status, m.boosts?.spe, item(m), ability(m), m.boostedStat,
+        m.boosterActive, m.unburdenActive, m.volatiles?.taunt, m.choiceLocked, m.choiceLockedMove, m.movePP?.trickroom];
+      const key = JSON.stringify([state.field.trickRoom, state.field.weather, state.field.terrain, state.field.hazards, state.field.tailwind,
+        state.myTeam.map(mon), state.oppTeam.map(mon), setting('coverage', 55), setting('roomAccess', 45), setting('redundantAnswer', 0.2)]);
+      if (!this.positions.has(key)) this.positions.set(key, this.coverage(state, 'my') - this.coverage(state, 'opp') +
+        this.roomAccess(state, 'my') - this.roomAccess(state, 'opp'));
+      return this.positions.get(key);
+    }
+
+    report(state) {
+      const mine = state.myTeam.filter(alive), foes = state.oppTeam.filter(alive);
+      const roles = mine.map(mon => {
+        const moves = this.damage.movesFor(mon, 4);
+        const labels = [];
+        if (moves.some(name => id(name) === 'trickroom')) labels.push('Trick Room setter');
+        if (moves.some(name => U.isPivotMove(name))) labels.push('Pivot');
+        const pressure = foes.reduce((sum, foe) => sum + Math.min(100, this.hit(mon, foe).damage), 0) / Math.max(1, foes.length);
+        if (pressure >= setting('breakerPressure', 45)) labels.push('Breaker');
+        const targets = foes.filter(foe => this.hit(mon, foe).min >= foe.hp && this.answer(state, mon, foe) >= 1);
+        if (targets.length) labels.push('Cleaner against ' + targets.map(m => m.species).join(', '));
+        return { uid: mon.uid, species: mon.species, roles: labels.length ? labels : ['Support / coverage'], pressure: U.round1(pressure) };
+      });
+      const threats = foes.map(foe => {
+        const answers = mine.filter(mon => this.answer(state, mon, foe) >= 1);
+        return { species: foe.species, answers: answers.map(mon => mon.species), answerUids: answers.map(mon => mon.uid),
+          warning: answers.length === 1 ? 'Preserve ' + answers[0].species + ' for ' + foe.species + '.' : answers.length ? '' : 'No safe direct answer to ' + foe.species + ' in this sampled set.' };
+      });
+      const setters = roles.filter(row => row.roles.includes('Trick Room setter')).map(row => row.species);
+      return { roles: roles, threats: threats, setters: setters, room: this.room(state),
+        basis: 'Direct matchup estimates for sampled sets; switching, setup, and double switches still require the turn search.' };
+    }
+
+    room(state) {
+      if (!state.field.trickRoom) return { turns: 0, attacksNow: 0, attacksAfterEntry: 0, text: 'Trick Room inactive.' };
+      const turns = Math.max(0, state.field.trickRoomTurnsLeft || 0);
+      const active = state.active.my, foe = state.active.opp;
+      const hit = active && foe ? this.hit(active, foe) : { damage: 0 };
+      return { turns: turns, attacksNow: hit.damage > 0 ? turns : 0, attacksAfterEntry: Math.max(0, turns - 1),
+        text: turns + ' room turn' + (turns === 1 ? '' : 's') + ' left; switching or pivoting leaves ' + Math.max(0, turns - 1) + ' attacking turn' + (turns === 2 ? '' : 's') + ' at most.' };
+    }
+  }
+  ST.TeamPlan = TeamPlan;
+
   class TacticalSearch {
     constructor(damage) { this.model = new TurnModel(damage); this.damage = damage; }
 
@@ -295,6 +424,7 @@
       }, 0);
       if (!totals.my || !totals.opp) return !totals.my && !totals.opp ? 0 : (totals.my ? 10000 : -10000) + 0.01 * (totals.my - totals.opp);
       let score = totals.my - totals.opp;
+      if (state._teamPlan) score += state._teamPlan.position(state);
       const me = state.active.my, foe = state.active.opp;
       if (alive(me) && alive(foe)) {
         const mine = this.bestHit(state, 'my'), theirs = this.bestHit(state, 'opp');
@@ -310,12 +440,18 @@
     bestHit(state, side) {
       const me = state.active[side], foe = state.active[side === 'my' ? 'opp' : 'my'];
       let best = { name: 'Struggle', damage: 0 };
+      let bestScore = -Infinity;
       if (!alive(me) || !alive(foe)) return best;
       for (const name of this.damage.movesFor(me, 4)) {
         const data = U.getMoveData(name);
-        if (!data || data.isStatus || id(name) === 'futuresight') continue;
+        if (!data || data.isStatus || ['futuresight', 'doomdesire'].includes(id(name))) continue;
+        if (me.movePP?.[id(name)] === 0 || me.choiceLocked && id(name) !== id(me.choiceLockedMove)) continue;
+        if (U.firstTurnOnly(id(name)) && (me.hasActedSinceEntry || me.activeStintMoves?.length)) continue;
         const result = this.damage.calculateDamage(me, foe, name, state.field);
-        if (result && !result.failed && result.avgPercent > best.damage) best = { name: name, damage: result.avgPercent };
+        if (result && !result.failed) {
+          const score = Math.min(foe.hp, result.avgPercent) + (U.movePriority(name) > 0 && result.minPercent >= foe.hp ? setting('priorityFinish', 50) : 0) + result.avgPercent * setting('damageTieBreak', 0.001);
+          if (score > bestScore) { bestScore = score; best = { name: name, damage: result.avgPercent }; }
+        }
       }
       return best;
     }
@@ -361,27 +497,32 @@
       const best = this.bestHit(state, side);
       const moves = all.filter(function (a) { return a.kind === 'move'; });
       const out = moves.filter(function (a) { return id(a.name) === id(best.name); });
-      for (const a of moves) if (id(a.name) === 'trickroom' || U.isPivotMove(a.name) || U.isRecoveryMove(a.name)) {
+      for (const a of moves) if (id(a.name) === 'trickroom' || U.isPivotMove(a.name) || U.isRecoveryMove(a.name) || U.getMoveData(a.name)?.isProtect) {
         if (id(a.name) === 'trickroom' && state.field.trickRoom) continue;
+        if (U.isRecoveryMove(a.name) && state.active[side].hp >= 90) continue;
         if (!out.includes(a)) out.push(a);
       }
       if (!out.length && moves.length) out.push(moves[0]);
       const second = moves.filter(function (a) { return !out.includes(a) && !U.getMoveData(a.name)?.isStatus; })[0];
       if (second && side === 'opp') out.push(second);
       const target = this.entry(state, side);
-      if (target && !state.field.trickRoom) {
+      if (target) {
         const action = all.find(function (a) { return a.kind === 'switch' && a.targetId === target.id; });
         if (action && !out.some(function (a) { return U.isPivotMove(a.name); })) out.push(action);
       }
-      return out.slice(0, side === 'my' ? 3 : 2);
+      const setup = moves.find(a => U.getMoveData(a.name)?.isSetup && !out.includes(a));
+      if (setup) out.push(setup);
+      return out.slice(0, side === 'my' ? setting('myCandidates', 3) : setting('oppCandidates', 2));
     }
 
     key(state, depth) {
-      const mon = function (m) { return [m.uid, m.species, Math.round(m.hp * 10), m.status, m.boosts, m.isActive, item(m), ability(m), m.disguiseIntact]; };
-      return JSON.stringify([depth, state.turn, state.field, state.myTeam.map(mon), state.oppTeam.map(mon)]);
+      const mon = function (m) { return [m.uid, m.species, m.hp, m.status, m.boosts, m.volatiles,
+        m.isActive, item(m), ability(m), m.disguiseIntact, m.hasActedSinceEntry, m.choiceLocked, m.choiceLockedMove, m.movePP, m.toxicCounter]; };
+      return JSON.stringify([depth, state._worldSignature, state.turn, state.field, state.protect, state.myTeam.map(mon), state.oppTeam.map(mon)]);
     }
 
     search(state, depth) {
+      for (const warning of state.modelWarnings || []) this.warnings.add(warning);
       if (depth > 0) {
         for (const side of ['my', 'opp']) if (!alive(state.active[side])) {
           const replacements = state[side + 'Team'].filter(alive);
@@ -418,7 +559,10 @@
 
     evaluate(state, actions, worlds, engine, opts) {
       opts = opts || {};
+      worlds = worlds.filter(w => w.weight === undefined || w.weight > 0);
+      if (!worlds.length) return { plan: 'standard', completed: null, nodes: 0, warnings: ['No weighted set combinations available'], limited: true, proven: false };
       this.memo = new Map(); this.limit = {}; this.model.nodes = 0;
+      this.warnings = new Set();
       this.budget = opts.reread ? 6000 : 2200;
       this.deadline = Date.now() + (opts.reread ? 1100 : 450);
       const roots = [];
@@ -426,24 +570,40 @@
       for (const world of worlds) {
         const board = this.model.clone(Object.assign({}, state, { oppTeam: world.team,
           active: { my: state.active.my, opp: engine._oppActive(world, state) } }));
-        const replies = engine.getOppActions(world, state);
+        board._teamPlan = new TeamPlan(this.damage, this.model, board);
+        const replies = state.legalActions.forceSwitch ? [{ kind: 'replacement', name: 'Opponent replacement / next position' }] : engine.getOppActions(world, state);
         const attacks = replies.filter(function (a) { return a.kind === 'move' && !U.getMoveData(a.name)?.isStatus; });
         attacks.sort((a, b) => this.damage.calculateDamage(board.active.opp, board.active.my, b.name, board.field).avgPercent -
           this.damage.calculateDamage(board.active.opp, board.active.my, a.name, board.field).avgPercent);
         const selected = attacks.slice(0, 2);
-        for (const action of replies) if (id(action.name) === 'trickroom' || U.isPivotMove(action.name) || U.getMoveData(action.name)?.isProtect) selected.push(action);
-        const switching = replies.find(function (a) { return a.kind === 'switch'; });
-        if (switching) selected.push(switching);
+        for (const action of attacks) if (U.movePriority(action.name) > 0 && !selected.includes(action)) selected.push(action);
+        for (const action of replies) if (!selected.includes(action) && (id(action.name) === 'trickroom' || U.isPivotMove(action.name) || U.getMoveData(action.name)?.isProtect ||
+          U.getMoveData(action.name)?.isSetup || U.isRecoveryMove(action.name) && board.active.opp.hp < 90)) selected.push(action);
+        const switches = replies.filter(function (a) { return a.kind === 'switch'; });
+        switches.sort((a, b) => {
+          const rank = action => {
+            const target = this.model.target(board, 'opp', action);
+            if (!target) return -Infinity;
+            return this.damage.movesFor(board.active.my, 4).reduce((sum, name) => {
+              if (U.getMoveData(name)?.isStatus) return sum;
+              const hit = this.damage.calculateDamage(board.active.my, target, name, board.field);
+              return sum - (hit && !hit.failed ? hit.avgPercent : 0);
+            }, 0);
+          };
+          return rank(b) - rank(a);
+        });
+        if (switches.length) selected.push(switches[0]);
         if (!selected.length) selected.push({ kind: 'move', name: 'Splash' });
-        roots.push({ state: board, replies: selected.slice(0, 5), weight: (world.weight || 1) / weights });
+        const signature = JSON.stringify(world.team.map(mon => [mon.species, item(mon), ability(mon), mon.nature, mon.evs, mon.ivs, this.damage.movesFor(mon, 4)]));
+        board._worldSignature = signature;
+        roots.push({ state: board, replies: selected.slice(0, setting('rootReplies', 6)), weight: (world.weight || 1) / weights, signature: signature });
       }
       let completed = null;
-      const warnings = new Set();
       const plan = state.battlePlan === 'trickroom' || state.battlePlan === 'auto' && state.myTeam.some(m => this.damage.movesFor(m).some(n => id(n) === 'trickroom')) ? 'trickroom' : 'standard';
       const maxDepth = plan === 'trickroom' ? 3 : 1;
       const rootCache = new Map();
       for (let depth = 0; depth <= maxDepth; depth++) {
-        const scores = actions.map(function () { return { mean: 0, worst: 0, replies: [] }; });
+        const scores = actions.map(function () { return { mean: 0, worst: 0, replies: [], worlds: [] }; });
         try {
           for (let i = 0; i < actions.length; i++) for (let w = 0; w < roots.length; w++) {
             const root = roots[w];
@@ -460,21 +620,58 @@
                 rootCache.set(cacheKey, branches);
               }
               const value = branches.reduce((total, b) => {
-                for (const warning of b.state.modelWarnings) warnings.add(warning);
                 return total + b.p * this.search(this.model.clone(b.state), depth);
               }, 0);
               worst = Math.min(worst, value); sum += value;
-              scores[i].replies.push({ name: root.replies[j].name, score: U.round1(value), weight: root.weight });
+              const faintChance = branches.reduce((p, branch) => {
+                const original = branch.state.myTeam.find(m => m.uid === state.active.my.uid && m.id === state.active.my.id);
+                return p + (original && !alive(original) ? branch.p : 0);
+              }, 0);
+              const ownHP = branches.reduce((sum, branch) => sum + branch.p * branch.state.myTeam.reduce((hp, m) => hp + (alive(m) ? m.hp : 0), 0), 0);
+              const roomChance = branches.reduce((p, branch) => p + (branch.state.field.trickRoom ? branch.p : 0), 0);
+              scores[i].replies.push({ name: root.replies[j].name, kind: root.replies[j].kind, score: U.round1(value), weight: root.weight,
+                faintChance: faintChance, ownHP: U.round1(ownHP), roomChance: roomChance });
             }
             scores[i].mean += root.weight * sum / root.replies.length;
             scores[i].worst += root.weight * worst;
+            scores[i].worlds.push({ worst: worst, mean: sum / root.replies.length, weight: root.weight, index: w, signature: root.signature });
           }
+          this.compareWorlds(scores);
           completed = { depth: depth + 1, scores: scores };
         } catch (e) { if (e !== this.limit) throw e; break; }
       }
-      return { plan: plan, completed: completed, nodes: this.model.nodes, warnings: Array.from(warnings),
+      const teamPlans = roots.map(root => ({ weight: root.weight, report: root.state._teamPlan.report(root.state) }));
+      return { plan: plan, completed: completed, nodes: this.model.nodes, warnings: Array.from(this.warnings), teamPlans: teamPlans,
         limited: !completed || completed.depth < maxDepth + 1, proven: false,
-        assumptions: 'Selective replies, grouped damage rolls, and heuristic pivot choices. Ordinary critical hits and random secondary effects are omitted. Unsupported status effects are flagged.' };
+        assumptions: 'Selective replies, grouped damage rolls, and heuristic pivot choices. Team preservation uses direct matchup estimates from the starting sets. Ordinary critical hits and random secondary effects are omitted. Unsupported status effects are flagged.' };
+    }
+
+    compareWorlds(scores) {
+      if (!scores.length) return;
+      const count = scores[0].worlds.length;
+      const distinct = new Set(scores[0].worlds.map((world, i) => world.signature || 'world' + i)).size;
+      const best = Array.from({ length: count }, (_, i) => Math.max(...scores.map(row => row.worlds[i].worst)));
+      for (const row of scores) {
+        row.regret = 0; row.closeWorldWeight = 0;
+        for (let i = 0; i < count; i++) {
+          const gap = best[i] - row.worlds[i].worst;
+          row.regret += gap * row.worlds[i].weight;
+          if (gap <= setting('closeGap', 15)) row.closeWorldWeight += row.worlds[i].weight;
+        }
+        const fraction = setting('tailFraction', 0.25);
+        let remaining = fraction, tail = 0;
+        for (const world of row.worlds.slice().sort((a, b) => a.worst - b.worst)) {
+          const weight = Math.min(remaining, world.weight);
+          tail += weight * world.worst; remaining -= weight;
+          if (remaining <= 1e-9) break;
+        }
+        row.tailScore = tail / fraction;
+        row.robustScore = setting('scoreBlend.worst', 0.5) * row.worst + setting('scoreBlend.mean', 0.25) * row.mean +
+          setting('scoreBlend.tail', 0.25) * row.tailScore - setting('regretPenalty', 0.12) * row.regret;
+        row.stability = distinct < 2 ? 'Only one set combination tested' : row.closeWorldWeight >= 1 - 1e-9
+          ? 'Consistent across sampled sets' : row.closeWorldWeight <= 1e-9 ? 'Lower rated across sampled sets'
+            : row.closeWorldWeight >= setting('consistentShare', 0.7) ? 'Usually competitive across sampled sets' : 'Depends on the opposing set';
+      }
     }
   }
   ST.TacticalSearch = TacticalSearch;

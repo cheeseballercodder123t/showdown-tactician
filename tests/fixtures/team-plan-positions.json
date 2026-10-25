@@ -1,0 +1,14 @@
+{
+  "lastAnswer": {
+    "description": "Chipped Dragonite is in guaranteed Ice Shard range. Preserve Weavile over an otherwise equally healthy teammate.",
+    "answer": { "species": "Weavile", "moves": ["Ice Shard", "Knock Off"], "evs": { "atk": 252 }, "nature": "Adamant" },
+    "reserve": { "species": "Ferrothorn", "moves": ["Power Whip"] },
+    "threat": { "species": "Dragonite", "moves": ["Outrage", "Earthquake"], "hp": 80, "evs": { "atk": 252, "spe": 252 } }
+  },
+  "priorityFinish": {
+    "description": "A boosted Dragonite moves before Icicle Crash, but Ice Shard KOs before Outrage.",
+    "attacker": { "species": "Weavile", "moves": ["Icicle Crash", "Ice Shard"], "evs": { "atk": 252 }, "nature": "Adamant" },
+    "defender": { "species": "Dragonite", "moves": ["Outrage"], "hp": 80, "boosts": { "spe": 2 }, "evs": { "atk": 252, "spe": 252 } },
+    "expected": "Ice Shard"
+  }
+}

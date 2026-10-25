@@ -124,6 +124,7 @@ function unansweredFrames(report, side) {
 
 function checkBridge() {
   section('1. engine_bridge: the engine answers a live frame with mappable lines');
+  check('Protect recommendations map to actual simulator moves', bridge.choiceForRanked({kind:'protect',name:'Protect',moveId:'protect'}) === 'move protect');
   const session = bridge.createSession({ paste: teams.SAMPLE_TEAMS.hazardStackBalance });
   check('a paste registers a full team', session.team.length === 6, String(session.team.length));
   session.feed('|switch|p1a: Great Tusk|Great Tusk, L50, M|100/100');
