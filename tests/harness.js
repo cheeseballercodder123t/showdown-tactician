@@ -26,6 +26,7 @@ const MANIFEST_ORDER = [
   'src/set_pruner.js',
   'src/calc_engine.js',
   'src/trick_room.js',
+  'src/turn_model.js',
   'src/mlp_residual.js',
   'src/evaluator_128d.js',
   'src/tempo_vector.js',

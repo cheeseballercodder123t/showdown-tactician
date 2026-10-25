@@ -425,7 +425,7 @@ function sectionInitResetsTheEvaluationLatch() {
     '|teamsize|p1|6',
     '|teamsize|p2|6',
     '|turn|1',
-    '|request|{"rqid":1}'
+    '|request|{"rqid":1,"side":{"id":"p1","pokemon":[]}}'
   ];
   battle.forEach(function (l) { boot.handleLine(l, 'recv'); });
   eq('the first battle evaluates its decision turn', evaluations, 1);

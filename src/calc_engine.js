@@ -238,6 +238,9 @@
         hpPercent: Math.max(0, Math.min(100, hpPercent === null || hpPercent === undefined ? 100 : hpPercent)),
         revealedMoves: Array.isArray(m.revealedMoves) ? m.revealedMoves.slice() : [],
         candidateSets: Array.isArray(m.candidateSets) ? m.candidateSets : [],
+        rawStats: m.requestStats ? Object.assign({ hp: m.exactMaxHP }, m.requestStats) : null,
+        exactHP: o && (o.hpPercent !== undefined || o.hp !== undefined) ? null : m.exactHP,
+        statSource: m.requestStats ? 'Battle request' : m.fromPaste ? 'Matched team import' : set ? 'Estimated set' : 'Assumed spread',
         set: set
       };
     }
@@ -410,6 +413,22 @@
       if (desc.paradoxBoosted) options.boostedStat = desc.boostedStat || 'auto';
       options.abilityOn = desc.abilityOn;
       const pk = new C.Pokemon(this.gen, desc.species, options);
+      if (desc.rawStats) {
+        const applyStats = function (pokemon) {
+          for (const key of ['hp', 'atk', 'def', 'spa', 'spd', 'spe']) {
+            const value = desc.rawStats[key];
+            if (typeof value === 'number' && value > 0) pokemon.rawStats[key] = pokemon.stats[key] = value;
+          }
+          const clone = pokemon.clone;
+          pokemon.clone = function () {
+            const copy = applyStats(clone.call(this));
+            copy.originalCurHP = Math.min(copy.rawStats.hp, this.originalCurHP);
+            return copy;
+          };
+          return pokemon;
+        };
+        applyStats(pk);
+      }
       if (desc.paradoxBoosted && !desc.boostedStat) {
         pk.boostedStat = ['atk', 'def', 'spa', 'spd', 'spe'].reduce(function (best, stat) {
           const value = function (key) { return Math.floor(pk.rawStats[key] * U.boostMultiplier(desc.boosts[key] || 0)); };
@@ -418,10 +437,13 @@
       }
       // curHP in @smogon/calc is an ABSOLUTE hp value (values above max HP are ignored).
       const maxHP = pk.rawStats.hp;
+      pk.originalCurHP = maxHP;
       if (typeof opts.attackerHP === 'number' && desc.role === 'attacker') {
         pk.originalCurHP = Math.max(1, Math.min(maxHP, Math.round(opts.attackerHP)));
       } else if (typeof opts.defenderHP === 'number' && desc.role === 'defender') {
         pk.originalCurHP = Math.max(1, Math.min(maxHP, Math.round(opts.defenderHP)));
+      } else if (typeof desc.exactHP === 'number' && desc.exactHP >= 0) {
+        pk.originalCurHP = Math.max(1, Math.min(maxHP, desc.exactHP));
       } else if (desc.hpPercent < 100) {
         pk.originalCurHP = Math.max(1, Math.round(maxHP * desc.hpPercent / 100));
       }
@@ -456,7 +478,8 @@
           (d.typeOverride && d.typeOverride.length) ? d.typeOverride.join('/') : '',
           d.evs.hp, d.evs.atk, d.evs.def, d.evs.spa, d.evs.spd, d.evs.spe,
           d.ivs.hp, d.ivs.atk, d.ivs.def, d.ivs.spa, d.ivs.spd, d.ivs.spe,
-          d.boosts.atk, d.boosts.def, d.boosts.spa, d.boosts.spd, d.boosts.spe].join(',');
+          d.boosts.atk, d.boosts.def, d.boosts.spa, d.boosts.spd, d.boosts.spe,
+          d.exactHP, JSON.stringify(d.rawStats)].join(',');
       };
       // opts.ability / opts.item are part of the key because they switch a Max Move's typing
       // and its ability/item interactions (see _buildMove); with them missing a cached roll
@@ -537,6 +560,14 @@
           ? raw.damage.map(function (hit, i) { return i ? hit : hit.map(function () { return 0; }); }) : 0;
         result = this._resultFrom(raw, defPk, moveData, options);
         result.disguiseIntact = !!disguise;
+        const inputs = function (desc, pokemon) {
+          return { species: desc.species, level: desc.level, stats: Object.assign({}, pokemon.rawStats),
+            source: desc.statSource, hpPercent: desc.hpPercent, item: desc.item, ability: desc.ability,
+            boosts: Object.assign({}, desc.boosts), status: desc.status || 'Healthy' };
+        };
+        result.inputs = { attacker: inputs(A, atkPk), defender: inputs(D, defPk),
+          weather: field.weather || 'None', terrain: field.terrain || 'None',
+          attackerSide: attackerIsP1 ? 'p1' : 'p2', defenderSide: attackerIsP1 ? 'p2' : 'p1' };
       } catch (err) {
         this.stats.failures++;
         result = this._failure(String((err && err.message) || err));

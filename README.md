@@ -383,6 +383,7 @@ node tests/config_check.js    #  85 checks: RULE 4 — the config is the only ho
 node tests/blackbox_guard.js  #  28 checks: RULE 1 — no handwritten math, 50,616 stats diffed
 node tests/parser_fuzz.js     #  44 checks: RULE 3 — the real log, all its prefixes, junk lines
 node tests/hardening_audit.js # 186 checks: bug-hunt and calculator regressions + a 40-battle invariant fuzz
+node tests/control_engine_check.js # 68 live ownership, damage, turn simulation and supplied battle checks
 node tests/upgrades_check.js  # 118 checks: the mixed-strategy solve, the vetoes, the clock, damage evidence
 node tests/chaos_sync_check.js # 70 checks: the chaos sync + the usage overlay (fixtures only, no network)
 node tests/weights_check.js   # 277 checks: the downloader + the extractor (and its --set) + the fitter +

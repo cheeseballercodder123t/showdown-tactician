@@ -9,6 +9,15 @@ rejected, inert, unresolved) and the artifact behind it, indexed by the shape of
 re-proposal can be matched to a prior attempt — is `ATTEMPTS.md`. Add a row there when a row here
 reaches a verdict.
 
+## 1.1.0 - 2026-10-25
+
+- Keep protocol p1/p2 rosters and active references independent of the local player seat. Recover missed live requests; match team imports to the authenticated roster.
+- Use request stats and exact own HP in damage calculations, including calculator clones and cache keys. Render observed HP immediately after damage and healing.
+- Add a shared singles turn model and bounded selective search for verified live battles. Price Trick Room, Chilly Reception, fainting, replacement choices and follow-up turns; offer Auto / Trick Room / Standard planning.
+- Replace headline strategy percentages with recommendations, alternatives and explicit tradeoffs. Add persistent battle summaries, compact scouting rows, calculation inputs and copyable decision snapshots.
+- Selective search is approximate. Grouped damage, heuristic pivots, restricted replies, and unsupported effects are disclosed; it never promotes a forced-win proof. The legacy heuristic engine remains covered separately.
+- Preserve the supplied rendered battle transcript and a labeled protocol reconstruction. Rounded losses, critical hits and clipped KO damage cannot establish exact spreads or damage rolls.
+
 ## Unreleased
 
 ### Fixed — 1.0.1 battle format recovery

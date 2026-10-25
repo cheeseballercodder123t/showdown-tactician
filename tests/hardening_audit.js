@@ -749,7 +749,8 @@ const calledTR = pipeline([
   '|switch|p1a: Abomasnow|Abomasnow, L50, M|100/100',
   '|turn|1',
   '|move|p2a: Clefable|Sleep Talk|p2a: Clefable',
-  '|move|p2a: Clefable|Trick Room|p2a: Clefable|[from]Sleep Talk'
+  '|move|p2a: Clefable|Trick Room|p2a: Clefable|[from]Sleep Talk',
+  '|-fieldstart|move: Trick Room'
 ]);
 check('a called Trick Room still twists the dimensions', calledTR.battle.field.trickRoom === true);
 

@@ -660,6 +660,7 @@
           disguiseIntact: disguised,
           verdict: disguised ? 'Disguise absorbs the first hit' : this.lethalVerdict(merged, data),
           desc: res.desc || '',
+          inputs: res.inputs || null,
           // How many surviving spreads the range covers, so a caller can say "4 spreads".
           spreadCount: optList.length
         });
@@ -3439,6 +3440,7 @@
     /** evaluateTurn(battleState, opts) -> RankedAction[] */
     evaluateTurn(battleState, opts) {
       opts = opts || {};
+      if (battleState && battleState.ownershipResolved && ST.TacticalSearch) return this._evaluateVerified(battleState, opts);
       const t0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
       const state = battleState;
       if (!state || state.formatSupported === false) {
@@ -3840,6 +3842,72 @@
         optimal: ranked.length && !ranked[0].isVetoed ? ranked[0] : null,
         tooltip: this.describeTopLines(ranked, 2)
       };
+      return ranked;
+    }
+
+    _evaluateVerified(state, opts) {
+      const started = Date.now();
+      if (state.formatSupported === false || state.legalActions.wait) return [];
+      const actions = this.getMyActions(state);
+      if (!actions.length || !state.active.my || !state.active.opp) return [];
+      if (!opts.reread) this.damage.beginTurn(state.turn + ':' + state.revision);
+      const worlds = this.sampler ? this.sampler.sampleWorlds(state, ST.SetDatabase, opts.K || this.K) : [{ team: state.oppTeam, weight: 1 }];
+      if (!worlds.length) return [];
+      this._reread = opts.reread === true;
+      const tiers = this._tiers(state, worlds, actions);
+      this.tacticalSearch = this.tacticalSearch || new ST.TacticalSearch(this.damage);
+      const report = this.tacticalSearch.evaluate(state, actions, worlds, this, opts);
+      const scores = report.completed && report.completed.scores;
+      const preview = this.preview(state.active.opp, state);
+      const ranked = actions.map((action, i) => {
+        const data = scores && scores[i];
+        const score = data ? 0.65 * data.worst + 0.35 * data.mean : -Infinity;
+        const row = Object.assign({}, action, { score: score, minScore: data && data.worst,
+          isVetoed: false, isOptimal: false, confidence: 0, scoreSource: 'Selective turn search',
+          comparison: data, searchDepth: report.completed && report.completed.depth });
+        const immunity = this.veto && this.veto.vetoAbilityImmunity(action, state);
+        if (immunity && immunity.isVetoed) {
+          row.isVetoed = true; row.vetoReason = immunity.reason; row.score = VETO_SCORE;
+        }
+        const mid = U.toID(action.name);
+        if (action.kind === 'switch') row.reason = 'Compare incoming damage and entry hazards with staying in or allowing a faint.';
+        else if (mid === 'trickroom') row.reason = state.field.trickRoom
+          ? 'Ends the active Trick Room. Compare the resulting move order.'
+          : 'Establishes Trick Room at priority -7. Search includes the setup turn and available follow-up.';
+        else if (U.isPivotMove(action.name)) row.reason = 'Compare the outgoing Pokemon taking the hit with the incoming teammate taking it.';
+        else {
+          const result = this.damage.calculateDamage(state.active.my, state.active.opp, action.name, state.field);
+          row.damage = result && !result.failed ? result : null;
+          const range = preview && preview.lines.find(function (line) { return U.toID(line.moveId || line.name) === mid; });
+          row.reason = range && !range.isStatus
+            ? Math.round(range.minPercent) + '-' + Math.round(range.maxPercent) + '% across ' + range.spreadCount + ' opposing spread estimate(s).'
+            : 'Compared by its resulting position and available follow-up.';
+        }
+        if (data && data.replies.length) {
+          const worst = data.replies.reduce(function (a, b) { return a.score < b.score ? a : b; });
+          row.tradeoff = 'Most costly modeled reply: ' + worst.name + '.';
+        }
+        return row;
+      });
+      ranked.sort(function (a, b) { return a.isVetoed !== b.isVetoed ? a.isVetoed ? 1 : -1 : b.score - a.score; });
+      const best = ranked.find(function (a) { return !a.isVetoed; });
+      if (best) {
+        best.isOptimal = true;
+        const live = ranked.filter(function (a) { return !a.isVetoed; });
+        const scale = Math.max(25, (best.score - live[live.length - 1].score) / 4);
+        const weights = ranked.map(function (a) { return a.isVetoed ? 0 : Math.exp((a.score - best.score) / scale); });
+        const total = weights.reduce(function (a, b) { return a + b; }, 0);
+        ranked.forEach(function (a, i) { a.confidence = a.strategyWeight = weights[i] / total * 100; a.scoreGap = U.round1(best.score - a.score); });
+      }
+      this.lastReadout = { worlds: worlds, ranked: ranked, optimal: best || null, elapsedMs: Date.now() - started,
+        profile: tiers.profile, scouting: tiers.scouting, wincon: tiers.wincon,
+        tactical: report, plan: report.plan, turn: state.turn, stateRevision: state.revision, requestId: state.request && state.request.rqid,
+        tempo: this.tempo ? this.tempo.computeVector(state) : null, oppStrategy: [],
+        endgame: { solved: false, isMate: false, reason: 'Selective search does not establish a forced win.' } };
+      this.lastReadout.decisionSnapshot = U.deepClone({ turn: state.turn, revision: state.revision, battleId: state.battleId,
+        mySide: state.mySide, oppSide: state.oppSide, myTeam: state.myTeam, oppTeam: state.oppTeam,
+        field: state.field, request: state.request, legalActions: state.legalActions, battlePlan: state.battlePlan });
+      this.lastRanked = ranked;
       return ranked;
     }
 

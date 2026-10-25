@@ -940,12 +940,15 @@
     const level = opts.level || mon.level || 100;
     const boostStage = opts.boostStage !== undefined ? opts.boostStage
       : (mon.boosts && mon.boosts.spe) || 0;
-    const raw = calcStat('spe', { base: bs, iv: ivs.spe, ev: evs.spe, level: level, nature: nature });
+    const raw = mon.requestStats && typeof mon.requestStats.spe === 'number' ? mon.requestStats.spe
+      : calcStat('spe', { base: bs, iv: ivs.spe, ev: evs.spe, level: level, nature: nature });
     const item = opts.item !== undefined ? opts.item : mon.item;
     const ability = toID(opts.ability !== undefined ? opts.ability : mon.ability);
     const weather = opts.weather || '';
     const terrain = opts.terrain || '';
     let mult = boostMultiplier(boostStage);
+    if (mon.status === 'par' && ability !== 'quickfeet') mult *= 0.5;
+    if (mon.status && ability === 'quickfeet') mult *= 1.5;
     if (toID(item) === 'choicescarf') mult *= 1.5;
     if (toID(item) === 'ironball') mult *= 0.5;
     if (toID(item) === 'machobrace' || toID(item) === 'poweranklet' || toID(item) === 'powerweight' ||

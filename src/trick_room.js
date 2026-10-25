@@ -492,8 +492,8 @@
 
       if (active) {
         if (turnsLeft <= 1) {
-          reason = 'Trick Room expires next turn: refresh it or attack; do not hard-switch healthy breakers.';
-          shouldSet = !!(me && this.isTRSetter(me)) && setters.length > 0;
+          reason = 'Trick Room expires after this turn. Using it now ends the active effect.';
+          shouldSet = false;
         } else {
           reason = 'Trick Room is live for ' + turnsLeft + ' more turn(s); spend them attacking.';
         }

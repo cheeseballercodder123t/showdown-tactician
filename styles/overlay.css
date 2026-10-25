@@ -316,9 +316,9 @@ button.st-optimal { outline: 2px solid #6f5948; outline-offset: -2px; }
 
 .st-console > details[class], .st-sheet > details[class] { padding: 0 14px; }
 .st-console > details[class][open], .st-sheet > details[class][open] { padding-bottom: 12px; }
-.elo-helper-badge.conf-veto::before { content: "Avoid / "; }
+.elo-helper-badge.conf-veto::before { content: ""; }
 
-.elo-helper-badge::after { content: " confidence"; }
+.elo-helper-badge::after { content: ""; }
 .st-console > [hidden], .st-sheet > [hidden] { display: none !important; }
 .st-center-nav {
   display: grid;
@@ -438,3 +438,16 @@ button.st-optimal { outline: 2px solid #6f5948; outline-offset: -2px; }
 :root[data-st-layout="mobile"] .st-sheet[data-st-sheet-open="1"] > .st-toolbar { margin-top: auto; }
 :root[data-st-layout="mobile"] .st-sheet[data-st-sheet-open="1"] > :is(.st-matchup, .st-intelligence, .st-field-board, .st-engine-review, .st-action-list) { padding-left: 18px; padding-right: 18px; }
 :root[data-st-layout="mobile"] .st-sheet[data-st-sheet-open="1"] .st-chapter-title { font-size: 36px; }
+
+.st-quick-summary { order: -9; flex-shrink: 0; padding: 12px 10px; border-bottom: 1px solid var(--st-line, #454740); }
+.st-plan-label { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-weight: bold; }
+.st-plan-select { min-height: 36px; background: #252721; color: #e8e4d8; border: 1px solid #74756a; border-radius: 0; padding: 4px 8px; font: inherit; }
+.st-quick-summary .st-play-name { font-size: 23px; line-height: 1.2; margin-top: 5px; }
+.st-quick-alternatives, .st-action-tradeoff { font-size: 12px; line-height: 1.45; color: #c1c1b4; }
+.st-intel-overview { display: flex; flex-direction: column; margin: 10px 0 16px; }
+.st-intel-line { display: flex; flex-direction: column; gap: 3px; width: 100%; text-align: left; background: none; color: inherit; font: inherit; padding: 9px 0; border: 0; border-bottom: 1px solid #454740; border-radius: 0; cursor: pointer; }
+.st-intel-line span { font-size: 12px; color: #c1c1b4; }
+.st-intel-line:focus-visible, .st-plan-select:focus-visible { outline: 2px solid #d6ba77; outline-offset: 2px; }
+.st-calc-detail, .st-action-analysis, .st-pruning-ledger { font-size: 12px; line-height: 1.45; padding: 6px 0; }
+.st-calc-detail summary, .st-action-analysis summary, .st-pruning-ledger summary { cursor: pointer; }
+.st-quick-summary p { margin: 6px 0; }

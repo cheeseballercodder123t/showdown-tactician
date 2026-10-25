@@ -44,7 +44,7 @@ test('a decision turn decorates every move button with exactly one badge', async
   /* Every badge must be attributable to the button it sits on: the label is a percentage and
    * the class is one of the four the stylesheet knows. */
   for (const badge of snap.badges) {
-    expect(badge.text, 'badge on ' + badge.move).toMatch(/^(\d+%|VETO)$/);
+    expect(badge.text, 'badge on ' + badge.move).toMatch(/^(Best|Alt|Avoid)$/);
     const known = badge.badgeClasses.filter(function (c) {
       return ['conf-high', 'conf-mid', 'conf-low', 'conf-veto'].indexOf(c) !== -1;
     });
@@ -67,7 +67,7 @@ test('a veto lands on the button whose move it applies to', async function () {
    * conf-veto a red outline and a strikethrough) and spelled out in the title. */
   const hr = snap.badges.find(function (b) { return b.move === 'headlongrush'; });
   expect(hr, 'headlongrush button').toBeTruthy();
-  expect(hr.text).toBe('0%');
+  expect(hr.text).toBe('Avoid');
   expect(hr.badgeClasses).toContain('conf-veto');
   expect(hr.title).toMatch(/^VETO/);
 
@@ -157,7 +157,7 @@ test('the HUD re-decorates a control bar Showdown has thrown away', async functi
 
   expect(snap.badgeCount).toBe(4);
   expect(snap.badgeChildren).toEqual([1, 1, 1, 1]);
-  for (const badge of snap.badges) expect(badge.text).toMatch(/^(\d+%|VETO)$/);
+  for (const badge of snap.badges) expect(badge.text).toMatch(/^(Best|Alt|Avoid)$/);
   expect(snap.internalErrorCount, snap.internalError).toBe(0);
   await page.close();
 });

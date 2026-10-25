@@ -1,0 +1,162 @@
+# Reconstructed from the supplied rendered transcript. Rounded HP endpoints are test assumptions,
+# not original server frames. No exact spreads or damage-roll outcomes can be recovered from it.
+|init|battle
+|tier|[Gen 9] National Dex
+|player|p1|gersonion
+|player|p2|efgbbd
+|poke|p1|Urshifu-Rapid-Strike|item
+|poke|p1|Steelix|item
+|poke|p1|Zeraora|item
+|poke|p1|Garchomp|item
+|poke|p1|Tyranitar|item
+|poke|p1|Sylveon|item
+|poke|p2|Slowking-Galar|item
+|poke|p2|Abomasnow|item
+|poke|p2|Hatterene|item
+|poke|p2|Ursaluna|item
+|poke|p2|Kingambit|item
+|poke|p2|Azumarill|item
+|switch|p1a: Tiki tiki tiki|Urshifu-Rapid-Strike|100/100
+|switch|p2a: Tarot-Reader|Slowking-Galar|100/100
+|turn|1
+|move|p1a: Tiki tiki tiki|U-turn|p2a: Tarot-Reader
+|-damage|p2a: Tarot-Reader|72/100
+|switch|p1a: Jaimito|Steelix|100/100
+|move|p2a: Tarot-Reader|Trick Room|p2a: Tarot-Reader
+|-fieldstart|move: Trick Room
+|turn|2
+|-mega|p1a: Jaimito|Steelix|Steelixite
+|-formechange|p1a: Jaimito|Steelix-Mega
+|move|p2a: Tarot-Reader|Chilly Reception|p2a: Tarot-Reader
+|-weather|Snow
+|switch|p2a: 3rd Degree Burn|Ursaluna|100/100
+|move|p1a: Jaimito|Curse|p1a: Jaimito
+|-unboost|p1a: Jaimito|spe|1
+|-boost|p1a: Jaimito|atk|1
+|-boost|p1a: Jaimito|def|1
+|-status|p2a: 3rd Degree Burn|brn|[from] item: Flame Orb
+|turn|3
+|move|p1a: Jaimito|Body Press|p2a: 3rd Degree Burn
+|-crit|p2a: 3rd Degree Burn
+|-damage|p2a: 3rd Degree Burn|0 fnt
+|faint|p2a: 3rd Degree Burn
+|switch|p2a: Hatterene|Hatterene|100/100
+|turn|4
+|move|p2a: Hatterene|Mystical Fire|p1a: Jaimito
+|-damage|p1a: Jaimito|42/100
+|-unboost|p1a: Jaimito|spa|1
+|move|p1a: Jaimito|Earthquake|p2a: Hatterene
+|-damage|p2a: Hatterene|29/100
+|turn|5
+|move|p2a: Hatterene|Mystical Fire|p1a: Jaimito
+|-damage|p1a: Jaimito|0 fnt
+|faint|p1a: Jaimito
+|-fieldend|move: Trick Room
+|switch|p1a: ZEROaura|Zeraora|100/100
+|turn|6
+|switch|p2a: Santa Claus|Abomasnow|100/100
+|move|p1a: ZEROaura|Volt Switch|p2a: Santa Claus
+|-damage|p2a: Santa Claus|86/100
+|-damage|p1a: ZEROaura|90/100|[from] item: Life Orb
+|switch|p1a: EARTHQUAKEEEE|Garchomp|100/100
+|-weather|none
+|turn|7
+|-mega|p2a: Santa Claus|Abomasnow|Abomasite
+|-formechange|p2a: Santa Claus|Abomasnow-Mega
+|-weather|Snow|[from] ability: Snow Warning|[of] p2a: Santa Claus
+|move|p1a: EARTHQUAKEEEE|Fire Fang|p2a: Santa Claus
+|-damage|p2a: Santa Claus|35/100
+|move|p2a: Santa Claus|Blizzard|p1a: EARTHQUAKEEEE
+|-damage|p1a: EARTHQUAKEEEE|0 fnt
+|faint|p1a: EARTHQUAKEEEE
+|switch|p1a: The colossus|Tyranitar|100/100
+|-weather|Sandstorm|[from] ability: Sand Stream|[of] p1a: The colossus
+|turn|8
+|move|p1a: The colossus|Stone Edge|p2a: Santa Claus
+|-crit|p2a: Santa Claus
+|-damage|p2a: Santa Claus|0 fnt
+|faint|p2a: Santa Claus
+|switch|p2a: Tarot-Reader|Slowking-Galar|
+|turn|9
+|move|p1a: The colossus|Dragon Dance|p1a: The colossus
+|-boost|p1a: The colossus|atk|1
+|-boost|p1a: The colossus|spe|1
+|move|p2a: Tarot-Reader|Trick Room|p2a: Tarot-Reader
+|-fieldstart|move: Trick Room
+|turn|10
+|move|p2a: Tarot-Reader|Chilly Reception|p2a: Tarot-Reader
+|-weather|Snow
+|switch|p2a: Azumarill|Azumarill|100/100
+|move|p1a: The colossus|Tectonic Rage|p2a: Azumarill
+|-damage|p2a: Azumarill|2/100
+|turn|11
+|switch|p1a: My goat|Sylveon|100/100
+|move|p2a: Azumarill|Superpower|p1a: My goat
+|-damage|p1a: My goat|58/100
+|-unboost|p2a: Azumarill|atk|1
+|-unboost|p2a: Azumarill|def|1
+|turn|12
+|switch|p2a: Hatterene|Hatterene|29/100
+|move|p1a: My goat|Wish|p1a: My goat
+|turn|13
+|move|p2a: Hatterene|Dazzling Gleam|p1a: My goat
+|move|p1a: My goat|Calm Mind|p1a: My goat
+|-boost|p1a: My goat|spa|1
+|-boost|p1a: My goat|spd|1
+|-fieldend|move: Trick Room
+|turn|14
+|move|p1a: My goat|Calm Mind|p1a: My goat
+|-boost|p1a: My goat|spa|1
+|-boost|p1a: My goat|spd|1
+|move|p2a: Hatterene|Psyshock|p1a: My goat
+|-weather|none
+|turn|15
+|move|p1a: My goat|Protect|p1a: My goat
+|move|p2a: Hatterene|Psyshock|p1a: My goat
+|turn|16
+|move|p1a: My goat|Wish|p1a: My goat
+|move|p2a: Hatterene|Psyshock|p1a: My goat
+|-damage|p1a: My goat|0 fnt
+|faint|p1a: My goat
+|switch|p1a: Tiki tiki tiki|Urshifu-Rapid-Strike|
+|turn|17
+|move|p1a: Tiki tiki tiki|Surging Strikes|p2a: Hatterene
+|-crit|p2a: Hatterene
+|-damage|p2a: Hatterene|0 fnt
+|faint|p2a: Hatterene
+|-hitcount|p2a: Hatterene|1
+|switch|p2a: Tarot-Reader|Slowking-Galar|
+|turn|18
+|move|p1a: Tiki tiki tiki|Surging Strikes|p2a: Tarot-Reader
+|move|p2a: Tarot-Reader|Trick Room|p2a: Tarot-Reader
+|-fieldstart|move: Trick Room
+|turn|19
+|move|p2a: Tarot-Reader|Future Sight|p1a: Tiki tiki tiki
+|move|p1a: Tiki tiki tiki|Surging Strikes|p2a: Tarot-Reader
+|-crit|p2a: Tarot-Reader
+|-damage|p2a: Tarot-Reader|0 fnt
+|faint|p2a: Tarot-Reader
+|-hitcount|p2a: Tarot-Reader|2
+|switch|p2a: Azumarill|Azumarill|2/100
+|turn|20
+|switch|p1a: ZEROaura|Zeraora|90/100
+|move|p2a: Azumarill|Play Rough|p1a: ZEROaura
+|-damage|p1a: ZEROaura|0 fnt
+|faint|p1a: ZEROaura
+|switch|p1a: The colossus|Tyranitar|100/100
+|-weather|Sandstorm|[from] ability: Sand Stream|[of] p1a: The colossus
+|turn|21
+|move|p2a: Azumarill|Play Rough|p1a: The colossus
+|-damage|p1a: The colossus|0 fnt
+|faint|p1a: The colossus
+|-damage|p2a: Azumarill|0 fnt|[from] Sandstorm
+|faint|p2a: Azumarill
+|switch|p2a: Am I Late?|Kingambit|100/100
+|switch|p1a: Tiki tiki tiki|Urshifu-Rapid-Strike|
+|-ability|p2a: Am I Late?|Supreme Overlord
+|turn|22
+|move|p2a: Am I Late?|Sucker Punch|p1a: Tiki tiki tiki
+|-damage|p1a: Tiki tiki tiki|61/100
+|move|p1a: Tiki tiki tiki|Close Combat|p2a: Am I Late?
+|-damage|p2a: Am I Late?|0 fnt
+|faint|p2a: Am I Late?

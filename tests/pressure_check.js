@@ -488,6 +488,8 @@ section('5. the charge is folded into the ranked matrix, and the switch restores
 
 const onFx = pipeline(VOL_LINES.concat([requestLine(GHOLDENGO_MOVES)]));
 const offFx = pipeline(VOL_LINES.concat([requestLine(GHOLDENGO_MOVES)]));
+// Exercise the retained heuristic engine; live requests model misses as turn branches.
+onFx.battle.ownershipResolved = offFx.battle.ownershipResolved = false;
 const onRanked = call('evaluateTurn runs with volatility on', function () { return newEngine().engine.evaluateTurn(onFx.battle); });
 const offRanked = call('evaluateTurn runs with volatility off',
   function () { return newEngine({ volatility: { enabled: false } }).engine.evaluateTurn(offFx.battle); });

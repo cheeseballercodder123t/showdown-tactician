@@ -54,6 +54,7 @@ const SUITES = [
   'test_engine.js',
   'tests/run_tests.js',
   'tests/hardening_audit.js',
+  'tests/control_engine_check.js',
   // The arena. `arena_check.js` drives the real @pkmn/sim engine, which is a devDependency the
   // other suites deliberately do not need: without `npm install` it prints a skip and exits 0
   // (the CI test job has no install step, so that is the path CI takes). `tactical_puzzles.js`

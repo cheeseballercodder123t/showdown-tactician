@@ -148,6 +148,7 @@
       const species = this._setSpecies(set) || base.species || base.id;
       return {
         id: U.toID(species),
+        uid: base.uid || (base.side || 'p2') + ':' + index,
         species: species,
         side: base.side || 'p2',
         slot: base.slot || null,

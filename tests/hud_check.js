@@ -814,7 +814,11 @@ const TAP_LINES = [
   '|turn|1',
   '|move|p2a: Gholdengo|Shadow Ball|p1a: Great Tusk',
   '|switch|p2a: Corviknight|Corviknight, L100, M|100/100',
-  '|turn|2'
+  '|turn|2',
+  '|request|' + JSON.stringify({side:{id:'p1',pokemon:[
+    {ident:'p1: Great Tusk',details:'Great Tusk',condition:'100/100',active:true,moves:['headlongrush','closecombat','icespinner','rapidspin']},
+    {ident:'p1: Hatterene',details:'Hatterene',condition:'100/100',active:false,moves:['trickroom','psychic','dazzlinggleam','healingwish']}
+  ]},active:[{moves:['Headlong Rush','Close Combat','Ice Spinner','Rapid Spin'].map(function(name){return {move:name,id:U.toID(name),pp:10};})}]})
 ];
 const TAP_BOOT = call('the boot starts for the bench-tap fixture', function () {
   const boot = new ST.TacticianBoot({ doc: S.document });

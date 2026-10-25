@@ -63,6 +63,7 @@
           } catch (e) { /* no storage API (Node harness) */ }
         },
         onBenchTap: function (id) { return self._selectBenchTarget(id); },
+        onBattlePlanChange: function (mode) { return self.setBattlePlan(mode); },
         onCopyReceipt: function (text) { return self._copyReceipt(text); }
       }) : null;
       this.team = null;
@@ -143,7 +144,10 @@
       doc.addEventListener(PROTOCOL_EVENT, function (evt) {
         const payload = self._normalize(evt);
         if (!payload || !payload.rawLine) return;
+        const visible = doc.documentElement && doc.documentElement.getAttribute('data-st-room');
+        if (payload.roomId && visible && payload.roomId !== visible) return;
         self.handleLine(payload.rawLine, payload.kind);
+        if (payload.roomId && self.state) self.state.state.battleId = payload.roomId;
       });
       // The haptic gate: one passive listener per gesture type, each self-removing, purely to
       // record that this frame has been touched at all. `{once, passive}` is preferred; a
@@ -181,7 +185,7 @@
         if (mirrored) detail = { rawLine: mirrored, kind: (el.dataset && el.dataset.stLineKind) || 'poll' };
       }
       if (!detail || !detail.rawLine) return null;
-      return { rawLine: String(detail.rawLine), kind: detail.kind || 'recv' };
+      return { rawLine: String(detail.rawLine), kind: detail.kind || 'recv', roomId: detail.roomId || '' };
     }
 
     /* ------------------------------------------------------------- pipeline */
@@ -224,7 +228,16 @@
 
     _afterEvent(event, previousTurn) {
       if (!event || !event.type) return undefined;
+      if (this.pendingReadout && this.pendingReadout.tactical &&
+          ['turn', 'move', 'switch', 'faint', 'damage', 'heal', 'boost', 'unboost', 'status'].includes(event.type)) {
+        this._closePonderWindow();
+        this.lastDecisionReadout = this.pendingReadout;
+        this.pendingReadout = null;
+        if (this.hud) this.hud.render([], this.state.state || this.state, null);
+      }
       if (event.type === 'init') {
+        this.lastDecisionReadout = null;
+        this._loadedPlanKey = null;
         // A fresh battle: the deliberation floor is per-connection and per-opponent, so it must
         // not be inherited from the previous game. Same for the bench selection and the one-shot
         // Trick Room alert.
@@ -340,7 +353,7 @@
           }
         }
       }
-      if (event.type === 'faint' || event.type === 'switch' || event.type === 'fieldStart' || event.type === 'fieldEnd') {
+      if (['faint', 'switch', 'fieldStart', 'fieldEnd', 'damage', 'heal', 'sethp', 'hp', 'boost', 'unboost', 'status'].includes(event.type)) {
         if (this.hud) this._refreshNonDecisionUi();
       }
       if (this.state) this._refreshControlCenter(this.state.state || this.state);
@@ -423,7 +436,8 @@
     _onRequest() {
       this.stats.requests++;
       const state = this.state ? (this.state.state || this.state) : null;
-      if (!state || state.formatSupported === false) {
+      if (state && state.ownershipResolved) this._loadBattlePlan(state);
+      if (!state || state.formatSupported === false || state.ownershipResolved === false) {
         if (this.hud && state) {
           this.hud.render([], state, null);
           this.hud.renderTRChip('', 'info');
@@ -490,15 +504,48 @@
       return ranked;
     }
 
+    _planKey(state) {
+      return (state.myTeam || []).map(function (m) { return U.toID(m.rosterSpecies || m.species); }).sort().join(',');
+    }
+
+    _loadBattlePlan(state) {
+      const key = this._planKey(state);
+      if (this._loadedPlanKey === key) return;
+      this._loadedPlanKey = key;
+      let mode = 'auto';
+      try { mode = JSON.parse(window.localStorage.getItem('stBattlePlans') || '{}')[key] || mode; } catch (e) {}
+      state.battlePlan = /^(auto|trickroom|standard)$/.test(mode) ? mode : 'auto';
+    }
+
+    setBattlePlan(mode) {
+      if (!/^(auto|trickroom|standard)$/.test(mode)) return false;
+      const state = this.state && (this.state.state || this.state);
+      if (!state) return false;
+      this._closePonderWindow();
+      state.battlePlan = mode;
+      this._loadedPlanKey = this._planKey(state);
+      try {
+        const saved = JSON.parse(window.localStorage.getItem('stBattlePlans') || '{}');
+        saved[this._loadedPlanKey] = mode;
+        window.localStorage.setItem('stBattlePlans', JSON.stringify(saved));
+      } catch (e) {}
+      state.revision++;
+      this.lastEvaluateFrame = null; this.lastEvaluateTurn = -1;
+      this._onRequest();
+      this._refreshControlCenter(state);
+      return true;
+    }
+
     _askLLM(state, ranked) {
       if (!this.llm || typeof this.llm.getTacticalReadout !== 'function') return;
       const self = this;
+      const revision = state.revision;
       const tempoVector = this.pendingReadout ? this.pendingReadout.tempo : null;
       try {
         const promise = this.llm.getTacticalReadout(state, ranked, tempoVector);
         if (!promise || typeof promise.then !== 'function') return;
         promise.then(function (readout) {
-          if (!readout || !self.hud) return;
+          if (!readout || !self.hud || (self.state.state || self.state) !== state || state.revision !== revision) return;
           self.stats.llmAnswers++;
           self.hud.updateLLMReason(readout.action, readout.reason);
           const best = ranked && ranked.length ? ranked[0] : null;
@@ -548,7 +595,7 @@
           // before it is the loud reminder to land your chip or sack the setter.
           const left = U.clamp(state.field.trickRoomTurnsLeft || 0, 0, 5);
           if (left === 2) {
-            this.hud.renderTRChip('TR: LAST TURN NEXT. Land your chip or sack the setter now.', 'danger');
+            this.hud.renderTRChip('Trick Room: 2 turns left. Compare attacking with positioning for the next cycle.', 'danger');
           }
         }
       } catch (e) { this._error('ui-refresh', e); }
@@ -817,7 +864,7 @@
         // The engine only prices a format it supports. When it is gated off the bars must go
         // away entirely: keeping the last computed range on a button advertises a number for
         // a game the engine refused to read ("ENGINE OFFLINE" above a confident 12-14%).
-        const preview = state.formatSupported === false ? null : this._preview(state);
+        const preview = state.formatSupported === false || state.ownershipResolved === false ? null : this._preview(state);
         // An offline engine has nothing to price, so it must not keep a bench target either:
         // the caption and the selected card would claim a damage readout that no longer exists.
         if (state.formatSupported === false) this.selectedBenchId = null;
@@ -871,7 +918,8 @@
       for (const mon of state.oppTeam || []) {
         if (mon && this.pruner && typeof this.pruner.poolStatus === 'function') pools[mon.id] = this.pruner.poolStatus(mon);
       }
-      this.hud.renderControlCenter(state, this.pendingReadout, { pools: pools, ponder: this.lastPonder, stats: this.stats });
+      this.hud.renderControlCenter(state, this.pendingReadout || this.lastDecisionReadout, {
+        pools: pools, ponder: this.lastPonder, stats: this.stats, historical: !this.pendingReadout && !!this.lastDecisionReadout });
     }
 
     _preview(state) {
@@ -913,7 +961,8 @@
         out.push({
           id: mon.id || U.toID(mon.species),
           species: mon.species || mon.id || 'Unknown',
-          hpPercent: typeof mon.hpPercent === 'number' ? mon.hpPercent : (mon.fainted ? 0 : 100),
+          hpPercent: mon.hpKnown === false ? null : typeof mon.hpPercent === 'number' ? mon.hpPercent : (mon.fainted ? 0 : null),
+          hpKnown: mon.hpKnown !== false,
           fainted: !!mon.fainted,
           isActive: !!mon.isActive,
           moves: moves.slice(0, 8),
@@ -929,6 +978,7 @@
 
     /** The revealed opponent roster cards; only bench cards can be selected for previews. */
     _benchTargets(state) {
+      if (state && state.ownershipResolved === false) return [];
       const team = (state && state.oppTeam) || [];
       const out = [];
       for (let i = 0; i < team.length; i++) {
@@ -1016,7 +1066,7 @@
       if (this._trAlerted) return false;
       this._trAlerted = true;
       if (this.hud && typeof this.hud.renderTRChip === 'function') {
-        this.hud.renderTRChip('TR 1/5 / LAST TURN: attack or sack your setter', 'gold');
+          this.hud.renderTRChip('Trick Room: final turn. Next turn returns to normal move order.', 'gold');
       }
       const pattern = ST.configGet ? ST.configGet('hud.vibrate.pattern', [40, 60, 40]) : [40, 60, 40];
       if (!ST.configGet || ST.configGet('hud.vibrate.trLastTurn', true) !== false) {

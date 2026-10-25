@@ -1310,3 +1310,18 @@ engine's top-1 is a switch far more often than a human's click is, so the pivot 
 the engine's own best non-pivot line was the human's click — is measured and printed, which bounds any
 switch-penalising change before one is written. And the band table that maps a rate to a ladder rating
 is labelled UNCALIBRATED in the report itself.
+
+
+## Verified live battle path (1.1.0)
+
+`injected.js -> ProtocolParser -> BattleStateManager.sides.p1/p2 -> local perspective -> WorldSampler -> TurnModel -> TacticalSearch -> MobileHUD`.
+
+The canonical sides own rosters, active references and benches. Existing `myTeam`, `oppTeam`, `active` and `bench` interfaces are projections. Only a request side authenticates the local perspective. Imported sets remain templates until the roster matches. Species is distinct from protocol side, roster identity and current battle slot.
+
+Request stats and exact own HP take precedence in the calculator and survive its internal Pokemon clones. Cache keys include those inputs. Damage observations retain historical stats and field inputs. The preview envelope spans candidate spreads; the UI distinguishes this uncertainty from within-set damage rolls.
+
+Verified requests use the shared turn model for root actions and continuations. Search completes successive full horizons before publishing deeper scores, with node/time limits. Trick Room planning attempts up to four turns, Standard up to two; both retain legal setup actions. Faint replacements are decision nodes; pivots use heuristic entry selection. Scores blend worst and mean modeled replies across weighted worlds. They are evaluation units, not calibrated win probabilities. No selective result is a proof. Unsupported effects and horizon limits are published in Review.
+
+The legacy Laplace heuristic path remains available for synthetic/unverified integrations and its independent regression suites. Browser requests use the verified path. Live observations invalidate the previous recommendation; revision checks reject stale narration. Battle-plan preferences are saved per roster on the local Showdown origin. Review copies a local decision snapshot only on a user click.
+
+`tests/control_engine_check.js` and browser suite 11 cover ownership, HP, actual request stats, setup safety, sacrifice versus hard switching, coverage selection, and responsive controls. The supplied transcript is retained in `tests/fixtures/`; the reconstructed protocol is explicitly incomplete and does not invent exact unknown stats or rounded residual HP.

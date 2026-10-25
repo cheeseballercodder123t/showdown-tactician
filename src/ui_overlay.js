@@ -514,7 +514,7 @@
       if (badge.classList && badge.classList.remove) {
         for (let i = 0; i < allCls.length; i++) badge.classList.remove(allCls[i]);
       }
-      badge.textContent = pct(conf);
+      badge.textContent = action.scoreSource ? (vetoed ? 'Avoid' : action.isOptimal ? 'Best' : 'Alt') : pct(conf);
       if (badge.classList && badge.classList.add) {
         badge.classList.add(this.confidenceClass(conf, vetoed));
         if (action.isOptimal) badge.classList.add('st-optimal');
@@ -769,11 +769,12 @@
           best = a;
           break;
         }
-        this._recommended = best ? { name: safeString(best.name), confidence: best.confidence } : null;
+        this._recommended = best ? { name: safeString(best.name), confidence: best.confidence, scoreSource: best.scoreSource } : null;
       }
       const rec = this._recommended;
+      if (typeof rec === 'string') return rec;
       if (!rec || !rec.name) return '';
-      const conf = (typeof rec.confidence === 'number' && rec.confidence === rec.confidence)
+      const conf = (!rec.scoreSource && typeof rec.confidence === 'number' && rec.confidence === rec.confidence)
         ? ' (' + Math.round(rec.confidence) + '%)' : '';
       return 'PLAY: ' + rec.name + conf;
     }
@@ -1085,7 +1086,7 @@
         if (node.setAttribute) node.setAttribute(LETHAL_BAR_ATTR, '1');
         if (typeof btn.appendChild === 'function') btn.appendChild(node);
       }
-      node.textContent = min + ' \u2013 ' + max + '%' + suffix;
+      node.textContent = line.isStatus ? 'Status / ' + (line.name || line.moveId) : min + ' \u2013 ' + max + '%' + suffix;
       // Publish the fill percentage (max of the roll range, clamped to 0..100) as a CSS custom
       // property so the bar's ::before can draw a real progress fill behind the text. Set on
       // the element's inline style — pure visual data, no class or text change, so it cannot
@@ -1168,7 +1169,8 @@
           pill.setAttribute('aria-label', (target.isActive ? 'Active opponent' : target.fainted ? 'Fainted opponent' : 'Preview our moves against') + ' ' + safeString(target.species));
         }
       const species = safeString(target.species || target.id || 'Unknown');
-      const hp = roundPct(target.hpPercent);
+      const hp = typeof target.hpPercent === 'number' ? roundPct(target.hpPercent) : null;
+      const hpText = hp === null ? 'HP unknown' : hp + '%';
       const slugs = spriteSlugs(species);
         const sprite = this._el('img', 'st-bench-sprite');
         if (sprite) {
@@ -1198,10 +1200,10 @@
         // The active body is tagged IN its own line. The old absolute "ACTIVE" chip sat on
         // top of the name (it covered the first letters of "Landorus-Therian") and the sprite
         // underneath it, which is exactly the kind of overlap that reads as a broken HUD.
-        const health = this._el('span', 'st-bench-health', target.fainted ? 'Fainted' : (target.isActive ? 'Active ' : '') + hp + '%');
+        const health = this._el('span', 'st-bench-health', target.fainted ? 'Fainted' : (target.isActive ? 'Active ' : '') + hpText);
         const meter = this._el('span', 'st-bench-meter');
         const fill = this._el('span', 'st-bench-meter-fill');
-        if (fill && fill.style) fill.style.width = U.clamp(hp, 0, 100) + '%';
+        if (fill && fill.style) fill.style.width = hp === null ? '0%' : U.clamp(hp, 0, 100) + '%';
         if (meter && fill && typeof meter.appendChild === 'function') meter.appendChild(fill);
         if (details && typeof details.appendChild === 'function') {
           if (name) details.appendChild(name);
@@ -1210,9 +1212,9 @@
           pill.appendChild(details);
         }
         if (pill.setAttribute) {
-          pill.setAttribute('aria-label', (target.isActive ? 'Active opponent ' : target.fainted ? 'Fainted opponent ' : 'Preview our moves against ') + species + ', ' + hp + '% HP');
+          pill.setAttribute('aria-label', (target.isActive ? 'Active opponent ' : target.fainted ? 'Fainted opponent ' : 'Preview our moves against ') + species + ', ' + hpText);
           if (!target.fainted && !target.isActive) pill.setAttribute('aria-pressed', id === this.selectedBenchId ? 'true' : 'false');
-          pill.setAttribute('title', species + ' · ' + hp + '% HP');
+          pill.setAttribute('title', species + ' / ' + hpText);
         }
         if (target.fainted) this._addClass(pill, 'st-fainted');
         if (target.isActive) this._addClass(pill, 'st-active');
@@ -1593,7 +1595,7 @@
         this._roomResize.observe(watched);
       }
       const toolbar = this._nodes.toolbar;
-      const host = this._nodes.console || this._nodes.sheet;
+      const host = (this.resolvedLayout === 'mobile' ? this._nodes.sheet : this._nodes.console) || this._nodes.sheet;
       if (toolbar && host && toolbar.parentNode !== host) host.appendChild(toolbar);
       this._organizeCenter(host);
     }
@@ -1614,11 +1616,45 @@
       this._battleState = state;
       if (readout !== undefined) this._readout = readout;
       if (meta) this._centerMeta = meta;
-      const host = this._nodes.console || this._nodes.sheet;
+      const host = (this.resolvedLayout === 'mobile' ? this._nodes.sheet : this._nodes.console) || this._nodes.sheet;
       if (!host) return;
       this._ensureCenterNavigation(host);
+      this._renderQuickSummary(state);
       this._renderCenterView();
       this._organizeCenter(host);
+    }
+
+    _renderQuickSummary(state) {
+      const section = this._centerSection('quickSummary', 'st-quick-summary', 'Battle at a glance');
+      if (!section) return;
+      const field = state.field || {};
+      const planLabel = this._el('label', 'st-plan-label', 'Battle plan');
+      const selector = this._el('select', 'st-plan-select');
+      selector.setAttribute('data-st-plan', '1'); selector.setAttribute('aria-label', 'Battle plan');
+      for (const [value, label] of [['auto', 'Auto'], ['trickroom', 'Trick Room'], ['standard', 'Standard']]) {
+        const option = this._el('option', '', label); option.value = value; this._appendChild(selector, option);
+      }
+      selector.value = state.battlePlan || 'auto';
+      selector.addEventListener('change', () => { if (this.options.onBattlePlanChange) this.options.onBattlePlanChange(selector.value); });
+      this._appendChild(planLabel, selector); this._appendChild(section, planLabel);
+      this._centerPair(section, 'Turn ' + (state.turn || 0), field.trickRoom ? 'Trick Room / ' + field.trickRoomTurnsLeft + ' turns left' : 'Normal move order');
+      if (state.ownershipResolved === false) this._appendChild(section, this._el('p', 'st-pool-warning', 'Waiting for your player identity. Recommendations require a battle request.'));
+      if (state.teamImportMatches === false) this._appendChild(section, this._el('p', 'st-range-note', 'Team import does not match this roster. Using battle data and labeled estimates.'));
+      const pick = (this._lastRanked || []).find(function (a) { return !a.isVetoed; });
+      if (pick && state.formatSupported !== false) {
+        this._appendChild(section, this._el('div', 'st-eyebrow', 'Suggested play'));
+        this._appendChild(section, this._el('div', 'st-play-name', (pick.kind === 'switch' ? 'Switch to ' : '') + pick.name));
+        this._appendChild(section, this._el('p', 'st-play-reason', pick.reason || 'Compare the available lines below.'));
+        const alternatives = (this._lastRanked || []).filter(function (a) { return a !== pick && !a.isVetoed; }).slice(0, 2);
+        if (alternatives.length) this._appendChild(section, this._el('p', 'st-quick-alternatives', 'Also compare: ' + alternatives.map(function (a) { return (a.kind === 'switch' ? 'Switch to ' : '') + a.name; }).join(' / ')));
+      }
+      const tactical = this._readout && this._readout.tactical;
+      if (this._centerMeta.historical) this._appendChild(section, this._el('p', 'st-range-note', 'Battle changed. Waiting for the next decision request.'));
+      else if (tactical) this._appendChild(section, this._el('p', 'st-range-note',
+        (tactical.completed ? tactical.completed.depth + ' turn selective search' : 'Search unavailable') +
+        (tactical.limited ? ' / budget reached' : '') + ' / opposing sets remain estimates'));
+      const host = section.parentNode;
+      if (host && host.insertBefore && this._nodes.centerNav && section.nextSibling !== this._nodes.centerNav) host.insertBefore(section, this._nodes.centerNav);
     }
 
     _ensureCenterNavigation(host) {
@@ -1645,7 +1681,7 @@
       if (!['battle', 'intel', 'field', 'review'].includes(view)) return false;
       this._centerView = view;
       this._renderCenterView();
-      const host = this._nodes.console || this._nodes.sheet;
+      const host = (this.resolvedLayout === 'mobile' ? this._nodes.sheet : this._nodes.console) || this._nodes.sheet;
       this._organizeCenter(host);
       if (host) host.scrollTop = 0;
       return true;
@@ -1715,7 +1751,7 @@
       this._renderedCenterKey = key;
       this._renderedCenterState = state;
       this._renderedCenterReadout = this._readout;
-      const host = this._nodes.console || this._nodes.sheet;
+      const host = (this.resolvedLayout === 'mobile' ? this._nodes.sheet : this._nodes.console) || this._nodes.sheet;
       const top = host ? host.scrollTop : 0;
       const openCandidates = this._qsa('.st-candidate', host).map(function (node) { return [node.getAttribute('data-st-candidate'), node.open]; });
       const reports = new Map(this._qsa('.st-engine-report', host).map(function (node) { return [node.getAttribute('data-st-report'), node.open]; }));
@@ -1746,19 +1782,42 @@
       if (!actions.length) this._appendChild(section, this._el('p', 'st-empty', 'Action comparisons appear when your next decision arrives.'));
       for (const action of actions) {
         const row = this._el('div', 'st-action-row' + (action.isVetoed ? ' st-action-veto' : ''));
-        this._centerPair(row, (action.kind === 'switch' ? 'Switch to ' : '') + safeString(action.name), action.isVetoed ? 'Avoid' : pct(action.confidence));
-        const reason = action.vetoReason || this._lastReasonByMove[U.toID(action.moveId || action.name)];
+        const gap = typeof action.scoreGap === 'number' ? action.scoreGap : null;
+        this._centerPair(row, (action.kind === 'switch' ? 'Switch to ' : '') + safeString(action.name), action.isVetoed ? 'Avoid' : action.isOptimal ? 'Recommended' : gap === null ? 'Alternative' : gap < 15 ? 'Close alternative' : 'Lower rated');
+        const reason = action.vetoReason || action.reason || this._lastReasonByMove[U.toID(action.moveId || action.name)];
         if (reason) this._appendChild(row, this._el('p', 'st-action-reason', this._centerText(reason)));
+        if (action.tradeoff) this._appendChild(row, this._el('p', 'st-action-tradeoff', action.tradeoff));
+        if (typeof action.score === 'number' && isFinite(action.score)) {
+          const detail = this._el('details', 'st-action-analysis');
+          this._appendChild(detail, this._el('summary', '', 'Search details'));
+          this._centerPair(detail, 'Position score', U.round1(action.score));
+          this._centerPair(detail, 'Strategy weight', pct(action.confidence));
+          this._appendChild(detail, this._el('p', 'st-range-note', 'Evaluation units and strategy weights are not win probabilities.'));
+          this._appendChild(row, detail);
+        }
         this._appendChild(section, row);
       }
-      this._appendChild(section, this._el('p', 'st-range-note', 'Percentages describe the engine\'s preference between actions.'));
+      this._appendChild(section, this._el('p', 'st-range-note', 'Compare outcomes and assumptions. Search details contain model scores.'));
     }
 
     _renderIntelligence(state) {
       const section = this._centerSection('intelligence', 'st-intelligence', 'Opponent intelligence and set pruning');
       if (!section) return;
-      this._centerHeading(section, '02 / INTELLIGENCE', 'Opponent intelligence', 'Revealed facts, surviving sets, and the evidence behind each deduction.');
+      this._centerHeading(section, '02 / INTELLIGENCE', 'Opponent intelligence', 'Revealed facts first. Select a Pokemon for estimates and evidence.');
       const team = (state.oppTeam || []).filter(Boolean);
+      const overview = this._el('div', 'st-intel-overview');
+      overview.setAttribute('aria-label', 'Opponent scouting overview');
+      for (const mon of team) {
+        const button = this._el('button', 'st-intel-line');
+        button.setAttribute('type', 'button'); button.setAttribute('data-st-intel-mon', mon.id);
+        const health = mon.fainted ? 'Fainted' : mon.hpKnown === false ? 'HP unknown' : roundPct(mon.hpPercent) + '%';
+        this._appendChild(button, this._el('strong', '', mon.species + (mon.isActive ? ' / Active' : '')));
+        this._appendChild(button, this._el('span', '', health + ' / ' + (mon.itemRemoved || mon.itemConsumed || mon.itemless ? 'No item' : mon.confirmedItem || 'Item unknown')));
+        this._appendChild(button, this._el('span', '', (mon.revealedAbility || 'Ability unknown') + ' / ' + (mon.revealedMoves || []).length + ' moves seen'));
+        button.addEventListener('click', () => { this._inspectedId = U.toID(mon.id || mon.species); this._renderCenterView(); });
+        this._appendChild(overview, button);
+      }
+      this._appendChild(section, overview);
       const chosen = team.find(function (mon) { return U.toID(mon.id || mon.species) === this._inspectedId; }, this)
         || (state.active && state.active.opp) || team[0];
       const label = this._el('label', 'st-inspector-label', 'Inspect opponent');
@@ -1779,7 +1838,7 @@
       selector && selector.addEventListener && selector.addEventListener('change', function (event) {
         this._inspectedId = event.target.value;
         this._renderCenterView();
-        this._organizeCenter(this._nodes.console || this._nodes.sheet);
+        this._organizeCenter((this.resolvedLayout === 'mobile' ? this._nodes.sheet : this._nodes.console) || this._nodes.sheet);
         const selected = this._qs('[data-st-inspector]', this._nodes.intelligence);
         if (selected && selected.focus) selected.focus({ preventScroll: true });
       }.bind(this));
@@ -1795,7 +1854,7 @@
       this._appendChild(counter, this._el('span', 'st-pool-label', hasPool ? (sets.length === 1 ? 'set remaining' : 'sets remaining') + (total === null ? '' : ' / ' + total + ' in the seeded pool') : 'No candidate pool recorded yet'));
       this._appendChild(section, counter);
       this._appendChild(section, this._el('h3', 'st-section-title', 'Observed'));
-      this._centerPair(section, 'Item', chosen.confirmedItem || (chosen.itemless ? 'No held item' : 'Unrevealed'));
+      this._centerPair(section, 'Item', chosen.itemRemoved || chosen.itemConsumed || chosen.itemless ? 'No held item' : chosen.confirmedItem || 'Unrevealed');
       this._centerPair(section, 'Ability', chosen.revealedAbility || 'Unrevealed');
       this._centerPair(section, 'Moves', (chosen.revealedMoves || []).join(' / ') || 'None revealed');
       this._centerPair(section, 'Status', chosen.fainted ? 'Fainted' : chosen.status || 'Healthy');
@@ -1815,9 +1874,12 @@
       }
       const evidence = this._el('ol', 'st-evidence-list');
       for (const note of notes) this._appendChild(evidence, this._el('li', '', this._centerText(note)));
-      this._appendChild(section, evidence);
+      const ledger = this._el('details', 'st-pruning-ledger');
+      this._appendChild(ledger, this._el('summary', '', 'Pruning evidence / ' + notes.length + ' notes'));
+      this._appendChild(ledger, evidence);
+      this._appendChild(section, ledger);
       this._appendChild(section, this._el('h3', 'st-section-title', 'Surviving candidates'));
-      this._appendChild(section, this._el('p', 'st-range-note', 'Candidate details are model estimates. Observed facts are listed above.'));
+      this._appendChild(section, this._el('p', 'st-range-note', 'Candidates cover the database pool. One remaining candidate does not establish the actual set.'));
       sets.forEach(function (set, i) {
         const detail = this._el('details', 'st-candidate');
         detail.setAttribute && detail.setAttribute('data-st-candidate', U.toID(chosen.id || chosen.species) + ':' + safeString(set.id || i));
@@ -1911,8 +1973,17 @@
       this._centerHeading(section, '04 / REVIEW', 'Decision record', 'Inspect the models, searches, and evidence used for this decision.');
       const readout = this._readout;
       if (!readout || state.formatSupported === false) { this._appendChild(section, this._el('p', 'st-empty', 'Search reports appear after a supported decision is evaluated.')); return; }
+      if (this._centerMeta.historical) this._appendChild(section, this._el('p', 'st-pool-warning', 'Previous decision record. The battle has changed; recommendations resume with the next request.'));
       this._centerPair(section, 'Decision recorded', typeof this._readoutTurn === 'number' ? 'Turn ' + this._readoutTurn : 'Current decision');
       this._centerPair(section, 'Evaluation passes', this._centerMeta.stats && this._centerMeta.stats.evaluations !== undefined ? this._centerMeta.stats.evaluations : 'Unknown');
+      if (readout.tactical) this._report(section, 'Turn search and limitations', readout.tactical, 0);
+      const copy = this._el('button', 'st-copy-decision', 'Copy decision snapshot');
+      copy.setAttribute('type', 'button');
+      copy.addEventListener('click', () => {
+        const snapshot = { version: 1, battle: readout.decisionSnapshot || this._centerState, ranked: readout.ranked || this._lastRanked, tactical: readout.tactical || null };
+        if (this.options.onCopyReceipt) Promise.resolve(this.options.onCopyReceipt(JSON.stringify(snapshot))).then(function (ok) { copy.textContent = ok ? 'Snapshot copied' : 'Copy unavailable'; });
+      });
+      this._appendChild(section, copy);
       this._centerPair(section, 'Set combinations sampled', (readout.worlds || []).length);
       this._centerPair(section, 'Evaluation time', typeof readout.elapsedMs === 'number' ? readout.elapsedMs + ' ms' : 'Unknown');
       const reports = [
@@ -1979,7 +2050,7 @@
       this._clearChildren(section);
       const state = this._battleState || {};
       const pick = (this._lastRanked || []).find(function (a) { return !a.isVetoed; });
-      if (pick && state.formatSupported !== false) {
+      if (pick && state.formatSupported !== false && !this._nodes.quickSummary) {
         this._appendChild(section, this._el('div', 'st-eyebrow', preview.target.isActive === false ? 'Suggested play against active opponent' : 'Suggested play'));
         this._appendChild(section, this._el('div', 'st-play-name', (pick.kind === 'switch' ? 'Switch to ' : '') + safeString(pick.name || pick.species || pick.moveId)));
         const reason = this._lastReasonByMove[U.toID(pick.moveId || pick.name)] || pick.reason || pick.vetoReason || '';
@@ -1995,13 +2066,31 @@
         const row = this._el('div', 'st-damage-row');
         row.setAttribute && row.setAttribute('data-st-range', U.toID(line.moveId || line.name));
         this._appendChild(row, this._el('span', 'st-damage-name', line.name || line.moveId));
-        const range = typeof line.minPercent === 'number' && typeof line.maxPercent === 'number'
+        const range = line.isStatus ? 'Status' : typeof line.minPercent === 'number' && typeof line.maxPercent === 'number'
           ? roundPct(line.minPercent) + ' - ' + roundPct(line.maxPercent) + '%' : 'Unavailable';
         this._appendChild(row, this._el('span', 'st-damage-range', range));
-        this._appendChild(row, this._el('span', 'st-damage-ko', typeof line.koChancePct === 'number' ? roundPct(line.koChancePct) + '%' : 'Unknown'));
+        this._appendChild(row, this._el('span', 'st-damage-ko', line.isStatus ? 'N/A' : typeof line.koChancePct === 'number' ? roundPct(line.koChancePct) + '%' : 'Unknown'));
         this._appendChild(section, row);
+        if (!line.isStatus) {
+          const detail = this._el('details', 'st-calc-detail');
+          this._appendChild(detail, this._el('summary', '', 'Calculation inputs / ' + line.name));
+          this._appendChild(detail, this._el('p', '', line.desc || 'Calculation details unavailable.'));
+          if (line.inputs) {
+            for (const key of ['attacker', 'defender']) {
+              const mon = line.inputs[key];
+              this._centerPair(detail, key === 'attacker' ? 'Attacker' : 'Defender', mon.species + ' / ' + mon.source);
+              this._centerPair(detail, 'Stats: HP / Atk / Def / SpA / SpD / Spe', ['hp', 'atk', 'def', 'spa', 'spd', 'spe'].map(function (stat) { return mon.stats[stat]; }).join(' / '));
+              this._centerPair(detail, 'Item / Ability', (mon.item || 'None or unknown') + ' / ' + (mon.ability || 'Unknown'));
+              this._centerPair(detail, 'HP / Status', roundPct(mon.hpPercent) + '% / ' + mon.status);
+              this._centerPair(detail, 'Stages', Object.entries(mon.boosts).filter(function (pair) { return pair[1]; }).map(function (pair) { return pair[0] + ' ' + pair[1]; }).join(' / ') || 'Unboosted');
+            }
+            this._centerPair(detail, 'Weather / Terrain', line.inputs.weather + ' / ' + line.inputs.terrain);
+          }
+          this._appendChild(detail, this._el('p', 'st-range-note', (line.spreadCount || 1) + ' estimated opposing spread(s). Range combines set uncertainty and damage rolls.'));
+          this._appendChild(section, detail);
+        }
       }
-      this._appendChild(section, this._el('p', 'st-range-note', 'Ranges use the current set estimate. Scouting notes show revealed facts.'));
+      this._appendChild(section, this._el('p', 'st-range-note', 'Ranges span opposing set estimates. KO chance uses the least favorable spread.'));
       this._syncPlacement();
     }
 
@@ -2623,7 +2712,7 @@
       // Desktop also uses the compact-first sheet pattern: no permanent sidebar competing with
       // the Showdown log, and no large block occupying the chat column until it is requested.
       const sel = '.tactician-banner, .st-overlord-gauge, .st-badge-row, .st-deduction-badges, ' +
-        '.st-center-nav, .st-intelligence, .st-field-board, .st-engine-review, .st-action-list, .st-matchup, .st-toolbar, .st-lead-advisory, .st-scout-card, .tactician-tr-chip, .st-bench-strip, .st-pp-gauge, .st-format-sentinel, ' +
+        '.st-quick-summary, .st-center-nav, .st-intelligence, .st-field-board, .st-engine-review, .st-action-list, .st-matchup, .st-toolbar, .st-lead-advisory, .st-scout-card, .tactician-tr-chip, .st-bench-strip, .st-pp-gauge, .st-format-sentinel, ' +
         '.st-receipt-card, .st-cancel-alert-card';
       const nodes = (typeof doc.querySelectorAll === 'function')
         ? doc.querySelectorAll(sel) : [];
@@ -2772,7 +2861,7 @@
       // sprites (measured: banner covers 46% of the foe's HP bar). The chip and bench strip
       // stay in the bottom band — they are thumb-targeted and the most-used interactive bits.
       const sel = '.tactician-banner, .st-overlord-gauge, .st-badge-row, .st-deduction-badges, ' +
-        '.st-center-nav, .st-intelligence, .st-field-board, .st-engine-review, .st-action-list, .st-matchup, .st-toolbar, .st-lead-advisory, .st-scout-card, .st-pp-gauge, .st-format-sentinel, .st-receipt-card, .st-cancel-alert-card';
+        '.st-quick-summary, .st-center-nav, .st-intelligence, .st-field-board, .st-engine-review, .st-action-list, .st-matchup, .st-toolbar, .st-lead-advisory, .st-scout-card, .st-pp-gauge, .st-format-sentinel, .st-receipt-card, .st-cancel-alert-card';
       const nodes = (typeof doc.querySelectorAll === 'function')
         ? doc.querySelectorAll(sel) : [];
       // Lazy: the first band element to be mounted creates the sheet through _mountBand.
@@ -3211,7 +3300,7 @@
     /** clear() — remove every injected node and inline style change. */
     clear() {
       this._syncModalState(false);
-      const nodes = this._qsa('.elo-helper-badge, .tactician-banner, .tactician-tr-chip, .team-drawer, .team-drawer-toggle, .elo-helper-reason, .st-lethal-bar, .st-bench-strip, .st-badge-row, .st-receipt-card, .st-overlord-gauge, .st-pp-gauge, .st-format-sentinel, .st-lead-advisory, .st-cancel-alert-card, .st-cancel-badge, .st-matchup, .st-toolbar, .st-mode-toggle, .st-scout-card, .st-center-nav, .st-intelligence, .st-field-board, .st-engine-review, .st-action-list');
+      const nodes = this._qsa('.elo-helper-badge, .tactician-banner, .tactician-tr-chip, .team-drawer, .team-drawer-toggle, .elo-helper-reason, .st-lethal-bar, .st-bench-strip, .st-badge-row, .st-receipt-card, .st-overlord-gauge, .st-pp-gauge, .st-format-sentinel, .st-lead-advisory, .st-cancel-alert-card, .st-cancel-badge, .st-matchup, .st-toolbar, .st-mode-toggle, .st-scout-card, .st-quick-summary, .st-center-nav, .st-intelligence, .st-field-board, .st-engine-review, .st-action-list');
       for (let i = 0; i < nodes.length; i++) {
         const n = nodes[i];
         if (n && typeof n.remove === 'function') n.remove();

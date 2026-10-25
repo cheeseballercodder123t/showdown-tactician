@@ -144,12 +144,14 @@
 
   function forward(rawLine, kind) {
     if (typeof rawLine !== 'string' || !rawLine) return;
+    if (rawLine.indexOf('|request|') === 0) lastRequestSignature = rawLine.slice(9);
     lastForwarded.line = rawLine;
     lastForwarded.kind = kind || 'unknown';
     try {
       counters.dispatched++;
-      var payload = { rawLine: rawLine, kind: kind || 'unknown' };
-      var detail = { rawLine: payload.rawLine, kind: payload.kind, json: JSON.stringify(payload) };
+      var room = roomOf();
+      var payload = { rawLine: rawLine, kind: kind || 'unknown', roomId: room && room.id || '' };
+      var detail = { rawLine: payload.rawLine, kind: payload.kind, roomId: payload.roomId, json: JSON.stringify(payload) };
       var evt;
       try {
         evt = new CustomEvent(EVENT_NAME, { detail: detail, bubbles: false });
@@ -561,6 +563,13 @@
   }
 
   var lastBattle = null;
+  var lastRequestSignature = '';
+
+  function pollRequestSnapshot(room) {
+    if (!room || !room.request || typeof room.request !== 'object') return;
+    var signature = JSON.stringify(room.request);
+    if (signature !== lastRequestSignature) forward('|request|' + signature, 'poll');
+  }
   var tierBattle = null;
   var lastTier = '';
   function pollTierSnapshot(battle) {
@@ -583,6 +592,7 @@
     pollCursor = 0;
     lastPpSignature = '';
     lastAccuracySignature = '';
+    lastRequestSignature = '';
     if (!changed) return;
     pendingSocketBatches.length = 0;
     lastForwarded = { line: null, kind: null };
@@ -607,6 +617,7 @@
       // the two paths never hand the same frame to the parser twice.
       if (!appReceiveHooked || !appReceiveLines) pollBattleBuffer(battle);
       pollTierSnapshot(battle);
+      pollRequestSnapshot(room);
       pollPpSnapshot();
       pollAccuracySnapshot(battle);
     } catch (e) {

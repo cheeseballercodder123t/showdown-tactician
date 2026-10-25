@@ -191,9 +191,9 @@
     }
     const s = String(input).trim();
     if (/fnt/i.test(s)) { out.hp = 0; out.fainted = true; return out; }
-    const m = s.match(/^(\d+)\s*\/\s*(\d+)\s*(.*)$/);
+    const m = s.match(/^(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)\s*(.*)$/);
     if (m) {
-      const cur = parseInt(m[1], 10), max = parseInt(m[2], 10);
+      const cur = Number(m[1]), max = Number(m[2]);
       out.hp = max > 0 ? clamp(Math.round((cur / max) * 10000) / 100, 0, 100) : 0;
       out.status = (m[3] || '').trim().slice(0, 3);
     } else if (/^\d+(?:\.\d+)?$/.test(s)) {
@@ -237,7 +237,7 @@
     /* ------------------------------------------------------------ construction */
 
     _createState() {
-      return {
+      const state = {
         revision: 0,
         format: U.FORMAT,
         formatSupported: true,
@@ -245,6 +245,8 @@
         turn: 0,
         mySide: 'p1',
         oppSide: 'p2',
+        ownershipResolved: false,
+        battlePlan: this.battlePlan || 'auto',
         // Ladder ratings, straight off the protocol's `|player|p2|Name|avatar|1480` line. This is
         // the opponent's own number, not an estimate: nothing in the engine invents it. Read by
         // the Elo-adaptive switch prior (src/opponent_clock.js), which ships off until measured.
@@ -314,6 +316,17 @@
         _trSetOnTurn: null,
         _seenTeraWarning: false
       };
+      const sides = { p1: { team: [], active: null, bench: [] }, p2: { team: [], active: null, bench: [] } };
+      state.sides = sides;
+      for (const [name, sideKey] of [['my', 'mySide'], ['opp', 'oppSide']]) {
+        Object.defineProperty(state, name + 'Team', { enumerable: true, configurable: true,
+          get: function () { return sides[state[sideKey]].team; },
+          set: function (team) { sides[state[sideKey]].team = team; } });
+        for (const key of ['active', 'bench']) Object.defineProperty(state[key], name, { enumerable: true, configurable: true,
+          get: function () { return sides[state[sideKey]][key]; },
+          set: function (value) { sides[state[sideKey]][key] = value; } });
+      }
+      return state;
     }
 
     _newMon(species, side, index, opts) {
@@ -322,6 +335,7 @@
       const o = opts || {};
       return {
         id: toID(canonical),
+        uid: side + ':' + index,
         species: canonical,
         /* The name this body is REGISTERED as: it never follows a battle-forme change, so an
          * Aegislash that became Aegislash-Blade is still found when it switches back in. */
@@ -340,6 +354,7 @@
         hp: o.hp === undefined || o.hp === null ? 100 : o.hp,
         maxhp: 100,
         hpPercent: o.hp === undefined || o.hp === null ? 100 : o.hp,
+        hpKnown: o.hp !== undefined && o.hp !== null,
         fainted: !!o.fainted,
         status: o.status || '',
         /* A battle-only TYPE override (Protean, Color Change, Soak, Burn Up…). The species on
@@ -563,7 +578,7 @@
 
     /* ------------------------------------------------------------ accessors */
 
-    _teamFor(side) { return side === this.state.mySide ? this.state.myTeam : this.state.oppTeam; }
+    _teamFor(side) { return this.state.sides[side] ? this.state.sides[side].team : []; }
 
     _slotMapTeam(slot) {
       const side = sideOf(slot);
@@ -700,6 +715,11 @@
       const clone = deepClone(this.state);
       clone.myTeam = clone.myTeam.map(this._reviveMon);
       clone.oppTeam = clone.oppTeam.map(this._reviveMon);
+      for (const key of ['my', 'opp']) {
+        const team = clone[key + 'Team'];
+        clone.active[key] = team.find(function (m) { return m && m.isActive; }) || null;
+        clone.bench[key] = team.filter(function (m) { return m && !m.isActive && !m.fainted; });
+      }
       return clone;
     }
     _reviveMon(m) {
@@ -721,6 +741,11 @@
        * that the whole engine's damage and Speed maths depends on. */
       this._parsedTeam = list.slice(0, 6);
       const st = this.state;
+      if (st.ownershipResolved) {
+        this._applyImportedTeam(st.request && st.request.side && st.request.side.pokemon);
+        this._touch('myteam');
+        return st.myTeam;
+      }
       st.myTeam = list.slice(0, 6).map(function (p, i) {
         const mon = this._newMon(p.species || p.name, st.mySide, i, {
           slot: null,
@@ -749,6 +774,59 @@
       this._refreshBench();
       this._touch('myteam');
       return st.myTeam;
+    }
+
+    _applyImportedTeam(roster) {
+      const st = this.state;
+      const imports = this._parsedTeam || [];
+      const base = function (name) { return toID(name).replace(FORME_SUFFIX_RE, ''); };
+      const names = (roster || []).map(function (p) { return base(U.tokenizeDetails(p.details || '').species); }).sort();
+      const imported = imports.map(function (p) { return base(p.species || p.name); }).sort();
+      const matches = names.length > 0 && JSON.stringify(names) === JSON.stringify(imported);
+      st.teamImportMatches = matches;
+      for (const mon of st.myTeam) {
+        if (!mon) continue;
+        const set = matches && imports.find(function (p) { return base(p.species || p.name) === base(mon.rosterSpecies || mon.species); });
+        if (!set) {
+          if (mon.fromPaste) {
+            mon.fromPaste = false; mon.evs = null; mon.ivs = null; mon.nature = null;
+            mon.stats = mon.requestStats ? Object.assign({}, mon.requestStats) : null;
+          }
+          continue;
+        }
+        for (const key of ['evs', 'ivs', 'nature']) if (set[key]) mon[key] = deepClone(set[key]);
+        mon.fromPaste = true;
+        mon.level = set.level || 100;
+        if (!mon.requestMovesKnown) mon.setMoves = (set.moves || []).slice();
+        mon.declaredItem = set.item || null;
+        if (mon.item === null && !mon.itemRemoved && !mon.itemConsumed) mon.item = set.item || null;
+        if (!mon.ability) mon.ability = set.ability || null;
+        mon.stats = Object.assign({}, this._computeStats(mon), mon.requestStats || {});
+        if (mon.exactMaxHP) mon.stats.hp = mon.exactMaxHP;
+      }
+    }
+
+    _resolveOwnership(side) {
+      const st = this.state;
+      if (!/^p[12]$/.test(side)) return;
+      if (!st.ownershipResolved) {
+        for (const key of ['p1', 'p2']) {
+          const part = st.sides[key];
+          part.team = part.team.filter(function (m) { return m && (!m.fromPaste || m.publicSeen); });
+          for (const mon of part.team) if (mon.fromPaste) {
+            mon.fromPaste = false;
+            mon.evs = null; mon.ivs = null; mon.nature = null; mon.stats = null;
+            mon.item = mon.confirmedItem || null; mon.ability = mon.revealedAbility || null;
+            mon.setMoves = []; mon.declaredItem = null;
+          }
+        }
+      }
+      st.mySide = side;
+      st.oppSide = otherSide(side);
+      st.ownershipResolved = true;
+      st.active.my = st.myTeam.find(function (m) { return m && m.isActive; }) || null;
+      st.active.opp = st.oppTeam.find(function (m) { return m && m.isActive; }) || null;
+      this._refreshBench();
     }
 
     /**
@@ -964,6 +1042,8 @@
       const index = team.filter(Boolean).length;
       this._registerPreviewPoke(side, index, event.species, event.details, event.item,
         event.hp, event.status, event.gender, event.level);
+      const mon = this._findBySpecies(side, event.species);
+      if (mon) mon.publicSeen = true;
     }
 
     _onSwitch(event) {
@@ -988,11 +1068,12 @@
       let mon = this._findBySpecies(side, tok.species);
       if (!mon) {
         const team = this._teamFor(side);
-        mon = this._newMon(tok.species, side, letterIndex(slot), { slot: slot });
+        mon = this._newMon(tok.species, side, team.length, { slot: slot });
         const idx = letterIndex(slot);
         if (!team[idx]) team[idx] = mon; else team.push(mon);
       }
       mon.slot = slot;
+      mon.publicSeen = true;
       mon.revealed = true;
       if (tok.species && (!mon.formsSeen || mon.formsSeen.indexOf(tok.species) === -1)) {
         mon.formsSeen = (mon.formsSeen || []).concat([tok.species]);
@@ -1191,6 +1272,12 @@
       if (parsed.hp !== null) {
         mon.hp = parsed.hp;
         mon.hpPercent = parsed.hp;
+        mon.hpKnown = true;
+        mon.hpObservedTurn = this.state.turn;
+        const raw = String(hpInput).match(/^(\d+)\/(\d+)(?:\s|$)/);
+        if (raw && mon.side === this.state.mySide) {
+          mon.exactHP = Number(raw[1]); mon.exactMaxHP = Number(raw[2]);
+        } else mon.exactHP = null;
       }
       mon.maxhp = 100;
       let statusChanged = false;
@@ -1322,11 +1409,7 @@
       this._trackProtect(side, moveId);
 
       // Trick Room used by anyone: latch the turn it was set
-      if (moveId === 'trickroom') {
-        this.state.field.trickRoom = true;
-        this.state.field.trickRoomTurnsLeft = 5;
-        this.state._trSetOnTurn = this.state.turn;
-      }
+      if (moveId === 'trickroom') this.state._trAttemptedOnTurn = this.state.turn;
       /* ---- WISH (`|move|<slot>|Wish|`). The sim's Wish slot condition heals at the residual of
        * the NEXT turn (`startingTurn` + a strict `>`), and the amount is HALF THE CASTER's max HP
        * — healed onto whoever stands in the slot at that moment, which may be a different body.
@@ -1479,6 +1562,9 @@
       const hpBefore = typeof mon.hpPercent === 'number' ? mon.hpPercent : 100;
       const defenderBefore = kind === 'damage' ? this._damageSnapshot(mon, true) : null;
       this._setHP(mon, event.hp, event.status);
+      if (side === this.state.mySide && typeof event.hpRaw === 'number' && typeof event.maxHpRaw === 'number') {
+        mon.exactHP = event.hpRaw; mon.exactMaxHP = event.maxHpRaw;
+      }
       // The residual lines are the commonest item reveal on the ladder: a Leftovers heal, a Life
       // Orb recoil, a Sitrus Berry bite, Rocky Helmet damage with its `[of]` holder. The scout
       // panel is supposed to log the item the battle PRINTED, and before this only |-item| (Knock
@@ -1606,7 +1692,7 @@
       if (item !== undefined && item !== null) snapshot.item = item;
       const ability = mon.activeAbility || mon.revealedAbility || (includeSpread ? mon.ability : null);
       if (ability) snapshot.ability = ability;
-      if (includeSpread) for (const key of ['evs', 'ivs', 'nature']) {
+      if (includeSpread) for (const key of ['evs', 'ivs', 'nature', 'requestStats', 'exactHP', 'exactMaxHP', 'fromPaste']) {
         if (mon[key]) snapshot[key] = typeof mon[key] === 'object' ? Object.assign({}, mon[key]) : mon[key];
       }
       return snapshot;
@@ -2369,8 +2455,7 @@
       st.request = json;
 
       if (json.side && json.side.id) {
-        st.mySide = json.side.id;
-        st.oppSide = otherSide(json.side.id);
+        this._resolveOwnership(json.side.id);
       }
       if (json.teamPreview) st.teamPreview = true;
       else st.teamPreview = false;
@@ -2378,6 +2463,7 @@
       // refresh our own roster (hp / status / moves) from the authoritative payload
       if (json.side && Array.isArray(json.side.pokemon)) {
         this._mergeMyTeamFromRequest(json.side.pokemon);
+        this._applyImportedTeam(json.side.pokemon);
       }
 
       const actions = { moves: [], switches: [], trapped: false, maybeTrapped: false, forceSwitch: false };
@@ -2492,6 +2578,7 @@
 
     _mergeMyTeamFromRequest(pokemonList) {
       const st = this.state;
+      const rosterTeam = [];
       for (let i = 0; i < pokemonList.length; i++) {
         const p = pokemonList[i];
         if (!p) continue;
@@ -2501,7 +2588,7 @@
          * A roster entry is `p1: Great Tusk` — no slot — and the slot it must not be matched by is
          * the invented one parseIdent used to return. See parseIdent for what that cost. */
         const slotOk = isBattleSlot(ident.slot);
-        let mon = slotOk ? this._findBySlot(ident.slot) : null;
+        let mon = st.myTeam.find(function (m) { return m && m.requestIdent && m.requestIdent === p.ident; }) || null;
         if (!mon) mon = this._findBySpecies(st.mySide, tok.species);
         if (!mon) {
           mon = this._newMon(tok.species, st.mySide, st.myTeam.length, { slot: slotOk ? ident.slot : null });
@@ -2509,12 +2596,26 @@
           st.myTeam.push(mon);
         }
         if (slotOk) mon.slot = ident.slot;
+        mon.uid = st.mySide + ':' + i;
+        mon.index = i;
+        mon.requestIdent = p.ident || '';
+        rosterTeam.push(mon);
         this._setHP(mon, p.condition || p.hp || '');
         mon.isActive = !!p.active;
-        if (!mon.fromPaste) mon.level = tok.level || mon.level;
-        if (p.item) mon.item = mon.item || p.item;
-        if (p.ability) mon.ability = mon.ability || p.ability;
+        if (!mon.fromPaste) { mon.reportedLevel = tok.level || null; mon.level = this._battleLevel(); }
+        if (typeof p.item === 'string') {
+          mon.item = p.item; mon.currentBattleItem = p.item;
+          mon.itemless = !p.item;
+          if (p.item) { mon.itemRemoved = false; mon.itemConsumed = false; }
+        }
+        if (p.ability) mon.ability = p.ability;
+        if (p.stats) {
+          mon.requestStats = Object.assign({}, p.stats);
+          mon.stats = Object.assign({}, mon.stats || {}, p.stats);
+          if (mon.exactMaxHP) mon.stats.hp = mon.exactMaxHP;
+        }
         if (Array.isArray(p.moves) && p.moves.length) {
+          mon.requestMovesKnown = true;
           mon.setMoves = p.moves.slice(0, 4);
           for (let k = 0; k < p.moves.length; k++) {
             const mid = p.moves[k];
@@ -2523,6 +2624,8 @@
         }
         if (p.baseAbility && !mon.ability) mon.ability = p.baseAbility;
       }
+      st.myTeam = rosterTeam;
+      st.active.my = null;
       for (let i = 0; i < st.myTeam.length; i++) {
         const m = st.myTeam[i];
         if (!m) continue;
@@ -2573,6 +2676,7 @@
       if (!mon) return;
       const tok = U.tokenizeDetails(details);
       if (tok.species) {
+        if (tok.species !== mon.species) mon.requestStats = null;
         mon.species = tok.species;
         mon.id = toID(tok.species);
         // A Disguise breaking is reported as a forme change to Mimikyu-Busted.
